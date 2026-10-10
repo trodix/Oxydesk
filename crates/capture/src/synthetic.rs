@@ -1,12 +1,15 @@
-use rdsktp_core::error::CaptureError;
+use std::sync::{Arc, Mutex};
+
+use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
-use rdsktp_core::ports::CaptureSource;
+use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink};
 
 // Contrat avec bins/rdp-test-client (src/contract.rs) : garder les deux synchronisés.
 pub const BLOCK: u32 = 32;
 pub const MARKER_POS: (u32, u32) = (0, 0);
 pub const HEARTBEAT_POS: (u32, u32) = (32, 0);
+pub const KEYS: [u16; 8] = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
 pub const PALETTE: [[u8; 3]; 8] = [
     [255, 0, 0],
     [0, 255, 0],
@@ -118,6 +121,65 @@ impl CaptureSource for SyntheticSource {
     }
 }
 
+/// Doublure de test complète d'un bureau : capture + entrées + presse-papiers « écho ».
+/// Les clones partagent le même état (contrat du serveur de test, voir le client de test).
+#[derive(Clone)]
+pub struct SyntheticDesktop {
+    inner: Arc<Mutex<DesktopState>>,
+}
+
+struct DesktopState {
+    source: SyntheticSource,
+    echo: Option<String>,
+}
+
+impl SyntheticDesktop {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(DesktopState {
+                source: SyntheticSource::new(width, height),
+                echo: None,
+            })),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, DesktopState> {
+        self.inner.lock().expect("synthetic desktop mutex")
+    }
+}
+
+impl CaptureSource for SyntheticDesktop {
+    fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
+        Ok(Some(self.state().source.render()))
+    }
+}
+
+impl InputSink for SyntheticDesktop {
+    fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+        if pressed {
+            if let Some(i) = KEYS.iter().position(|&k| k == scancode) {
+                self.state().source.set_marker(i);
+            }
+        }
+        Ok(())
+    }
+
+    fn pointer_move(&mut self, _x: i32, _y: i32) -> Result<(), InputError> {
+        Ok(())
+    }
+}
+
+impl ClipboardBackend for SyntheticDesktop {
+    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+        self.state().echo = Some(text.to_string());
+        Ok(())
+    }
+
+    fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
+        Ok(self.state().echo.take())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +197,17 @@ mod tests {
         s.set_marker(2);
         assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2]);
         assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2], "la couleur persiste");
+    }
+
+    #[test]
+    fn desktop_key_sets_marker_and_clipboard_echoes() {
+        let mut d = SyntheticDesktop::new(256, 128);
+        d.key(KEYS[3], true).unwrap();
+        let f = d.recv_latest(OutputId(0)).unwrap().unwrap();
+        assert_eq!(pixel(&f, 5, 5), PALETTE[3]);
+        d.set_text("é€😀").unwrap();
+        assert_eq!(d.poll_text().unwrap().as_deref(), Some("é€😀"));
+        assert_eq!(d.poll_text().unwrap(), None);
     }
 
     #[test]

@@ -1,0 +1,225 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitySet};
+use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
+use ironrdp_server::{
+    CliprdrServerFactory, Credentials, DesktopSize, DisplayUpdate, GfxDvcBridge, GfxServerFactory,
+    GfxServerHandle, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
+    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
+};
+use rdsktp_core::ports::{CaptureSource, ClipboardBackend, FrameEncoder, InputSink};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::clipboard::{announce, LocalText, TextClipboard};
+use crate::pump::{self, PumpParams, Shared};
+
+pub struct ServerConfig {
+    pub addr: SocketAddr,
+    pub width: u16,
+    pub height: u16,
+    pub fps: f32,
+    pub tls_cert: PathBuf,
+    pub tls_key: PathBuf,
+    /// NLA/CredSSP avec identifiants préchargés ; sinon TLS seul.
+    pub nla: Option<(String, String)>,
+}
+
+/// Adaptateurs sortants fournis par le composition root.
+pub struct Ports {
+    pub capture: Box<dyn CaptureSource>,
+    pub encoder: Box<dyn FrameEncoder>,
+    pub input: Box<dyn InputSink>,
+    pub clipboard: Box<dyn ClipboardBackend>,
+}
+
+struct GfxHandler;
+
+impl GraphicsPipelineHandler for GfxHandler {
+    fn capabilities_advertise(&mut self, pdu: &CapabilitiesAdvertisePdu) {
+        tracing::debug!("egfx caps client: {pdu:?}");
+    }
+    fn on_ready(&mut self, negotiated: &CapabilitySet) {
+        tracing::info!("egfx prêt: {negotiated:?}");
+    }
+}
+
+struct GfxFactory(Arc<Shared>);
+
+impl ServerEventSender for GfxFactory {
+    fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
+        *self.0.sender.lock().expect("sender mutex") = Some(sender);
+    }
+}
+
+impl GfxServerFactory for GfxFactory {
+    fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler> {
+        Box::new(GfxHandler)
+    }
+    fn build_server_with_handle(&self) -> Option<(GfxDvcBridge, GfxServerHandle)> {
+        let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(Box::new(
+            GfxHandler,
+        ))));
+        *self.0.gfx.lock().expect("gfx mutex") = Some(server.clone());
+        Some((GfxDvcBridge::new(server.clone()), server))
+    }
+}
+
+struct ClipFactory {
+    shared: Arc<Shared>,
+    local: LocalText,
+    clipboard: Arc<Mutex<Box<dyn ClipboardBackend>>>,
+}
+
+impl ClipFactory {
+    fn send_fn(&self) -> crate::clipboard::SendFn {
+        let shared = self.shared.clone();
+        Arc::new(move |msg| {
+            if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
+                let _ = tx.send(ServerEvent::Clipboard(msg));
+            }
+        })
+    }
+}
+
+impl ServerEventSender for ClipFactory {
+    fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
+        *self.shared.sender.lock().expect("sender mutex") = Some(sender);
+    }
+}
+
+impl CliprdrBackendFactory for ClipFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        let clipboard = self.clipboard.clone();
+        let on_text = Arc::new(move |text: String| {
+            if let Err(e) = clipboard.lock().expect("clipboard mutex").set_text(&text) {
+                tracing::warn!("presse-papiers: {e}");
+            }
+        });
+        Box::new(TextClipboard::new(
+            self.send_fn(),
+            self.local.clone(),
+            on_text,
+        ))
+    }
+}
+
+impl CliprdrServerFactory for ClipFactory {}
+
+struct Input(Box<dyn InputSink>);
+
+impl RdpServerInputHandler for Input {
+    fn keyboard(&mut self, event: KeyboardEvent) {
+        let (code, extended, pressed) = match event {
+            KeyboardEvent::Pressed { code, extended } => (code, extended, true),
+            KeyboardEvent::Released { code, extended } => (code, extended, false),
+            _ => return,
+        };
+        let scancode = u16::from(code) | if extended { 0xE000 } else { 0 };
+        if let Err(e) = self.0.key(scancode, pressed) {
+            tracing::warn!("entrée: {e}");
+        }
+    }
+    fn mouse(&mut self, event: MouseEvent) {
+        if let MouseEvent::Move { x, y } = event {
+            let _ = self.0.pointer_move(i32::from(x), i32::from(y));
+        }
+    }
+}
+
+struct Display(DesktopSize);
+struct NoUpdates;
+
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for NoUpdates {
+    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+        // Tout passe par EGFX : aucune mise à jour bitmap classique.
+        std::future::pending().await
+    }
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for Display {
+    async fn size(&mut self) -> DesktopSize {
+        self.0
+    }
+    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(NoUpdates))
+    }
+}
+
+/// Lance le serveur RDP jusqu'à son arrêt.
+pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
+    // ring ET aws-lc-rs sont dans l'arbre de dépendances : choisir explicitement (déjà installé = ok).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let shared = Arc::new(Shared::default());
+    let local: LocalText = Arc::new(Mutex::new(None));
+    let clipboard = Arc::new(Mutex::new(ports.clipboard));
+
+    let ctx = TlsIdentityCtx::init_from_paths(&config.tls_cert, &config.tls_key)?;
+    let tls = ctx.make_acceptor()?;
+    let builder = RdpServer::builder().with_addr(config.addr);
+    let builder = match &config.nla {
+        Some(_) => builder.with_hybrid(tls, ctx.pub_key.clone()),
+        None => builder.with_tls(tls),
+    };
+    let clip_factory = ClipFactory {
+        shared: shared.clone(),
+        local: local.clone(),
+        clipboard: clipboard.clone(),
+    };
+    let send = clip_factory.send_fn();
+    let mut server = builder
+        .with_input_handler(Input(ports.input))
+        .with_display_handler(Display(DesktopSize {
+            width: config.width,
+            height: config.height,
+        }))
+        .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
+        .with_cliprdr_factory(Some(Box::new(clip_factory)))
+        .build();
+    if let Some((username, password)) = config.nla.clone() {
+        server.set_credentials(Some(Credentials {
+            username,
+            password,
+            domain: None,
+        }));
+    }
+
+    let pump = pump::spawn(
+        shared.clone(),
+        ports.capture,
+        ports.encoder,
+        PumpParams {
+            width: config.width,
+            height: config.height,
+            fps: config.fps,
+        },
+    );
+    // Texte local -> distant : on interroge le port, on annonce la copie différée.
+    let poller_shared = shared.clone();
+    let poller = std::thread::Builder::new()
+        .name("clipboard-poll".into())
+        .spawn(move || {
+            while !poller_shared.stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+                let text = clipboard.lock().expect("clipboard mutex").poll_text();
+                match text {
+                    Ok(Some(t)) => announce(&send, &local, t),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("presse-papiers: {e}"),
+                }
+            }
+        })?;
+
+    tracing::info!(addr = %config.addr, "écoute RDP");
+    let result = server.run().await;
+    shared.stop.store(true, Ordering::Relaxed);
+    let _ = pump.join();
+    let _ = poller.join();
+    result
+}

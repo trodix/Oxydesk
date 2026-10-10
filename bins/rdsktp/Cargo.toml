@@ -1,0 +1,32 @@
+[package]
+name = "rdsktp"
+description = "Serveur RDP headless pour KDE Plasma (RustyDesktop)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rdsktp-core.workspace = true
+rdsktp-capture.workspace = true
+rdsktp-encode = { workspace = true, features = ["openh264"] }
+rdsktp-rdp.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rcgen = "0.14"
+
+[package.metadata.deb]
+name = "rdsktp"
+maintainer = "Sébastien Vallet <sebastien.vallet89@gmail.com>"
+copyright = "RustyDesktop contributors"
+extended-description = "Serveur RDP headless pour KDE Plasma (Wayland)."
+section = "net"
+priority = "optional"
+depends = "$auto, libopenh264-8"
+assets = [
+    ["target/release/rdsktp", "usr/bin/", "755"],
+    ["../../dist/rdsktp.service", "lib/systemd/system/", "644"],
+]
+maintainer-scripts = "../../dist/debian/"

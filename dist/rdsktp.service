@@ -1,0 +1,17 @@
+[Unit]
+Description=RustyDesktop (rdsktp) - serveur RDP
+After=network.target
+
+[Service]
+# M2 : mode test uniquement (capture synthétique). La session réelle arrive en M3.
+ExecStart=/usr/bin/rdsktp --test-mode --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+DynamicUser=yes
+StateDirectory=rdsktp
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

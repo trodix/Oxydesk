@@ -15,7 +15,7 @@ code de sortie : 0 tout passe, 1 échec, 2 arguments";
 
 pub const DEFAULT_BUILD_CMD: &str = "cargo deb -p rdsktp";
 pub const DEFAULT_CLIENT_CMD: &str =
-    "cargo run --quiet --release -p rdp-test-client -- --host {host} --port {port} --out {out}";
+    "cargo run --quiet --release -p rdp-test-client --features ironrdp -- --host {host} --port {port} --out {out}";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Opts {

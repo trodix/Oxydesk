@@ -6,7 +6,7 @@ members = [
     "crates/encode",
     "crates/rdp",
     "bins/bench",
-    "bins/spike",
+    "bins/rdsktp",
     "bins/rdp-test-client",
     "xtask",
 ]
@@ -24,3 +24,4 @@ thiserror = "2"
 rdsktp-core = { path = "crates/core" }
 rdsktp-capture = { path = "crates/capture" }
 rdsktp-encode = { path = "crates/encode" }
+rdsktp-rdp = { path = "crates/rdp" }

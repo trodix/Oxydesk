@@ -2,4 +2,6 @@
 
 mod synthetic;
 
-pub use synthetic::{SyntheticSource, BLOCK, HEARTBEAT_POS, MARKER_POS, PALETTE};
+pub use synthetic::{
+    SyntheticDesktop, SyntheticSource, BLOCK, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE,
+};

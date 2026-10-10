@@ -4,15 +4,21 @@ use std::time::Duration;
 use rdp_test_client::mock::{MockFaults, MockSession};
 use rdp_test_client::report::Report;
 use rdp_test_client::scenarios::{run_all, Config};
-use rdp_test_client::session::{Session, UnimplementedSession};
+use rdp_test_client::session::Session;
+#[cfg(not(feature = "ironrdp"))]
+use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] \
 [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
+#[cfg_attr(not(feature = "ironrdp"), allow(dead_code))]
 struct Args {
     out: String,
+    host: String,
+    port: u16,
+    user: String,
     cfg: Config,
     mock: bool,
 }
@@ -21,16 +27,16 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     let mut out = None;
     let mut cfg = Config::default();
     let mut mock = false;
+    let (mut host, mut port, mut user) = ("127.0.0.1".to_string(), 3389u16, "test".to_string());
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or(format!("{name} attend une valeur"));
         match a.as_str() {
             "--mock" => mock = true,
             "--out" => out = Some(val("--out")?),
-            // Acceptés pour le backend IronRDP (M2) ; ignorés par le mock.
-            "--host" | "--port" | "--user" => {
-                val(&a)?;
-            }
+            "--host" => host = val(&a)?,
+            "--port" => port = val(&a)?.parse().map_err(|_| "--port invalide")?,
+            "--user" => user = val(&a)?,
             "--width" => cfg.width = val(&a)?.parse().map_err(|_| "--width invalide")?,
             "--height" => cfg.height = val(&a)?.parse().map_err(|_| "--height invalide")?,
             "--key-samples" => {
@@ -50,9 +56,32 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     }
     Ok(Args {
         out: out.ok_or("--out est obligatoire")?,
+        host,
+        port,
+        user,
         cfg,
         mock,
     })
+}
+
+#[cfg(feature = "ironrdp")]
+fn real_session(args: &Args) -> Box<dyn Session> {
+    use rdp_test_client::ironrdp_backend::{IronRdpSession, Options};
+    Box::new(IronRdpSession::new(Options {
+        host: args.host.clone(),
+        port: args.port,
+        user: args.user.clone(),
+        password: std::env::var("RDP_TEST_PASSWORD")
+            .ok()
+            .filter(|p| !p.is_empty()),
+        width: args.cfg.width as u16,
+        height: args.cfg.height as u16,
+    }))
+}
+
+#[cfg(not(feature = "ironrdp"))]
+fn real_session(_: &Args) -> Box<dyn Session> {
+    Box::new(UnimplementedSession)
 }
 
 fn main() -> ExitCode {
@@ -66,7 +95,7 @@ fn main() -> ExitCode {
     let mut session: Box<dyn Session> = if args.mock {
         Box::new(MockSession::new(MockFaults::default()))
     } else {
-        Box::new(UnimplementedSession)
+        real_session(&args)
     };
     let mut report = Report::default();
     run_all(session.as_mut(), &args.cfg, &mut report);
