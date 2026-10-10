@@ -1,8 +1,10 @@
 //! `cargo xtask vm-test`: orchestrates build → disposable VM → test client → report.
+//! `cargo xtask test`: unit tests, plus the slow Windows integration test with `--integration`.
 
 mod opts;
 mod report;
 mod runner;
+mod testcmd;
 
 use std::process::ExitCode;
 
@@ -20,8 +22,19 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("test") => match testcmd::parse(args.collect(), |k| std::env::var(k).ok()) {
+            Ok(testcmd::TestParsed::Help) => {
+                println!("{}", testcmd::HELP);
+                ExitCode::SUCCESS
+            }
+            Ok(testcmd::TestParsed::Run(o)) => testcmd::run(&o),
+            Err(e) => {
+                eprintln!("{e}\n\n{}", testcmd::HELP);
+                ExitCode::from(2)
+            }
+        },
         _ => {
-            eprintln!("{}", opts::HELP);
+            eprintln!("{}\n\n{}", opts::HELP, testcmd::HELP);
             ExitCode::from(2)
         }
     }
