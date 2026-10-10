@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink, PointerButton};
-use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
+use rdsktp_encode::{AutoEncoder, EncoderChoice};
 
 const AUDIO_PACKET_MS: u32 = 20;
 
@@ -27,6 +27,7 @@ struct Desktop {
     width: u32,
     height: u32,
     fps: f32,
+    encoder: EncoderChoice,
     /// Wake-up by the capture (`event`) or fixed rate of `poll_ms` (or 1/fps when absent).
     event: bool,
     poll_ms: Option<f32>,
@@ -60,6 +61,9 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         "pulse" => Some(Arc::new(rdsktp_audio::PulseCapture)),
         other => anyhow::bail!("unknown --audio: {other}"),
     };
+    let encoder: EncoderChoice = arg::<String>(args, "--encoder")
+        .map_or(Ok(EncoderChoice::Auto), |v| v.parse())
+        .map_err(|e: String| anyhow::anyhow!(e))?;
     let make = |capture: Box<dyn CaptureSource>, input: Box<dyn InputSink>, clipboard: Box<dyn ClipboardBackend>, keep: Box<dyn std::any::Any + Send>| Desktop {
         capture: Mutex::new(capture),
         input: Mutex::new(input),
@@ -69,6 +73,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         width,
         height,
         fps,
+        encoder,
         event: arg::<String>(args, "--loop").is_none_or(|v| v != "tick"),
         poll_ms: arg(args, "--poll-ms"),
         min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
@@ -141,14 +146,7 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
     let fps = d.fps;
     let mut encoders: Vec<Box<dyn FrameEncoder>> = Vec::new();
     for _ in 0..d.outputs {
-        match OpenH264Encoder::new(&OpenH264Config { fps, ..Default::default() }) {
-            Ok(e) => encoders.push(Box::new(e)),
-            Err(e) => {
-                send(&w, &FromAgent::Fatal(format!("encoder: {e}")));
-                stop.store(true, Ordering::Relaxed);
-                return;
-            }
-        }
+        encoders.push(Box::new(AutoEncoder::new(d.encoder, fps, 8_000_000)));
     }
     let mut last: Vec<Option<rdsktp_core::Frame>> = (0..d.outputs).map(|_| None).collect();
     let period = d.poll_ms.map_or_else(|| Duration::from_secs_f32(1.0 / fps), |ms| Duration::from_secs_f32(ms / 1000.0));

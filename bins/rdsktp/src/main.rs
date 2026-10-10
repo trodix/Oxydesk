@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use rdsktp_capture::SyntheticDesktop;
-use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
+use rdsktp_encode::{AutoEncoder, EncoderChoice};
 use rdsktp_core::layout::Layout;
 use rdsktp_rdp::{Ports, ServerConfig};
 
@@ -95,12 +95,13 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
+    let choice: EncoderChoice = match arg::<String>(&args, "--encoder") {
+        Some(v) => v.parse().map_err(|e: String| anyhow::anyhow!(e))?,
+        None => EncoderChoice::Auto,
+    };
     let encoders = (0..outputs)
-        .map(|_| {
-            OpenH264Encoder::new(&OpenH264Config { fps, ..Default::default() })
-                .map(|e| Box::new(e) as Box<dyn rdsktp_core::ports::FrameEncoder>)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|_| Box::new(AutoEncoder::new(choice, fps, 8_000_000)) as Box<dyn rdsktp_core::ports::FrameEncoder>)
+        .collect::<Vec<_>>();
     #[cfg(feature = "kwin")]
     let mut _session = None;
     // Audio: test tone in synthetic mode, PipeWire capture in KWin session.

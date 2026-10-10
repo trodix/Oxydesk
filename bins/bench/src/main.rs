@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use rdsktp_capture::SyntheticSource;
 use rdsktp_core::ports::FrameEncoder;
-use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
+use rdsktp_encode::{AutoEncoder, EncoderChoice};
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
     args.windows(2)
@@ -24,22 +24,25 @@ fn main() {
     let (w, h): (u32, u32) = (arg(&args, "--width", 1920), arg(&args, "--height", 1080));
     let frames: usize = arg(&args, "--frames", 300);
     let fps: f32 = arg(&args, "--fps", 30.0);
-    let cfg = OpenH264Config {
-        bitrate_bps: (arg(&args, "--bitrate-mbps", 8.0f64) * 1e6) as u32,
-        fps,
-        ..Default::default()
-    };
-
-    let mut enc = OpenH264Encoder::new(&cfg).unwrap_or_else(|e| {
-        eprintln!("bench: {e}");
-        std::process::exit(1);
-    });
+    let bitrate_bps = (arg(&args, "--bitrate-mbps", 8.0f64) * 1e6) as u32;
+    let choice: EncoderChoice = args
+        .windows(2)
+        .find(|w| w[0] == "--encoder")
+        .map_or(Ok(EncoderChoice::OpenH264), |w| w[1].parse())
+        .unwrap_or_else(|e| {
+            eprintln!("bench: {e}");
+            std::process::exit(1);
+        });
+    let mut enc = AutoEncoder::new(choice, fps, bitrate_bps);
     let mut src = SyntheticSource::new(w, h).with_noise(args.iter().any(|a| a == "--noise"));
     let (mut times, mut bytes, mut keyframes) = (Vec::new(), 0usize, 0usize);
     for i in 0..frames + 10 {
         let frame = src.render();
         let t = Instant::now();
-        let out = enc.encode(&frame).expect("encode");
+        let out = enc.encode(&frame).unwrap_or_else(|e| {
+            eprintln!("bench: {e}");
+            std::process::exit(1);
+        });
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if i >= 10 {
             // First 10 frames ignored (warm-up).
@@ -50,6 +53,7 @@ fn main() {
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mean = times.iter().sum::<f64>() / times.len() as f64;
+    println!("encoder: {}", enc.name());
     println!(
         "{w}x{h} frames={} p50={:.1}ms p95={:.1}ms max={:.1}ms mean={:.1}ms => {:.0} fps max; {:.1} KiB/frame avg; {} IDR (budget {:.1} ms @ {fps} fps)",
         times.len(),

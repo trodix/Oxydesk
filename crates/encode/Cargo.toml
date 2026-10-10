@@ -9,7 +9,10 @@ publish.workspace = true
 default = []
 # H.264 through libopenh264 loaded at runtime (no C++ build required).
 openh264 = ["dep:openh264"]
+# Hardware H.264 through VA-API (links libva at build and run time; needs libva-dev to build).
+vaapi = ["dep:cros-libva"]
 
 [dependencies]
 rdsktp-core.workspace = true
 openh264 = { version = "0.9.8", default-features = false, features = ["libloading"], optional = true }
+cros-libva = { path = "../../third_party/cros-libva", optional = true }
