@@ -373,8 +373,12 @@ impl BufferType {
             BufferType::EncPackedHeaderParameter(_) => {
                 bindings::VABufferType::VAEncPackedHeaderParameterBufferType
             }
-            BufferType::EncPackedHeaderData(_) => bindings::VABufferType::VAEncPackedHeaderDataBufferType,
-            BufferType::ProcPipelineParameter(_) => bindings::VABufferType::VAProcPipelineParameterBufferType,
+            BufferType::EncPackedHeaderData(_) => {
+                bindings::VABufferType::VAEncPackedHeaderDataBufferType
+            }
+            BufferType::ProcPipelineParameter(_) => {
+                bindings::VABufferType::VAProcPipelineParameterBufferType
+            }
         }
     }
 }

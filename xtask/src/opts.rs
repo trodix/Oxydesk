@@ -58,9 +58,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         client_timeout_s: 600,
         out: PathBuf::from("artifacts/vm-test"),
         rdp_port: match env("VM_RDP_PORT") {
-            Some(p) => p
-                .parse()
-                .map_err(|_| format!("invalid VM_RDP_PORT: {p}"))?,
+            Some(p) => p.parse().map_err(|_| format!("invalid VM_RDP_PORT: {p}"))?,
             None => 3390,
         },
     };
@@ -94,9 +92,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             "--build-cmd" => o.build_cmd = val("--build-cmd")?,
             "--client-cmd" => o.client_cmd = val("--client-cmd")?,
             "--timeout" => {
-                o.client_timeout_s = val("--timeout")?
-                    .parse()
-                    .map_err(|_| "--timeout invalid")?
+                o.client_timeout_s = val("--timeout")?.parse().map_err(|_| "--timeout invalid")?
             }
             "--out" => o.out = PathBuf::from(val("--out")?),
             other => return Err(format!("unknown argument: {other}")),
@@ -146,15 +142,21 @@ mod tests {
 
     #[test]
     fn login_session_implies_kwin() {
-        let Parsed::Run(o) = p(&["--session", "login"], &[]).unwrap() else { panic!() };
+        let Parsed::Run(o) = p(&["--session", "login"], &[]).unwrap() else {
+            panic!()
+        };
         assert!(o.login && o.kwin);
     }
 
     #[test]
     fn session_flag() {
-        let Parsed::Run(o) = p(&["--session", "kwin"], &[]).unwrap() else { panic!() };
+        let Parsed::Run(o) = p(&["--session", "kwin"], &[]).unwrap() else {
+            panic!()
+        };
         assert!(o.kwin);
-        let Parsed::Run(o) = p(&[], &[]).unwrap() else { panic!() };
+        let Parsed::Run(o) = p(&[], &[]).unwrap() else {
+            panic!()
+        };
         assert!(!o.kwin);
         assert!(p(&["--session", "x"], &[]).is_err());
     }

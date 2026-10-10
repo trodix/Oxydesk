@@ -24,16 +24,16 @@ use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor};
 use ironrdp_egfx::client::{
     BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface,
 };
-use ironrdp_egfx::pdu::GfxPdu;
 use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+use ironrdp_egfx::pdu::GfxPdu;
 use ironrdp_graphics::zgfx;
 use ironrdp_input::{Database, Operation, Scancode};
 use ironrdp_pdu::gcc::KeyboardType;
-use ironrdp_rdpsnd::client::{Rdpsnd, RdpsndClientHandler};
-use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
-use ironrdp_pdu::PduResult;
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::PduResult;
+use ironrdp_rdpsnd::client::{Rdpsnd, RdpsndClientHandler};
+use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use rdsktp_rdp::clipboard::{announce, LocalText, SendFn};
@@ -86,6 +86,8 @@ enum Command {
     Key(u16, bool),
     Clipboard(String),
     Close,
+    /// Drops the socket without the RDP shutdown sequence.
+    Abort,
 }
 
 pub struct IronRdpSession {
@@ -124,6 +126,9 @@ impl IronRdpSession {
 
 impl Session for IronRdpSession {
     fn connect(&mut self) -> Result<(u32, u32), String> {
+        // Fresh state: a previous connection (closed or lost) must not leak into this one.
+        *self.shared.lock() = State::default();
+        self.last_seq = 0;
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, u32), String>>();
         let shared = self.shared.clone();
@@ -175,7 +180,10 @@ impl Session for IronRdpSession {
         self.send(Command::Clipboard(text.to_owned()))
     }
 
-    fn next_audio(&mut self, timeout: Duration) -> Result<Option<crate::audio::AudioChunk>, String> {
+    fn next_audio(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<crate::audio::AudioChunk>, String> {
         let deadline = Instant::now() + timeout;
         let mut s = self.shared.lock();
         loop {
@@ -189,7 +197,12 @@ impl Session for IronRdpSession {
             if left.is_zero() {
                 return Ok(None);
             }
-            s = self.shared.cond.wait_timeout(s, left).expect("client state").0;
+            s = self
+                .shared
+                .cond
+                .wait_timeout(s, left)
+                .expect("client state")
+                .0;
         }
     }
 
@@ -217,8 +230,18 @@ impl Session for IronRdpSession {
     }
 
     fn close(&mut self) {
+        self.stop(Command::Close);
+    }
+
+    fn abort(&mut self) {
+        self.stop(Command::Abort);
+    }
+}
+
+impl IronRdpSession {
+    fn stop(&mut self, cmd: Command) {
         if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Command::Close);
+            let _ = tx.send(cmd);
         }
         if let Some(w) = self.worker.take() {
             let _ = w.join();
@@ -302,7 +325,12 @@ struct PerSurfaceDecoder {
 
 impl H264Decoder for PerSurfaceDecoder {
     fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
-        let id = self.pending.lock().expect("pending").pop_front().unwrap_or(0);
+        let id = self
+            .pending
+            .lock()
+            .expect("pending")
+            .pop_front()
+            .unwrap_or(0);
         if let std::collections::hash_map::Entry::Vacant(v) = self.decoders.entry(id) {
             v.insert(OpenH264Decoder::new().map_err(|e| DecoderError::msg(&e.to_string()))?);
         }
@@ -342,7 +370,10 @@ impl DvcProcessor for SurfaceTap {
             while !cursor.is_empty() {
                 match decode_cursor::<GfxPdu>(&mut cursor) {
                     Ok(GfxPdu::WireToSurface1(w)) => {
-                        self.pending.lock().expect("pending").push_back(w.surface_id);
+                        self.pending
+                            .lock()
+                            .expect("pending")
+                            .push_back(w.surface_id);
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -455,7 +486,10 @@ impl AudioSink {
         };
         // A single format: ironrdp-rdpsnd (client) sends the intersection in HashSet order,
         // so the packets' `format_no` cannot be read back with several formats.
-        Self { shared, formats: vec![pcm(48_000)] }
+        Self {
+            shared,
+            formats: vec![pcm(48_000)],
+        }
     }
 }
 
@@ -465,7 +499,9 @@ impl RdpsndClientHandler for AudioSink {
     }
 
     fn wave(&mut self, format_no: usize, _ts: u32, data: std::borrow::Cow<'_, [u8]>) {
-        let Some(f) = self.formats.get(format_no) else { return };
+        let Some(f) = self.formats.get(format_no) else {
+            return;
+        };
         let mut s = self.shared.lock();
         if s.audio_inbox.len() < 1000 {
             s.audio_inbox.push_back(crate::audio::AudioChunk {
@@ -663,8 +699,8 @@ fn run_worker(
     ))));
 
     let mut framed = ironrdp_blocking::Framed::new(tcp);
-    let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector)
-        .context("connection start")?;
+    let should_upgrade =
+        ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("connection start")?;
     let (tls, server_key) =
         tls_upgrade(framed.into_inner_no_leftover(), &opts.host).context("TLS")?;
     let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector);
@@ -730,6 +766,7 @@ fn run_worker(
                     }
                     return Ok(());
                 }
+                Command::Abort => return Ok(()),
                 Command::Key(code, pressed) => {
                     let sc = Scancode::from_u16(code);
                     let op = if pressed {

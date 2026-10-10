@@ -37,10 +37,17 @@ pub trait Session {
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String>;
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String>;
     /// Next audio packet (`None` if nothing before the timeout).
-    fn next_audio(&mut self, _timeout: Duration) -> Result<Option<crate::audio::AudioChunk>, String> {
+    fn next_audio(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<Option<crate::audio::AudioChunk>, String> {
         Err("audio not supported by this backend".into())
     }
     fn close(&mut self);
+    /// Abrupt loss of the link: drops the connection without any RDP disconnect (default: `close`).
+    fn abort(&mut self) {
+        self.close();
+    }
 }
 
 /// IronRDP backend: to be written in M2. Always fails, never a false success.

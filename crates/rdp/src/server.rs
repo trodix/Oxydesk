@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::ops::Not;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,9 +13,12 @@ use ironrdp_server::{
     GfxServerHandle, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
-use rdsktp_core::layout::Layout;
 use rdsktp_core::error::{AudioError, LoginError};
-use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource, ClipboardBackend, DesktopPorts, InputSink, SessionBroker};
+use rdsktp_core::layout::Layout;
+use rdsktp_core::ports::{
+    AudioParams, AudioProvider, AudioSource, ClipboardBackend, DesktopPorts, InputSink,
+    SessionBroker,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::clipboard::{announce, LocalText, TextClipboard};
@@ -50,7 +53,12 @@ struct SessionSlot {
 
 impl SessionSlot {
     fn new(shared: Arc<Shared>) -> Self {
-        Self { shared, input: Default::default(), clipboard: Default::default(), audio: Default::default() }
+        Self {
+            shared,
+            input: Default::default(),
+            clipboard: Default::default(),
+            audio: Default::default(),
+        }
     }
 
     fn install(&self, ports: Ports) {
@@ -59,7 +67,10 @@ impl SessionSlot {
         *self.input.lock().expect("input mutex") = Some(ports.input);
         *self.clipboard.lock().expect("clipboard mutex") = Some(ports.clipboard);
         *self.audio.lock().expect("audio mutex") = ports.audio;
-        *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts { capture: ports.capture, encoders: ports.encoders });
+        *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts {
+            capture: ports.capture,
+            encoders: ports.encoders,
+        });
     }
 }
 
@@ -69,7 +80,9 @@ struct SlotAudio(Slot<Arc<dyn AudioProvider>>);
 impl AudioProvider for SlotAudio {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
         let provider = self.0.lock().expect("audio mutex").clone();
-        provider.ok_or_else(|| AudioError::Backend("no audio session".into()))?.open(params)
+        provider
+            .ok_or_else(|| AudioError::Backend("no audio session".into()))?
+            .open(params)
     }
 }
 
@@ -81,7 +94,10 @@ struct BrokerValidator {
 
 #[async_trait::async_trait]
 impl ironrdp_server::CredentialValidator for BrokerValidator {
-    async fn validate(&self, credentials: &Credentials) -> Result<ironrdp_server::CredentialDecision, ironrdp_server::CredentialValidationError> {
+    async fn validate(
+        &self,
+        credentials: &Credentials,
+    ) -> Result<ironrdp_server::CredentialDecision, ironrdp_server::CredentialValidationError> {
         use ironrdp_server::CredentialDecision;
         let (user, pass) = (credentials.username.clone(), credentials.password.clone());
         let broker = self.broker.clone();
@@ -99,7 +115,9 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
             }
             Err(LoginError::Backend(e)) => {
                 tracing::error!("login: {e}");
-                Err(ironrdp_server::CredentialValidationError::new(std::io::Error::other(e)))
+                Err(ironrdp_server::CredentialValidationError::new(
+                    std::io::Error::other(e),
+                ))
             }
         }
     }
@@ -185,7 +203,11 @@ struct Input(Slot<Box<dyn InputSink>>);
 impl Input {
     /// Applies `f` to the input port of the current session (ignored while no session is open).
     fn with<R>(&self, f: impl FnOnce(&mut dyn InputSink) -> R) -> Option<R> {
-        self.0.lock().expect("input mutex").as_mut().map(|i| f(i.as_mut()))
+        self.0
+            .lock()
+            .expect("input mutex")
+            .as_mut()
+            .map(|i| f(i.as_mut()))
     }
 }
 
@@ -253,12 +275,19 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
 
 /// Runs the RDP server in login mode: each connection is authenticated (TLS mode, credentials from the
 /// ClientInfoPdu) and opens its session through the `SessionBroker`. Incompatible with NLA (see ADR 008).
-pub async fn run_with_broker(config: ServerConfig, broker: Arc<dyn SessionBroker>) -> anyhow::Result<()> {
+pub async fn run_with_broker(
+    config: ServerConfig,
+    broker: Arc<dyn SessionBroker>,
+) -> anyhow::Result<()> {
     anyhow::ensure!(config.nla.is_none(), "login mode is incompatible with NLA");
     serve(config, None, Some(broker)).await
 }
 
-async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<dyn SessionBroker>>) -> anyhow::Result<()> {
+async fn serve(
+    config: ServerConfig,
+    initial: Option<Ports>,
+    broker: Option<Arc<dyn SessionBroker>>,
+) -> anyhow::Result<()> {
     // ring AND aws-lc-rs are in the dependency tree: choose explicitly (already installed = ok).
     let _ = rustls::crypto::ring::default_provider().install_default();
     let shared = Arc::new(Shared::default());
@@ -294,10 +323,17 @@ async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<
         .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
         .with_sound_factory(audio_enabled.then(|| {
-            Box::new(SoundFactory { shared: shared.clone(), provider: Arc::new(SlotAudio(slot.audio.clone())) })
-                as Box<dyn ironrdp_server::SoundServerFactory>
+            Box::new(SoundFactory {
+                shared: shared.clone(),
+                provider: Arc::new(SlotAudio(slot.audio.clone())),
+            }) as Box<dyn ironrdp_server::SoundServerFactory>
         }))
-        .with_credential_validator(broker.map(|broker| Arc::new(BrokerValidator { broker, slot: slot.clone() }) as Arc<dyn ironrdp_server::CredentialValidator>))
+        .with_credential_validator(broker.map(|broker| {
+            Arc::new(BrokerValidator {
+                broker,
+                slot: slot.clone(),
+            }) as Arc<dyn ironrdp_server::CredentialValidator>
+        }))
         .build();
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {
@@ -312,7 +348,9 @@ async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<
         PumpParams {
             layout: config.layout.clone(),
             fps: config.fps,
-            event: std::env::var("RDSKTP_PUMP").is_ok_and(|v| v == "tick").not(),
+            event: std::env::var("RDSKTP_PUMP")
+                .is_ok_and(|v| v == "tick")
+                .not(),
         },
     );
     // Local -> remote text: poll the port, announce the delayed copy.

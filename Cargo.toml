@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Vendored third-party crates are not linted or formatted with the project.
+exclude = ["third_party"]
 members = [
     "crates/core",
     "crates/capture",

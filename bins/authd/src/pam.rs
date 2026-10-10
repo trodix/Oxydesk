@@ -21,7 +21,12 @@ struct PamResponse {
     resp_retcode: c_int,
 }
 
-type ConvFn = unsafe extern "C" fn(c_int, *mut *const PamMessage, *mut *mut PamResponse, *mut c_void) -> c_int;
+type ConvFn = unsafe extern "C" fn(
+    c_int,
+    *mut *const PamMessage,
+    *mut *mut PamResponse,
+    *mut c_void,
+) -> c_int;
 
 #[repr(C)]
 struct PamConv {
@@ -69,7 +74,10 @@ impl Pam {
     pub fn load(service: &str) -> anyhow::Result<Self> {
         // SAFETY: loading a standard system library.
         let lib = unsafe { libloading::Library::new("libpam.so.0") }?;
-        Ok(Self { lib, service: CString::new(service)? })
+        Ok(Self {
+            lib,
+            service: CString::new(service)?,
+        })
     }
 
     /// Authenticates and checks the account (`pam_authenticate` + `pam_acct_mgmt`). No PAM session is opened here:
@@ -78,7 +86,12 @@ impl Pam {
         let (Ok(user), Ok(pass)) = (CString::new(username), CString::new(password)) else {
             return Ok(PamOutcome::Denied); // NUL byte: never valid
         };
-        type Start = unsafe extern "C" fn(*const c_char, *const c_char, *const PamConv, *mut *mut c_void) -> c_int;
+        type Start = unsafe extern "C" fn(
+            *const c_char,
+            *const c_char,
+            *const PamConv,
+            *mut *mut c_void,
+        ) -> c_int;
         type Auth = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
         type End = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
         // SAFETY: signatures match <security/pam_appl.h>; `conv` and `pass` live until `pam_end`.
@@ -87,7 +100,10 @@ impl Pam {
             let authenticate: libloading::Symbol<Auth> = self.lib.get(b"pam_authenticate\0")?;
             let acct: libloading::Symbol<Auth> = self.lib.get(b"pam_acct_mgmt\0")?;
             let end: libloading::Symbol<End> = self.lib.get(b"pam_end\0")?;
-            let conv = PamConv { conv: conversation, appdata_ptr: pass.as_ptr() as *mut c_void };
+            let conv = PamConv {
+                conv: conversation,
+                appdata_ptr: pass.as_ptr() as *mut c_void,
+            };
             let mut handle: *mut c_void = ptr::null_mut();
             let rc = start(self.service.as_ptr(), user.as_ptr(), &conv, &mut handle);
             if rc != PAM_SUCCESS {
@@ -98,7 +114,11 @@ impl Pam {
                 rc = acct(handle, 0);
             }
             end(handle, rc);
-            Ok(if rc == PAM_SUCCESS { PamOutcome::Granted } else { PamOutcome::Denied })
+            Ok(if rc == PAM_SUCCESS {
+                PamOutcome::Granted
+            } else {
+                PamOutcome::Denied
+            })
         }
     }
 }

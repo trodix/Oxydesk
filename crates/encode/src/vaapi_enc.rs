@@ -7,18 +7,19 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use cros_libva as va;
-use va::{
-    BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter, EncMiscParameterFrameRate,
-    EncMiscParameterHRD, EncMiscParameterRateControl, EncPictureParameter, EncPictureParameterBufferH264,
-    EncSequenceParameter, EncSequenceParameterBufferH264, EncSliceParameter, EncSliceParameterBufferH264,
-    H264EncPicFields, H264EncSeqFields, H264EncFrameCropOffsets, Image, MappedCodedBuffer, Picture, PictureH264,
-    RcFlags, Surface,
-};
 use crate::h264_headers;
+use cros_libva as va;
 use rdsktp_core::error::EncodeError;
 use rdsktp_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
 use rdsktp_core::ports::{EncodedFrame, FrameEncoder};
+use va::{
+    BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter,
+    EncMiscParameterFrameRate, EncMiscParameterHRD, EncMiscParameterRateControl,
+    EncPictureParameter, EncPictureParameterBufferH264, EncSequenceParameter,
+    EncSequenceParameterBufferH264, EncSliceParameter, EncSliceParameterBufferH264,
+    H264EncFrameCropOffsets, H264EncPicFields, H264EncSeqFields, Image, MappedCodedBuffer, Picture,
+    PictureH264, RcFlags, Surface,
+};
 
 #[derive(Debug, Clone)]
 pub struct VaapiConfig {
@@ -30,7 +31,11 @@ pub struct VaapiConfig {
 
 impl Default for VaapiConfig {
     fn default() -> Self {
-        Self { device: None, bitrate_bps: 8_000_000, fps: 30.0 }
+        Self {
+            device: None,
+            bitrate_bps: 8_000_000,
+            fps: 30.0,
+        }
     }
 }
 
@@ -98,6 +103,7 @@ impl va::ExternalBufferDescriptor for DmaImport {
     const MEMORY_TYPE: va::MemoryType = va::MemoryType::DrmPrime2;
     type DescriptorAttribute = va::VADRMPRIMESurfaceDescriptor;
 
+    #[allow(clippy::field_reassign_with_default)] // nested C arrays are clearer assigned in place
     fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
         use std::os::fd::AsRawFd;
         let mut d = va::VADRMPRIMESurfaceDescriptor::default();
@@ -137,11 +143,14 @@ impl VaapiEncoder {
     pub fn new(cfg: &VaapiConfig, width: u32, height: u32) -> Result<Self, EncodeError> {
         let display = match &cfg.device {
             Some(p) => Display::open_drm_display(p).map_err(backend(&p.display().to_string()))?,
-            None => Display::open().ok_or_else(|| EncodeError::Backend("VA-API: no usable DRM render node".into()))?,
+            None => Display::open()
+                .ok_or_else(|| EncodeError::Backend("VA-API: no usable DRM render node".into()))?,
         };
         let (aligned_w, aligned_h) = (align16(width), align16(height));
 
-        let profiles = display.query_config_profiles().map_err(backend("profiles"))?;
+        let profiles = display
+            .query_config_profiles()
+            .map_err(backend("profiles"))?;
         let profile = [
             va::VAProfile::VAProfileH264High,
             va::VAProfile::VAProfileH264Main,
@@ -154,11 +163,19 @@ impl VaapiEncoder {
                     .query_config_entrypoints(*p)
                     .is_ok_and(|e| e.contains(&va::VAEntrypoint::VAEntrypointEncSlice))
         })
-        .ok_or_else(|| EncodeError::Unsupported("VA-API: the driver has no H.264 encoder".into()))?;
+        .ok_or_else(|| {
+            EncodeError::Unsupported("VA-API: the driver has no H.264 encoder".into())
+        })?;
 
         let mut attrs = vec![
-            va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribRTFormat, value: va::VA_RT_FORMAT_YUV420 },
-            va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribRateControl, value: va::VA_RC_CBR },
+            va::VAConfigAttrib {
+                type_: va::VAConfigAttribType::VAConfigAttribRTFormat,
+                value: va::VA_RT_FORMAT_YUV420,
+            },
+            va::VAConfigAttrib {
+                type_: va::VAConfigAttribType::VAConfigAttribRateControl,
+                value: va::VA_RC_CBR,
+            },
         ];
         // Keep only the attributes the driver supports (otherwise vaCreateConfig fails).
         let mut probe = attrs.clone();
@@ -166,7 +183,9 @@ impl VaapiEncoder {
             .get_config_attributes(profile, va::VAEntrypoint::VAEntrypointEncSlice, &mut probe)
             .map_err(backend("config attributes"))?;
         if probe[0].value & va::VA_RT_FORMAT_YUV420 == 0 || probe[1].value & va::VA_RC_CBR == 0 {
-            return Err(EncodeError::Unsupported("VA-API: YUV420 / CBR not supported by the encoder".into()));
+            return Err(EncodeError::Unsupported(
+                "VA-API: YUV420 / CBR not supported by the encoder".into(),
+            ));
         }
         attrs.truncate(2);
         let config = display
@@ -174,7 +193,14 @@ impl VaapiEncoder {
             .map_err(backend("config"))?;
 
         let mut surfaces = display
-            .create_surfaces(va::VA_RT_FORMAT_YUV420, Some(va::VA_FOURCC_NV12), aligned_w, aligned_h, None, vec![(); 3])
+            .create_surfaces(
+                va::VA_RT_FORMAT_YUV420,
+                Some(va::VA_FOURCC_NV12),
+                aligned_w,
+                aligned_h,
+                None,
+                vec![(); 3],
+            )
             .map_err(backend("surfaces"))?;
         let context = display
             .create_context(&config, aligned_w, aligned_h, Some(&surfaces), true)
@@ -214,7 +240,11 @@ impl VaapiEncoder {
 
     /// Convert to NV12 (aligned size, edges replicated) into `self.nv12` (tightly packed).
     fn convert(&mut self, frame: &Frame, data: &[u8]) -> Result<(), EncodeError> {
-        let (w, h, stride) = (frame.width as usize, frame.height as usize, frame.stride as usize);
+        let (w, h, stride) = (
+            frame.width as usize,
+            frame.height as usize,
+            frame.stride as usize,
+        );
         if (frame.width, frame.height) != (self.width, self.height) {
             return Err(EncodeError::Unsupported(format!(
                 "frame size {}x{} differs from the encoder's {}x{}",
@@ -222,14 +252,20 @@ impl VaapiEncoder {
             )));
         }
         if stride < w * 4 || data.len() < stride * h {
-            return Err(EncodeError::Unsupported("buffer too short for stride/height".into()));
+            return Err(EncodeError::Unsupported(
+                "buffer too short for stride/height".into(),
+            ));
         }
         let (aw, ah) = (self.aligned_w as usize, self.aligned_h as usize);
         let bgra = frame.format == PixelFormat::Bgra8;
         let px = |x: usize, y: usize| -> (i32, i32, i32) {
             let o = y.min(h - 1) * stride + x.min(w - 1) * 4;
             let p = &data[o..o + 3];
-            if bgra { (p[2] as i32, p[1] as i32, p[0] as i32) } else { (p[0] as i32, p[1] as i32, p[2] as i32) }
+            if bgra {
+                (p[2] as i32, p[1] as i32, p[0] as i32)
+            } else {
+                (p[0] as i32, p[1] as i32, p[2] as i32)
+            }
         };
         self.nv12.resize(aw * ah * 3 / 2, 0);
         let (y_plane, uv_plane) = self.nv12.split_at_mut(aw * ah);
@@ -269,27 +305,46 @@ impl VaapiEncoder {
                     .map_err(backend("image formats"))?
                     .into_iter()
                     .find(|f| f.fourcc == va::VA_FOURCC_NV12)
-                    .ok_or_else(|| EncodeError::Unsupported("VA-API: no NV12 image format".into()))?;
-                Image::create_from(surface, fmt, (self.aligned_w, self.aligned_h), (self.aligned_w, self.aligned_h))
-                    .map_err(backend("image"))?
+                    .ok_or_else(|| {
+                        EncodeError::Unsupported("VA-API: no NV12 image format".into())
+                    })?;
+                Image::create_from(
+                    surface,
+                    fmt,
+                    (self.aligned_w, self.aligned_h),
+                    (self.aligned_w, self.aligned_h),
+                )
+                .map_err(backend("image"))?
             }
         };
-        let (pitch_y, pitch_uv) = (image.image().pitches[0] as usize, image.image().pitches[1] as usize);
-        let (off_y, off_uv) = (image.image().offsets[0] as usize, image.image().offsets[1] as usize);
+        let (pitch_y, pitch_uv) = (
+            image.image().pitches[0] as usize,
+            image.image().pitches[1] as usize,
+        );
+        let (off_y, off_uv) = (
+            image.image().offsets[0] as usize,
+            image.image().offsets[1] as usize,
+        );
         let dst: &mut [u8] = image.as_mut();
         for y in 0..ah {
-            dst[off_y + y * pitch_y..off_y + y * pitch_y + aw].copy_from_slice(&self.nv12[y * aw..(y + 1) * aw]);
+            dst[off_y + y * pitch_y..off_y + y * pitch_y + aw]
+                .copy_from_slice(&self.nv12[y * aw..(y + 1) * aw]);
         }
         for y in 0..ah / 2 {
             let src = aw * ah + y * aw;
-            dst[off_uv + y * pitch_uv..off_uv + y * pitch_uv + aw].copy_from_slice(&self.nv12[src..src + aw]);
+            dst[off_uv + y * pitch_uv..off_uv + y * pitch_uv + aw]
+                .copy_from_slice(&self.nv12[src..src + aw]);
         }
         Ok(())
     }
 
     fn level_idc(&self) -> u8 {
         let mbs = (self.aligned_w / 16) * (self.aligned_h / 16);
-        if mbs <= 8192 { 42 } else { 51 }
+        if mbs <= 8192 {
+            42
+        } else {
+            51
+        }
     }
 
     fn stream_params(&self) -> h264_headers::StreamParams {
@@ -323,15 +378,28 @@ impl VaapiEncoder {
             has_emulation_bytes: 1,
             ..Default::default()
         };
-        for t in [BufferType::EncPackedHeaderParameter(param), BufferType::EncPackedHeaderData(data)] {
-            pic.add_buffer(self.context.create_buffer(t).map_err(backend("packed header"))?);
+        for t in [
+            BufferType::EncPackedHeaderParameter(param),
+            BufferType::EncPackedHeaderData(data),
+        ] {
+            pic.add_buffer(
+                self.context
+                    .create_buffer(t)
+                    .map_err(backend("packed header"))?,
+            );
         }
         Ok(())
     }
 
     fn ref_pic(&self, idx: usize, frame_num: u32) -> PictureH264 {
         let poc = (frame_num * 2) as i32;
-        PictureH264::new(self.recon[idx].id(), frame_num, va::VA_PICTURE_H264_SHORT_TERM_REFERENCE, poc, poc)
+        PictureH264::new(
+            self.recon[idx].id(),
+            frame_num,
+            va::VA_PICTURE_H264_SHORT_TERM_REFERENCE,
+            poc,
+            poc,
+        )
     }
 
     fn invalid_pic() -> PictureH264 {
@@ -344,7 +412,14 @@ impl VaapiEncoder {
             Some(s) => Ok(s),
             None => Ok(self
                 .display
-                .create_surfaces(va::VA_RT_FORMAT_YUV420, Some(va::VA_FOURCC_NV12), self.aligned_w, self.aligned_h, None, vec![()])
+                .create_surfaces(
+                    va::VA_RT_FORMAT_YUV420,
+                    Some(va::VA_FOURCC_NV12),
+                    self.aligned_w,
+                    self.aligned_h,
+                    None,
+                    vec![()],
+                )
                 .map_err(backend("surfaces"))?
                 .pop()
                 .expect("1 surface")),
@@ -352,32 +427,60 @@ impl VaapiEncoder {
     }
 
     /// Imports the DMA-BUF into VA-API and converts it to NV12 with the video-processing engine.
+    #[allow(clippy::field_reassign_with_default)] // C struct with raw pointers filled in place
     fn convert_gpu(&mut self, frame: &Frame, dma: &DmaBuf) -> Result<Surface<()>, EncodeError> {
         if (frame.width, frame.height) != (self.width, self.height) {
-            return Err(EncodeError::Unsupported("frame size differs from the encoder's".into()));
+            return Err(EncodeError::Unsupported(
+                "frame size differs from the encoder's".into(),
+            ));
         }
         if self.vpp.is_none() {
-            let entrypoints = self.display.query_config_entrypoints(va::VAProfile::VAProfileNone).map_err(backend("vpp entrypoints"))?;
+            let entrypoints = self
+                .display
+                .query_config_entrypoints(va::VAProfile::VAProfileNone)
+                .map_err(backend("vpp entrypoints"))?;
             if !entrypoints.contains(&va::VAEntrypoint::VAEntrypointVideoProc) {
-                return Err(EncodeError::Unsupported("VA-API: no video processing entrypoint".into()));
+                return Err(EncodeError::Unsupported(
+                    "VA-API: no video processing entrypoint".into(),
+                ));
             }
             let config = self
                 .display
-                .create_config(vec![], va::VAProfile::VAProfileNone, va::VAEntrypoint::VAEntrypointVideoProc)
+                .create_config(
+                    vec![],
+                    va::VAProfile::VAProfileNone,
+                    va::VAEntrypoint::VAEntrypointVideoProc,
+                )
                 .map_err(backend("vpp config"))?;
             let context = self
                 .display
-                .create_context(&config, self.aligned_w, self.aligned_h, None::<&Vec<Surface<()>>>, true)
+                .create_context(
+                    &config,
+                    self.aligned_w,
+                    self.aligned_h,
+                    None::<&Vec<Surface<()>>>,
+                    true,
+                )
                 .map_err(backend("vpp context"))?;
-            self.vpp = Some(Vpp { context, _config: config });
+            self.vpp = Some(Vpp {
+                context,
+                _config: config,
+            });
         }
         let context = Rc::clone(&self.vpp.as_ref().expect("created above").context);
 
         let import = DmaImport {
-            fd: dma.fd.try_clone().map_err(|e| EncodeError::Backend(format!("dup dmabuf: {e}")))?,
+            fd: dma
+                .fd
+                .try_clone()
+                .map_err(|e| EncodeError::Backend(format!("dup dmabuf: {e}")))?,
             size: u32::try_from(crate::dmabuf::size(dma)?).unwrap_or(u32::MAX),
             modifier: dma.modifier,
-            drm_format: if frame.format == PixelFormat::Bgra8 { DRM_FORMAT_XRGB8888 } else { DRM_FORMAT_XBGR8888 },
+            drm_format: if frame.format == PixelFormat::Bgra8 {
+                DRM_FORMAT_XRGB8888
+            } else {
+                DRM_FORMAT_XBGR8888
+            },
             width: frame.width,
             height: frame.height,
             offset: dma.offset,
@@ -385,13 +488,25 @@ impl VaapiEncoder {
         };
         let source = self
             .display
-            .create_surfaces(va::VA_RT_FORMAT_RGB32, None, frame.width, frame.height, None, vec![import])
+            .create_surfaces(
+                va::VA_RT_FORMAT_RGB32,
+                None,
+                frame.width,
+                frame.height,
+                None,
+                vec![import],
+            )
             .map_err(backend("import dmabuf"))?
             .pop()
             .expect("1 surface");
         let output = self.take_input()?;
 
-        let rect = va::VARectangle { x: 0, y: 0, width: frame.width as u16, height: frame.height as u16 };
+        let rect = va::VARectangle {
+            x: 0,
+            y: 0,
+            width: frame.width as u16,
+            height: frame.height as u16,
+        };
         let mut params = va::VAProcPipelineParameterBuffer::default();
         params.surface = source.id();
         params.surface_region = &rect;
@@ -402,17 +517,26 @@ impl VaapiEncoder {
         params.output_color_properties.color_range = va::VA_SOURCE_RANGE_REDUCED as u8;
 
         let mut pic = Picture::new(0, Rc::clone(&context), output);
-        pic.add_buffer(context.create_buffer(BufferType::ProcPipelineParameter(params)).map_err(backend("vpp buffer"))?);
+        pic.add_buffer(
+            context
+                .create_buffer(BufferType::ProcPipelineParameter(params))
+                .map_err(backend("vpp buffer"))?,
+        );
         let pic = pic.begin::<()>().map_err(backend("vpp begin"))?;
         let pic = pic.render().map_err(backend("vpp render"))?;
         let pic = pic.end().map_err(backend("vpp end"))?;
         let pic = pic.sync::<()>().map_err(|(e, _)| backend("vpp sync")(e))?;
         // `rect` and `source` stay alive until here: the driver reads both while processing.
         drop(source);
-        pic.take_surface().map_err(|_| EncodeError::Backend("VA-API: vpp surface still referenced".into()))
+        pic.take_surface()
+            .map_err(|_| EncodeError::Backend("VA-API: vpp surface still referenced".into()))
     }
 
-    fn encode_inner(&mut self, idr: bool, prepared: Option<Surface<()>>) -> Result<Vec<u8>, EncodeError> {
+    fn encode_inner(
+        &mut self,
+        idr: bool,
+        prepared: Option<Surface<()>>,
+    ) -> Result<Vec<u8>, EncodeError> {
         let input = match prepared {
             Some(s) => s,
             None => {
@@ -437,11 +561,13 @@ impl VaapiEncoder {
         let mut pic = Picture::new(u64::from(frame_num), Rc::clone(&self.context), input);
 
         if idr {
-            let crop = (self.aligned_w != self.width || self.aligned_h != self.height).then(|| H264EncFrameCropOffsets {
-                left: 0,
-                right: (self.aligned_w - self.width) / 2,
-                top: 0,
-                bottom: (self.aligned_h - self.height) / 2,
+            let crop = (self.aligned_w != self.width || self.aligned_h != self.height).then(|| {
+                H264EncFrameCropOffsets {
+                    left: 0,
+                    right: (self.aligned_w - self.width) / 2,
+                    top: 0,
+                    bottom: (self.aligned_h - self.height) / 2,
+                }
             });
             let seq_fields = H264EncSeqFields::new(1, 1, 0, 0, 1, LOG2_MAX_FRAME_NUM - 4, 2, 0, 0);
             let seq = EncSequenceParameterBufferH264::new(
@@ -471,32 +597,56 @@ impl VaapiEncoder {
             );
             for t in [
                 BufferType::EncSequenceParameter(EncSequenceParameter::H264(seq)),
-                BufferType::EncMiscParameter(EncMiscParameter::RateControl(EncMiscParameterRateControl::new(
+                BufferType::EncMiscParameter(EncMiscParameter::RateControl(
+                    EncMiscParameterRateControl::new(
+                        self.bitrate_bps,
+                        100,
+                        1000,
+                        26,
+                        10,
+                        0,
+                        RcFlags::new(1, 0, 0, 0, 0, 0, 0, 0, 0),
+                        0,
+                        51,
+                        0,
+                        0,
+                    ),
+                )),
+                BufferType::EncMiscParameter(EncMiscParameter::FrameRate(
+                    EncMiscParameterFrameRate::new(self.fps | (1 << 16), 0),
+                )),
+                BufferType::EncMiscParameter(EncMiscParameter::HRD(EncMiscParameterHRD::new(
+                    self.bitrate_bps / 2,
                     self.bitrate_bps,
-                    100,
-                    1000,
-                    26,
-                    10,
-                    0,
-                    RcFlags::new(1, 0, 0, 0, 0, 0, 0, 0, 0),
-                    0,
-                    51,
-                    0,
-                    0,
                 ))),
-                BufferType::EncMiscParameter(EncMiscParameter::FrameRate(EncMiscParameterFrameRate::new(self.fps | (1 << 16), 0))),
-                BufferType::EncMiscParameter(EncMiscParameter::HRD(EncMiscParameterHRD::new(self.bitrate_bps / 2, self.bitrate_bps))),
             ] {
                 pic.add_buffer(self.context.create_buffer(t).map_err(backend("buffer"))?);
             }
-            self.add_packed(&mut pic, PACKED_SEQUENCE, h264_headers::sps_pps(&params), None)?;
+            self.add_packed(
+                &mut pic,
+                PACKED_SEQUENCE,
+                h264_headers::sps_pps(&params),
+                None,
+            )?;
         }
 
         let mut refs: [PictureH264; 16] = std::array::from_fn(|_| Self::invalid_pic());
         if !idr {
             refs[0] = self.ref_pic(self.last_recon, frame_num.saturating_sub(1));
         }
-        let pic_fields = H264EncPicFields::new(u32::from(idr), 1, u32::from(cabac), 0, 0, 0, u32::from(high), 1, 0, 0, 0);
+        let pic_fields = H264EncPicFields::new(
+            u32::from(idr),
+            1,
+            u32::from(cabac),
+            0,
+            0,
+            0,
+            u32::from(high),
+            1,
+            0,
+            0,
+            0,
+        );
         let pic_param = EncPictureParameterBufferH264::new(
             PictureH264::new(self.recon[cur].id(), frame_num, 0, poc, poc),
             refs,
@@ -514,7 +664,9 @@ impl VaapiEncoder {
         );
         pic.add_buffer(
             self.context
-                .create_buffer(BufferType::EncPictureParameter(EncPictureParameter::H264(pic_param)))
+                .create_buffer(BufferType::EncPictureParameter(EncPictureParameter::H264(
+                    pic_param,
+                )))
                 .map_err(backend("buffer"))?,
         );
 
@@ -560,11 +712,14 @@ impl VaapiEncoder {
         );
         pic.add_buffer(
             self.context
-                .create_buffer(BufferType::EncSliceParameter(EncSliceParameter::H264(slice)))
+                .create_buffer(BufferType::EncSliceParameter(EncSliceParameter::H264(
+                    slice,
+                )))
                 .map_err(backend("buffer"))?,
         );
 
-        let (hdr, bits) = h264_headers::slice_header(&params, idr, frame_num, u32::from(self.idr_pic_id));
+        let (hdr, bits) =
+            h264_headers::slice_header(&params, idr, frame_num, u32::from(self.idr_pic_id));
         self.add_packed(&mut pic, PACKED_SLICE, hdr, Some(bits))?;
 
         let pic = pic.begin::<()>().map_err(backend("begin"))?;
@@ -598,13 +753,21 @@ impl FrameEncoder for VaapiEncoder {
                 None
             }
             FrameData::DmaBuf(dma) => {
-                let gpu = if self.vpp_failed { None } else { self.convert_gpu(frame, dma).map_err(|e| self.gpu_path_failed(&e)).ok() };
+                let gpu = if self.vpp_failed {
+                    None
+                } else {
+                    self.convert_gpu(frame, dma)
+                        .map_err(|e| self.gpu_path_failed(&e))
+                        .ok()
+                };
                 if gpu.is_none() {
                     crate::dmabuf::with_pixels(frame, dma, |px| self.convert(frame, px))??;
                 }
                 gpu
             }
-            FrameData::Encoded { .. } => return Err(EncodeError::Unsupported("already-encoded frame".into())),
+            FrameData::Encoded { .. } => {
+                return Err(EncodeError::Unsupported("already-encoded frame".into()))
+            }
         };
         if prepared.is_some() && self.gpu_frames == 0 {
             eprintln!("VA-API: DMA-BUF import active (GPU colour conversion)");
@@ -612,7 +775,11 @@ impl FrameEncoder for VaapiEncoder {
         self.gpu_frames += u64::from(prepared.is_some());
         let idr = std::mem::take(&mut self.force_idr);
         match self.encode_inner(idr, prepared) {
-            Ok(data) => Ok(EncodedFrame { output: Some(frame.output), keyframe: idr, data }),
+            Ok(data) => Ok(EncodedFrame {
+                output: Some(frame.output),
+                keyframe: idr,
+                data,
+            }),
             Err(e) => {
                 // The reference chain may be broken: restart from an IDR.
                 self.force_idr = true;
@@ -636,17 +803,29 @@ impl VaapiEncoder {
 
 /// True when a VA-API H.264 encoder can be opened on this machine.
 pub fn available() -> bool {
-    let Some(display) = Display::open() else { return false };
-    let Ok(profiles) = display.query_config_profiles() else { return false };
-    [va::VAProfile::VAProfileH264High, va::VAProfile::VAProfileH264Main, va::VAProfile::VAProfileH264ConstrainedBaseline]
-        .into_iter()
-        .any(|p| {
-            profiles.contains(&p)
-                && display.query_config_entrypoints(p).is_ok_and(|e| e.contains(&va::VAEntrypoint::VAEntrypointEncSlice))
-        })
+    let Some(display) = Display::open() else {
+        return false;
+    };
+    let Ok(profiles) = display.query_config_profiles() else {
+        return false;
+    };
+    [
+        va::VAProfile::VAProfileH264High,
+        va::VAProfile::VAProfileH264Main,
+        va::VAProfile::VAProfileH264ConstrainedBaseline,
+    ]
+    .into_iter()
+    .any(|p| {
+        profiles.contains(&p)
+            && display
+                .query_config_entrypoints(p)
+                .is_ok_and(|e| e.contains(&va::VAEntrypoint::VAEntrypointEncSlice))
+    })
 }
 
 /// Default DRM render node used when none is configured (informational).
 pub fn default_device() -> Option<&'static Path> {
-    Path::new("/dev/dri/renderD128").exists().then_some(Path::new("/dev/dri/renderD128"))
+    Path::new("/dev/dri/renderD128")
+        .exists()
+        .then_some(Path::new("/dev/dri/renderD128"))
 }

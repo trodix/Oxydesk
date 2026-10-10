@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError};
-use ironrdp_server::{RdpsndServerHandler, RdpsndServerMessage, ServerEvent, ServerEventSender, SoundServerFactory};
+use ironrdp_server::{
+    RdpsndServerHandler, RdpsndServerMessage, ServerEvent, ServerEventSender, SoundServerFactory,
+};
 use rdsktp_core::ports::{AudioParams, AudioProvider};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -44,7 +46,10 @@ impl SoundServerFactory for SoundFactory {
         Box::new(SoundHandler {
             shared: self.shared.clone(),
             provider: self.provider.clone(),
-            formats: vec![pcm(48_000), pcm(44_100)],
+            // 44.1 kHz first: measured with the stock Windows client (mstscax, Win11 26300), a 48 kHz
+            // stream is played at 44.1/48 of its pitch on a 44.1 kHz device (440 Hz heard as 405 Hz),
+            // while a 44.1 kHz stream is exact. The server picks the first format both sides share.
+            formats: vec![pcm(44_100), pcm(48_000)],
             running: None,
         })
     }
@@ -59,7 +64,9 @@ struct SoundHandler {
 
 impl std::fmt::Debug for SoundHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SoundHandler").field("formats", &self.formats).finish_non_exhaustive()
+        f.debug_struct("SoundHandler")
+            .field("formats", &self.formats)
+            .finish_non_exhaustive()
     }
 }
 
@@ -68,18 +75,34 @@ impl RdpsndServerHandler for SoundHandler {
         &self.formats
     }
 
-    fn choose_format<'a>(&mut self, common: &'a [NegotiatedFormat]) -> Option<&'a NegotiatedFormat> {
+    fn choose_format<'a>(
+        &mut self,
+        common: &'a [NegotiatedFormat],
+    ) -> Option<&'a NegotiatedFormat> {
         common.first()
     }
 
     fn start(&mut self, format: &NegotiatedFormat) -> Result<(), Box<dyn RdpsndError>> {
         let f = format.format();
-        let params = AudioParams { sample_rate: f.n_samples_per_sec, channels: f.n_channels };
-        let mut source = self.provider.open(params).map_err(|e| Box::new(e) as Box<dyn RdpsndError>)?;
-        tracing::info!(rate = params.sample_rate, channels = params.channels, "audio: stream started");
+        let params = AudioParams {
+            sample_rate: f.n_samples_per_sec,
+            channels: f.n_channels,
+        };
+        let mut source = self
+            .provider
+            .open(params)
+            .map_err(|e| Box::new(e) as Box<dyn RdpsndError>)?;
+        tracing::info!(
+            rate = params.sample_rate,
+            channels = params.channels,
+            "audio: stream started"
+        );
         let run = Arc::new(AtomicBool::new(true));
         self.running = Some(run.clone());
         let shared = self.shared.clone();
+        // Bound to this connection's channel: after a reconnection the shared sender belongs to the
+        // new connection, which a stale pump must never feed.
+        let sender = shared.sender.lock().expect("sender mutex").clone();
         std::thread::Builder::new()
             .name("audio-pump".into())
             .spawn(move || {
@@ -90,9 +113,22 @@ impl RdpsndServerHandler for SoundHandler {
                         tracing::warn!("audio: {e}");
                         break;
                     }
+                    // `read_exact` blocks for one packet: the connection may have ended meanwhile,
+                    // and its events would reach the next connection (one shared channel).
+                    if !run.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let ts = started.elapsed().as_millis() as u32;
-                    if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
-                        let _ = tx.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(buf.clone(), ts)));
+                    if let Some(tx) = &sender {
+                        if tx
+                            .send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(
+                                buf.clone(),
+                                ts,
+                            )))
+                            .is_err()
+                        {
+                            break; // connection gone
+                        }
                     }
                 }
             })
@@ -104,5 +140,12 @@ impl RdpsndServerHandler for SoundHandler {
         if let Some(run) = self.running.take() {
             run.store(false, Ordering::Relaxed);
         }
+    }
+}
+
+impl Drop for SoundHandler {
+    /// A connection lost without a clean RDPSND shutdown must not leave its pump running.
+    fn drop(&mut self) {
+        self.stop();
     }
 }

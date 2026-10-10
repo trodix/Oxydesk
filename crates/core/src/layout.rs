@@ -22,15 +22,32 @@ impl Layout {
     pub fn side_by_side(n: u32, width: u32, height: u32) -> Self {
         Self {
             outputs: (0..n)
-                .map(|i| OutputInfo { id: OutputId(i), x: (i * width) as i32, y: 0, width, height, primary: i == 0 })
+                .map(|i| OutputInfo {
+                    id: OutputId(i),
+                    x: (i * width) as i32,
+                    y: 0,
+                    width,
+                    height,
+                    primary: i == 0,
+                })
                 .collect(),
         }
     }
 
     /// Bounding rectangle (width, height) from the origin (0, 0).
     pub fn desktop_size(&self) -> (u32, u32) {
-        let right = self.outputs.iter().map(|o| o.x + o.width as i32).max().unwrap_or(0);
-        let bottom = self.outputs.iter().map(|o| o.y + o.height as i32).max().unwrap_or(0);
+        let right = self
+            .outputs
+            .iter()
+            .map(|o| o.x + o.width as i32)
+            .max()
+            .unwrap_or(0);
+        let bottom = self
+            .outputs
+            .iter()
+            .map(|o| o.y + o.height as i32)
+            .max()
+            .unwrap_or(0);
         (right.max(0) as u32, bottom.max(0) as u32)
     }
 }
@@ -76,7 +93,10 @@ mod tests {
         assert_eq!(l.desktop_size(), (5760, 1080));
         assert_eq!(l.outputs[2].x, 3840);
         assert!(l.outputs[0].primary && !l.outputs[1].primary);
-        assert_eq!(CoordinateMapper::new(&l).locate(1920, 5), Some((OutputId(1), 0, 5)));
+        assert_eq!(
+            CoordinateMapper::new(&l).locate(1920, 5),
+            Some((OutputId(1), 0, 5))
+        );
     }
 
     #[test]

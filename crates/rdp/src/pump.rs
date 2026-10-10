@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_egfx::pdu::Avc420Region;
-use ironrdp_server::{EgfxServerMessage, GfxServerHandle, ServerEvent};
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+use ironrdp_server::{EgfxServerMessage, GfxServerHandle, ServerEvent};
 use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::{CaptureSource, FrameEncoder};
 use rdsktp_core::FrameData;
@@ -56,15 +56,16 @@ fn monitors(layout: &Layout) -> Vec<Monitor> {
             top: o.y,
             right: o.x + o.width as i32 - 1,
             bottom: o.y + o.height as i32 - 1,
-            flags: if o.primary { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+            flags: if o.primary {
+                MonitorFlags::PRIMARY
+            } else {
+                MonitorFlags::empty()
+            },
         })
         .collect()
 }
 
-pub fn spawn(
-    shared: Arc<Shared>,
-    p: PumpParams,
-) -> JoinHandle<()> {
+pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("frame-pump".into())
         .spawn(move || {
@@ -98,20 +99,36 @@ pub fn spawn(
                 let sent_before = sent;
                 if let Some(new) = shared.ports.lock().expect("ports mutex").take() {
                     if new.encoders.len() != p.layout.outputs.len() {
-                        tracing::error!("session ignored: {} encoder(s) for {} output(s)", new.encoders.len(), p.layout.outputs.len());
+                        tracing::error!(
+                            "session ignored: {} encoder(s) for {} output(s)",
+                            new.encoders.len(),
+                            p.layout.outputs.len()
+                        );
                     } else {
                         let mut c = new.capture;
                         c.set_waker(shared.wake.clone());
                         capture = Some(c);
-                        outputs = new.encoders.into_iter().map(|encoder| OutputState { encoder, last: None }).collect();
+                        outputs = new
+                            .encoders
+                            .into_iter()
+                            .map(|encoder| OutputState {
+                                encoder,
+                                last: None,
+                            })
+                            .collect();
                         current = None;
                     }
                 }
-                let Some(capture_src) = capture.as_mut() else { continue };
+                let Some(capture_src) = capture.as_mut() else {
+                    continue;
+                };
                 let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
                     continue;
                 };
-                if !current.as_ref().is_some_and(|(h, _)| Arc::ptr_eq(h, &handle)) {
+                if !current
+                    .as_ref()
+                    .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
+                {
                     current = Some((handle.clone(), Vec::new())); // new connection
                 }
                 let (handle, surfaces) = current.as_mut().expect("set above");
@@ -123,7 +140,11 @@ pub fn spawn(
                     if surfaces.is_empty() {
                         // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
                         if p.layout.outputs.len() > 1 {
-                            g.resize_with_monitors(desktop_w as u16, desktop_h as u16, monitors(&p.layout));
+                            g.resize_with_monitors(
+                                desktop_w as u16,
+                                desktop_h as u16,
+                                monitors(&p.layout),
+                            );
                         }
                         let mut created = Vec::new();
                         for o in &p.layout.outputs {
@@ -156,7 +177,9 @@ pub fn spawn(
                             break;
                         }
                     }
-                    let Some(frame) = out.last.as_ref() else { continue };
+                    let Some(frame) = out.last.as_ref() else {
+                        continue;
+                    };
                     let pre_encoded = matches!(frame.data, FrameData::Encoded { .. });
                     let encoded = match out.encoder.encode(frame) {
                         Ok(e) => e,
@@ -173,9 +196,12 @@ pub fn spawn(
                     let info = &p.layout.outputs[i];
                     let (messages, channel) = {
                         let mut g = handle.lock().expect("gfx handle mutex");
-                        let region = Avc420Region::full_frame(info.width as u16, info.height as u16, 22);
+                        let region =
+                            Avc420Region::full_frame(info.width as u16, info.height as u16, 22);
                         let ts = started.elapsed().as_millis() as u32;
-                        if g.send_avc420_frame(surfaces[i], &encoded.data, &[region], ts).is_none() {
+                        if g.send_avc420_frame(surfaces[i], &encoded.data, &[region], ts)
+                            .is_none()
+                        {
                             dropped += 1;
                             continue;
                         }
@@ -183,10 +209,18 @@ pub fn spawn(
                     };
                     sent += 1;
                     if let Some(channel) = channel {
-                        match encode_dvc_messages(channel, messages, ironrdp_svc::ChannelFlags::empty()) {
+                        match encode_dvc_messages(
+                            channel,
+                            messages,
+                            ironrdp_svc::ChannelFlags::empty(),
+                        ) {
                             Ok(svc) => {
-                                if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
-                                    let _ = tx.send(ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages: svc }));
+                                if let Some(tx) =
+                                    shared.sender.lock().expect("sender mutex").as_ref()
+                                {
+                                    let _ = tx.send(ServerEvent::Egfx(
+                                        EgfxServerMessage::SendMessages { messages: svc },
+                                    ));
                                 }
                             }
                             Err(e) => tracing::error!("DVC encoding: {e}"),

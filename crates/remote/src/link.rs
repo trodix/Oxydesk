@@ -43,12 +43,16 @@ pub struct AgentLink {
 impl AgentLink {
     /// Waits for the agent's `Hello` and starts the reader thread.
     pub fn connect(stream: UnixStream, expected_outputs: u32) -> Result<Arc<Self>, String> {
-        stream.set_read_timeout(Some(Duration::from_secs(60))).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .map_err(|e| e.to_string())?;
         let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
         match read_msg::<_, FromAgent>(&mut reader).map_err(|e| e.to_string())? {
             Some(FromAgent::Hello { outputs, .. }) if outputs == expected_outputs => {}
             Some(FromAgent::Hello { outputs, .. }) => {
-                return Err(format!("the agent exposes {outputs} output(s), {expected_outputs} expected"));
+                return Err(format!(
+                    "the agent exposes {outputs} output(s), {expected_outputs} expected"
+                ));
             }
             Some(FromAgent::Fatal(m)) => return Err(format!("agent: {m}")),
             _ => return Err("the agent did not send Hello".into()),
@@ -56,7 +60,9 @@ impl AgentLink {
         reader.set_read_timeout(None).map_err(|e| e.to_string())?;
         let link = Arc::new(Self {
             writer: Mutex::new(stream),
-            video: (0..expected_outputs).map(|_| Mutex::new(Mailbox::default())).collect(),
+            video: (0..expected_outputs)
+                .map(|_| Mutex::new(Mailbox::default()))
+                .collect(),
             clipboard: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
@@ -88,8 +94,16 @@ impl AgentLink {
     fn dispatch(&self, msg: FromAgent) {
         match msg {
             FromAgent::Hello { .. } => {}
-            FromAgent::Video { output, keyframe, width, height, data } => {
-                let Some(slot) = self.video.get(output as usize) else { return };
+            FromAgent::Video {
+                output,
+                keyframe,
+                width,
+                height,
+                data,
+            } => {
+                let Some(slot) = self.video.get(output as usize) else {
+                    return;
+                };
                 let mut mb = slot.lock().expect("mailbox mutex");
                 let frame = Frame {
                     output: OutputId(output),
@@ -118,7 +132,9 @@ impl AgentLink {
                 drop(mb);
                 self.wake();
             }
-            FromAgent::ClipboardText(t) => *self.clipboard.lock().expect("clipboard mutex") = Some(t),
+            FromAgent::ClipboardText(t) => {
+                *self.clipboard.lock().expect("clipboard mutex") = Some(t)
+            }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
                 if q.open {
@@ -158,7 +174,12 @@ impl AgentLink {
     }
 
     pub fn take_frame(&self, output: OutputId) -> Option<Frame> {
-        self.video.get(output.0 as usize)?.lock().expect("mailbox mutex").queue.pop_front()
+        self.video
+            .get(output.0 as usize)?
+            .lock()
+            .expect("mailbox mutex")
+            .queue
+            .pop_front()
     }
 
     /// The next `take_frame` will only return a keyframe, requested from the agent.
@@ -180,7 +201,10 @@ impl AgentLink {
         q.bytes.clear();
         q.open = true;
         drop(q);
-        self.send(&ToAgent::AudioOpen { sample_rate, channels });
+        self.send(&ToAgent::AudioOpen {
+            sample_rate,
+            channels,
+        });
     }
 
     pub fn close_audio(&self) {
@@ -196,7 +220,11 @@ impl AgentLink {
             if !q.open || self.is_dead() {
                 return false;
             }
-            q = self.audio_cv.wait_timeout(q, Duration::from_millis(200)).expect("audio mutex").0;
+            q = self
+                .audio_cv
+                .wait_timeout(q, Duration::from_millis(200))
+                .expect("audio mutex")
+                .0;
         }
         for b in buf.iter_mut() {
             *b = q.bytes.pop_front().expect("length checked");
@@ -221,12 +249,26 @@ mod tests {
 
     fn pair() -> (Arc<AgentLink>, UnixStream) {
         let (server, mut agent) = UnixStream::pair().unwrap();
-        write_msg(&mut agent, &FromAgent::Hello { outputs: 1, width: 64, height: 64 }).unwrap();
+        write_msg(
+            &mut agent,
+            &FromAgent::Hello {
+                outputs: 1,
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap();
         (AgentLink::connect(server, 1).unwrap(), agent)
     }
 
     fn video(keyframe: bool, tag: u8) -> FromAgent {
-        FromAgent::Video { output: 0, keyframe, width: 64, height: 64, data: vec![tag] }
+        FromAgent::Video {
+            output: 0,
+            keyframe,
+            width: 64,
+            height: 64,
+            data: vec![tag],
+        }
     }
 
     fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
@@ -250,7 +292,15 @@ mod tests {
     #[test]
     fn hello_with_wrong_output_count_is_rejected() {
         let (server, mut agent) = UnixStream::pair().unwrap();
-        write_msg(&mut agent, &FromAgent::Hello { outputs: 2, width: 1, height: 1 }).unwrap();
+        write_msg(
+            &mut agent,
+            &FromAgent::Hello {
+                outputs: 2,
+                width: 1,
+                height: 1,
+            },
+        )
+        .unwrap();
         assert!(AgentLink::connect(server, 1).is_err());
     }
 
@@ -275,7 +325,9 @@ mod tests {
         for t in 2..=(MAX_QUEUE as u8 + 2) {
             write_msg(&mut agent, &video(false, t)).unwrap(); // never consumed
         }
-        agent.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let req: ToAgent = read_msg(&mut agent).unwrap().unwrap();
         assert_eq!(req, ToAgent::RequestKeyframe { output: 0 });
         write_msg(&mut agent, &video(false, 90)).unwrap(); // still waiting for a keyframe: ignored
@@ -289,9 +341,15 @@ mod tests {
     fn consumed_frames_flow_without_resync() {
         let (link, mut agent) = pair();
         write_msg(&mut agent, &video(true, 1)).unwrap();
-        assert_eq!(wait_for(|| link.take_frame(OutputId(0)).map(tag)), (true, 1));
+        assert_eq!(
+            wait_for(|| link.take_frame(OutputId(0)).map(tag)),
+            (true, 1)
+        );
         write_msg(&mut agent, &video(false, 2)).unwrap();
-        assert_eq!(wait_for(|| link.take_frame(OutputId(0)).map(tag)), (false, 2));
+        assert_eq!(
+            wait_for(|| link.take_frame(OutputId(0)).map(tag)),
+            (false, 2)
+        );
     }
 
     #[test]

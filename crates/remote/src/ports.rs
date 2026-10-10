@@ -13,7 +13,14 @@ use crate::link::AgentLink;
 pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
     DesktopPorts {
         capture: Box::new(RemoteCapture(link.clone())),
-        encoders: (0..outputs).map(|i| Box::new(PassthroughEncoder { link: link.clone(), output: OutputId(i) }) as Box<dyn FrameEncoder>).collect(),
+        encoders: (0..outputs)
+            .map(|i| {
+                Box::new(PassthroughEncoder {
+                    link: link.clone(),
+                    output: OutputId(i),
+                }) as Box<dyn FrameEncoder>
+            })
+            .collect(),
         input: Box::new(RemoteInput(link.clone())),
         clipboard: Box::new(RemoteClipboard(link.clone())),
         audio: Some(Arc::new(RemoteAudio(link))),
@@ -45,8 +52,14 @@ struct PassthroughEncoder {
 impl FrameEncoder for PassthroughEncoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
         match &frame.data {
-            FrameData::Encoded { keyframe, data } => Ok(EncodedFrame { output: Some(self.output), keyframe: *keyframe, data: data.clone() }),
-            _ => Err(EncodeError::Unsupported("frame not encoded received from the agent".into())),
+            FrameData::Encoded { keyframe, data } => Ok(EncodedFrame {
+                output: Some(self.output),
+                keyframe: *keyframe,
+                data: data.clone(),
+            }),
+            _ => Err(EncodeError::Unsupported(
+                "frame not encoded received from the agent".into(),
+            )),
         }
     }
 

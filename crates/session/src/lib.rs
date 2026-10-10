@@ -36,27 +36,42 @@ pub struct KwinVersion {
 }
 
 pub fn parse_kwin_version(output: &str) -> Option<KwinVersion> {
-    let line = output.lines().find(|l| l.trim_start().starts_with("kwin "))?;
+    let line = output
+        .lines()
+        .find(|l| l.trim_start().starts_with("kwin "))?;
     let mut it = line.trim().strip_prefix("kwin ")?.split('.');
     let mut next = || it.next()?.trim().parse::<u32>().ok();
-    Some(KwinVersion { major: next()?, minor: next()?, patch: next().unwrap_or(0) })
+    Some(KwinVersion {
+        major: next()?,
+        minor: next()?,
+        patch: next().unwrap_or(0),
+    })
 }
 
 /// The supported KWin is Plasma 6.3 or newer; the interfaces used are KDE implementation details.
 fn check_version(v: KwinVersion) -> Result<(), String> {
     if v.major != 6 || v.minor < 3 {
-        return Err(format!("KWin {}.{}.{} not supported (Plasma 6.3+ required)", v.major, v.minor, v.patch));
+        return Err(format!(
+            "KWin {}.{}.{} not supported (Plasma 6.3+ required)",
+            v.major, v.minor, v.patch
+        ));
     }
     Ok(())
 }
 
 impl KwinSession {
     pub fn new(cfg: KwinSessionConfig) -> Self {
-        Self { cfg, kwin: None, children: Vec::new() }
+        Self {
+            cfg,
+            kwin: None,
+            children: Vec::new(),
+        }
     }
 
     fn runtime_dir() -> Result<PathBuf, String> {
-        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).ok_or_else(|| "XDG_RUNTIME_DIR missing (user session required)".to_string())
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .ok_or_else(|| "XDG_RUNTIME_DIR missing (user session required)".to_string())
     }
 
     /// Environment common to KWin and the session programs.
@@ -73,10 +88,15 @@ impl KwinSession {
         // (kcminputrc) is not modified.
         let icons = runtime.join(BLANK_ICONS_DIR);
         if icons.join(BLANK_THEME).is_dir() {
-            cmd.env("XCURSOR_PATH", &icons).env("XCURSOR_THEME", BLANK_THEME).env("XCURSOR_SIZE", "24");
+            cmd.env("XCURSOR_PATH", &icons)
+                .env("XCURSOR_THEME", BLANK_THEME)
+                .env("XCURSOR_SIZE", "24");
         }
         if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
-            cmd.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/bus", runtime.display()));
+            cmd.env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}/bus", runtime.display()),
+            );
         }
     }
 }
@@ -85,12 +105,57 @@ const BLANK_ICONS_DIR: &str = "rdsktp-icons";
 const BLANK_THEME: &str = "rdsktp-blank";
 /// Cursor names requested by KWin/Qt; all point to the same transparent file.
 const CURSOR_NAMES: &[&str] = &[
-    "default", "arrow", "top_left_arrow", "pointer", "text", "xterm", "ibeam", "hand1", "hand2", "pointing_hand",
-    "watch", "wait", "progress", "crosshair", "cross", "fleur", "move", "size_all", "size_hor", "size_ver",
-    "sb_h_double_arrow", "sb_v_double_arrow", "size_fdiag", "size_bdiag", "not-allowed", "forbidden",
-    "question_arrow", "help", "grab", "grabbing", "openhand", "closedhand", "copy", "alias", "context-menu",
-    "cell", "vertical-text", "col-resize", "row-resize", "e-resize", "w-resize", "n-resize", "s-resize",
-    "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize",
+    "default",
+    "arrow",
+    "top_left_arrow",
+    "pointer",
+    "text",
+    "xterm",
+    "ibeam",
+    "hand1",
+    "hand2",
+    "pointing_hand",
+    "watch",
+    "wait",
+    "progress",
+    "crosshair",
+    "cross",
+    "fleur",
+    "move",
+    "size_all",
+    "size_hor",
+    "size_ver",
+    "sb_h_double_arrow",
+    "sb_v_double_arrow",
+    "size_fdiag",
+    "size_bdiag",
+    "not-allowed",
+    "forbidden",
+    "question_arrow",
+    "help",
+    "grab",
+    "grabbing",
+    "openhand",
+    "closedhand",
+    "copy",
+    "alias",
+    "context-menu",
+    "cell",
+    "vertical-text",
+    "col-resize",
+    "row-resize",
+    "e-resize",
+    "w-resize",
+    "n-resize",
+    "s-resize",
+    "ne-resize",
+    "nw-resize",
+    "se-resize",
+    "sw-resize",
+    "ew-resize",
+    "ns-resize",
+    "nesw-resize",
+    "nwse-resize",
 ];
 
 /// Xcursor file of a fully transparent 1x1 image (nominal size 24).
@@ -108,7 +173,10 @@ fn write_blank_cursor_theme(runtime: &std::path::Path) -> std::io::Result<()> {
     let dir = runtime.join(BLANK_ICONS_DIR).join(BLANK_THEME);
     let cursors = dir.join("cursors");
     std::fs::create_dir_all(&cursors)?;
-    std::fs::write(dir.join("index.theme"), format!("[Icon Theme]\nName={BLANK_THEME}\n"))?;
+    std::fs::write(
+        dir.join("index.theme"),
+        format!("[Icon Theme]\nName={BLANK_THEME}\n"),
+    )?;
     std::fs::write(cursors.join("left_ptr"), blank_xcursor())?;
     for name in CURSOR_NAMES {
         let link = cursors.join(name);
@@ -121,9 +189,13 @@ fn write_blank_cursor_theme(runtime: &std::path::Path) -> std::io::Result<()> {
 impl SessionProvider for KwinSession {
     fn start(&mut self) -> Result<(), String> {
         let runtime = Self::runtime_dir()?;
-        let out = Command::new("kwin_wayland").arg("--version").output().map_err(|e| format!("kwin_wayland not found: {e}"))?;
+        let out = Command::new("kwin_wayland")
+            .arg("--version")
+            .output()
+            .map_err(|e| format!("kwin_wayland not found: {e}"))?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let version = parse_kwin_version(&text).ok_or_else(|| format!("unreadable KWin version: {text:?}"))?;
+        let version = parse_kwin_version(&text)
+            .ok_or_else(|| format!("unreadable KWin version: {text:?}"))?;
         check_version(version)?;
 
         // A failure here is harmless: the server cursor will simply be visible in the image.
@@ -139,12 +211,19 @@ impl SessionProvider for KwinSession {
         let mut kwin = Command::new("kwin_wayland");
         Self::session_env(&mut kwin, &runtime, &self.cfg.socket);
         kwin.args(["--virtual", "--socket", &self.cfg.socket])
-            .args(["--width", &self.cfg.width.to_string(), "--height", &self.cfg.height.to_string()])
+            .args([
+                "--width",
+                &self.cfg.width.to_string(),
+                "--height",
+                &self.cfg.height.to_string(),
+            ])
             .args(["--output-count", &self.cfg.outputs.max(1).to_string()])
             .args(["--no-lockscreen", "--no-global-shortcuts"])
             .env_remove("WAYLAND_DISPLAY")
             .stdin(Stdio::null());
-        let mut child = kwin.spawn().map_err(|e| format!("starting kwin_wayland: {e}"))?;
+        let mut child = kwin
+            .spawn()
+            .map_err(|e| format!("starting kwin_wayland: {e}"))?;
 
         let deadline = Instant::now() + Duration::from_secs(20);
         while !socket_path.exists() {
@@ -165,7 +244,11 @@ impl SessionProvider for KwinSession {
             let mut cmd = Command::new("dbus-update-activation-environment");
             Self::session_env(&mut cmd, &runtime, &self.cfg.socket);
             cmd.args(extra).args([
-                "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_MENU_PREFIX", "QT_QPA_PLATFORM",
+                "WAYLAND_DISPLAY",
+                "XDG_SESSION_TYPE",
+                "XDG_CURRENT_DESKTOP",
+                "XDG_MENU_PREFIX",
+                "QT_QPA_PLATFORM",
             ]);
             if cmd.status().map(|s| s.success()).unwrap_or(false) {
                 break;
@@ -173,10 +256,16 @@ impl SessionProvider for KwinSession {
         }
 
         for argv in &self.cfg.programs {
-            let Some((prog, args)) = argv.split_first() else { continue };
+            let Some((prog, args)) = argv.split_first() else {
+                continue;
+            };
             let mut cmd = Command::new(prog);
             Self::session_env(&mut cmd, &runtime, &self.cfg.socket);
-            let child = cmd.args(args).stdin(Stdio::null()).spawn().map_err(|e| format!("starting {prog}: {e}"))?;
+            let child = cmd
+                .args(args)
+                .stdin(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("starting {prog}: {e}"))?;
             self.children.push(child);
         }
         Ok(())
@@ -213,14 +302,36 @@ mod tests {
     #[test]
     fn parses_version_ignoring_qt_noise() {
         let out = "QThreadStorage: Thread 0x1 exited\nkwin 6.3.6\n";
-        assert_eq!(parse_kwin_version(out), Some(KwinVersion { major: 6, minor: 3, patch: 6 }));
+        assert_eq!(
+            parse_kwin_version(out),
+            Some(KwinVersion {
+                major: 6,
+                minor: 3,
+                patch: 6
+            })
+        );
     }
 
     #[test]
     fn rejects_old_or_garbage() {
         assert_eq!(parse_kwin_version("rien"), None);
-        assert!(check_version(KwinVersion { major: 6, minor: 2, patch: 0 }).is_err());
-        assert!(check_version(KwinVersion { major: 5, minor: 27, patch: 0 }).is_err());
-        assert!(check_version(KwinVersion { major: 6, minor: 4, patch: 1 }).is_ok());
+        assert!(check_version(KwinVersion {
+            major: 6,
+            minor: 2,
+            patch: 0
+        })
+        .is_err());
+        assert!(check_version(KwinVersion {
+            major: 5,
+            minor: 27,
+            patch: 0
+        })
+        .is_err());
+        assert!(check_version(KwinVersion {
+            major: 6,
+            minor: 4,
+            patch: 1
+        })
+        .is_ok());
     }
 }

@@ -12,7 +12,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn new() -> Self {
-        Self { bytes: Vec::new(), cur: 0, nbits: 0 }
+        Self {
+            bytes: Vec::new(),
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     fn bit(&mut self, b: bool) {
@@ -41,7 +45,11 @@ impl BitWriter {
     }
 
     fn se(&mut self, v: i32) {
-        self.ue(if v > 0 { (2 * v - 1) as u32 } else { (-2 * v) as u32 });
+        self.ue(if v > 0 {
+            (2 * v - 1) as u32
+        } else {
+            (-2 * v) as u32
+        });
     }
 
     /// Number of bits written so far.
@@ -162,7 +170,12 @@ pub(crate) fn sps_pps(p: &StreamParams) -> Vec<u8> {
 
 /// Annex-B slice header of a single-slice frame: returns the bytes (start code and NAL header
 /// included, last byte zero-padded) and the exact length in bits.
-pub(crate) fn slice_header(p: &StreamParams, idr: bool, frame_num: u32, idr_pic_id: u32) -> (Vec<u8>, usize) {
+pub(crate) fn slice_header(
+    p: &StreamParams,
+    idr: bool,
+    frame_num: u32,
+    idr_pic_id: u32,
+) -> (Vec<u8>, usize) {
     let mut w = BitWriter::new();
     w.ue(0); // first_mb_in_slice
     w.ue(if idr { 7 } else { 5 }); // slice_type: I / P, all slices of the picture
@@ -218,12 +231,23 @@ mod tests {
 
     #[test]
     fn emulation_prevention() {
-        assert_eq!(escape(&[0, 0, 1, 0, 0, 0, 5, 0, 0, 4]), vec![0, 0, 3, 1, 0, 0, 3, 0, 5, 0, 0, 4]);
+        assert_eq!(
+            escape(&[0, 0, 1, 0, 0, 0, 5, 0, 0, 4]),
+            vec![0, 0, 3, 1, 0, 0, 3, 0, 5, 0, 0, 4]
+        );
     }
 
     #[test]
     fn sps_has_the_expected_shape() {
-        let p = StreamParams { profile_idc: 66, level_idc: 42, mb_width: 120, mb_height: 68, crop_right: 0, crop_bottom: 8, log2_max_frame_num: 8 };
+        let p = StreamParams {
+            profile_idc: 66,
+            level_idc: 42,
+            mb_width: 120,
+            mb_height: 68,
+            crop_right: 0,
+            crop_bottom: 8,
+            log2_max_frame_num: 8,
+        };
         let b = sps_pps(&p);
         assert_eq!(&b[..5], &[0, 0, 0, 1, 0x67]);
         assert_eq!(&b[5..8], &[66, 0x40, 42]);
@@ -232,7 +256,15 @@ mod tests {
 
     #[test]
     fn slice_header_bit_length_matches() {
-        let p = StreamParams { profile_idc: 66, level_idc: 42, mb_width: 120, mb_height: 68, crop_right: 0, crop_bottom: 8, log2_max_frame_num: 8 };
+        let p = StreamParams {
+            profile_idc: 66,
+            level_idc: 42,
+            mb_width: 120,
+            mb_height: 68,
+            crop_right: 0,
+            crop_bottom: 8,
+            log2_max_frame_num: 8,
+        };
         let (bytes, bits) = slice_header(&p, true, 0, 1);
         assert_eq!(bytes[4], 0x65);
         assert!(bits > 40 && bits <= bytes.len() * 8 && bits > (bytes.len() - 1) * 8 - 8);

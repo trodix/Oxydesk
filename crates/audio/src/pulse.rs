@@ -15,25 +15,42 @@ pub struct PulseCapture;
 impl PulseCapture {
     /// Creates the null sink if it does not exist and makes it the default.
     pub fn ensure_sink() -> Result<(), AudioError> {
-        let backend = |what: &str, e: std::io::Error| AudioError::Backend(format!("{what}: {e} (pulseaudio-utils package required)"));
-        let list = Command::new("pactl").args(["list", "short", "sinks"]).output().map_err(|e| backend("pactl", e))?;
+        let backend = |what: &str, e: std::io::Error| {
+            AudioError::Backend(format!("{what}: {e} (pulseaudio-utils package required)"))
+        };
+        let list = Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .map_err(|e| backend("pactl", e))?;
         if !list.status.success() {
             return Err(AudioError::Backend(format!(
                 "pactl list sinks: {} (is pipewire-pulse started?)",
                 String::from_utf8_lossy(&list.stderr).trim()
             )));
         }
-        let exists = String::from_utf8_lossy(&list.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some(SINK));
+        let exists = String::from_utf8_lossy(&list.stdout)
+            .lines()
+            .any(|l| l.split_whitespace().nth(1) == Some(SINK));
         if !exists {
             let out = Command::new("pactl")
-                .args(["load-module", "module-null-sink", &format!("sink_name={SINK}"), "sink_properties=device.description=RustyDesktop"])
+                .args([
+                    "load-module",
+                    "module-null-sink",
+                    &format!("sink_name={SINK}"),
+                    "sink_properties=device.description=RustyDesktop",
+                ])
                 .output()
                 .map_err(|e| backend("pactl", e))?;
             if !out.status.success() {
-                return Err(AudioError::Backend(format!("sink creation: {}", String::from_utf8_lossy(&out.stderr).trim())));
+                return Err(AudioError::Backend(format!(
+                    "sink creation: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
             }
         }
-        let _ = Command::new("pactl").args(["set-default-sink", SINK]).status();
+        let _ = Command::new("pactl")
+            .args(["set-default-sink", SINK])
+            .status();
         Ok(())
     }
 }
@@ -42,14 +59,22 @@ impl AudioProvider for PulseCapture {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
         Self::ensure_sink()?;
         let mut child = Command::new("parec")
-            .args(["-d", &format!("{SINK}.monitor"), "--format=s16le", "--raw", "--latency-msec=20"])
+            .args([
+                "-d",
+                &format!("{SINK}.monitor"),
+                "--format=s16le",
+                "--raw",
+                "--latency-msec=20",
+            ])
             .arg(format!("--rate={}", params.sample_rate))
             .arg(format!("--channels={}", params.channels))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| AudioError::Backend(format!("parec: {e} (pulseaudio-utils package required)")))?;
+            .map_err(|e| {
+                AudioError::Backend(format!("parec: {e} (pulseaudio-utils package required)"))
+            })?;
         let stdout = child.stdout.take().ok_or(AudioError::Closed)?;
         Ok(Box::new(PulseSource { child, stdout }))
     }

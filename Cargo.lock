@@ -570,7 +570,6 @@ version = "0.0.13"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags 2.13.2",
- "crc32fast",
  "log",
  "pkg-config",
  "regex",

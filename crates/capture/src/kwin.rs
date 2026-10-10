@@ -34,7 +34,9 @@ mod proto {
     use self::__interfaces::*;
     wayland_scanner::generate_client_code!("protocols/zkde-screencast-unstable-v1.xml");
 }
-use proto::zkde_screencast_stream_unstable_v1::{self as stream_ev, ZkdeScreencastStreamUnstableV1};
+use proto::zkde_screencast_stream_unstable_v1::{
+    self as stream_ev, ZkdeScreencastStreamUnstableV1,
+};
 use proto::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
 /// `zkde_screencast_unstable_v1.pointer`: cursor absent from the image. The client displays its
@@ -53,13 +55,29 @@ struct Wl {
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Wl {
-    fn event(state: &mut Self, reg: &wl_registry::WlRegistry, ev: wl_registry::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        if let wl_registry::Event::Global { name, interface, version } = ev {
+    fn event(
+        state: &mut Self,
+        reg: &wl_registry::WlRegistry,
+        ev: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = ev
+        {
             match interface.as_str() {
-                "zkde_screencast_unstable_v1" => state.screencast = Some(reg.bind(name, version.min(5), qh, ())),
+                "zkde_screencast_unstable_v1" => {
+                    state.screencast = Some(reg.bind(name, version.min(5), qh, ()))
+                }
                 "wl_output" => {
                     let index = state.outputs.len();
-                    state.outputs.push(reg.bind(name, version.min(4), qh, index));
+                    state
+                        .outputs
+                        .push(reg.bind(name, version.min(4), qh, index));
                     state.positions.push((0, 0));
                 }
                 _ => {}
@@ -68,17 +86,39 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Wl {
     }
 }
 impl Dispatch<wl_output::WlOutput, usize> for Wl {
-    fn event(state: &mut Self, _: &wl_output::WlOutput, ev: wl_output::Event, index: &usize, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &wl_output::WlOutput,
+        ev: wl_output::Event,
+        index: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_output::Event::Geometry { x, y, .. } = ev {
             state.positions[*index] = (x, y);
         }
     }
 }
 impl Dispatch<ZkdeScreencastUnstableV1, ()> for Wl {
-    fn event(_: &mut Self, _: &ZkdeScreencastUnstableV1, _: proto::zkde_screencast_unstable_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &ZkdeScreencastUnstableV1,
+        _: proto::zkde_screencast_unstable_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
-    fn event(state: &mut Self, _: &ZkdeScreencastStreamUnstableV1, ev: stream_ev::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZkdeScreencastStreamUnstableV1,
+        ev: stream_ev::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match ev {
             stream_ev::Event::Created { node } => state.node = Some(node),
             stream_ev::Event::Failed { error } => state.failed = Some(error),
@@ -107,7 +147,11 @@ impl KwinCapture {
 
     /// `dmabuf`: also offer linear DMA-BUF buffers (delivered as `FrameData::DmaBuf` when KWin accepts;
     /// otherwise the stream stays on shared memory). Only useful with a GPU encoder that imports them.
-    pub fn start_with(socket: Option<&str>, output: usize, dmabuf: bool) -> Result<Self, CaptureError> {
+    pub fn start_with(
+        socket: Option<&str>,
+        output: usize,
+        dmabuf: bool,
+    ) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
         let waker: Waker = Arc::default();
@@ -115,7 +159,8 @@ impl KwinCapture {
         let dead: Arc<Mutex<Option<String>>> = Arc::default();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let worker = {
-            let (mailbox, waker, stop, dead) = (mailbox.clone(), waker.clone(), stop.clone(), dead.clone());
+            let (mailbox, waker, stop, dead) =
+                (mailbox.clone(), waker.clone(), stop.clone(), dead.clone());
             std::thread::Builder::new()
                 .name("kwin-capture".into())
                 .spawn(move || {
@@ -127,9 +172,17 @@ impl KwinCapture {
                 .map_err(|e| CaptureError::Unavailable(e.to_string()))?
         };
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
-            Ok(Ok(())) => Ok(Self { mailbox, waker, stop, dead, worker: Some(worker) }),
+            Ok(Ok(())) => Ok(Self {
+                mailbox,
+                waker,
+                stop,
+                dead,
+                worker: Some(worker),
+            }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
-            Err(_) => Err(CaptureError::Unavailable("KWin did not provide a stream in time".into())),
+            Err(_) => Err(CaptureError::Unavailable(
+                "KWin did not provide a stream in time".into(),
+            )),
         }
     }
 }
@@ -163,8 +216,10 @@ fn connect(socket: Option<&str>) -> Result<Connection, CaptureError> {
     let err = |m: String| CaptureError::Unavailable(m);
     match socket {
         Some(name) => {
-            let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
-            let stream = UnixStream::connect(Path::new(&dir).join(name)).map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
+            let dir = std::env::var_os("XDG_RUNTIME_DIR")
+                .ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
+            let stream = UnixStream::connect(Path::new(&dir).join(name))
+                .map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
             Connection::from_socket(stream)
         }
         None => Connection::connect_to_env(),
@@ -178,23 +233,36 @@ struct PwData {
     waker: Waker,
 }
 
-fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: Waker, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+fn run(
+    conn: Connection,
+    output: usize,
+    dmabuf: bool,
+    mailbox: Mailbox,
+    waker: Waker,
+    stop: Arc<AtomicBool>,
+    ready: &mpsc::Sender<Result<(), String>>,
+) -> Result<(), String> {
     // 1. Wayland: request the stream and obtain the PipeWire node.
     let mut queue = conn.new_event_queue::<Wl>();
     let qh = queue.handle();
     let _registry = conn.display().get_registry(&qh, ());
     let mut wl = Wl::default();
-    queue.roundtrip(&mut wl).map_err(|e| format!("Wayland registry: {e}"))?;
-    let screencast = wl
-        .screencast
-        .clone()
-        .ok_or("zkde_screencast_unstable_v1 not announced: executable not authorized by KWin (ADR 004)")?;
+    queue
+        .roundtrip(&mut wl)
+        .map_err(|e| format!("Wayland registry: {e}"))?;
+    let screencast = wl.screencast.clone().ok_or(
+        "zkde_screencast_unstable_v1 not announced: executable not authorized by KWin (ADR 004)",
+    )?;
     // `geometry` events arrive after binding: a second roundtrip fetches them.
-    queue.roundtrip(&mut wl).map_err(|e| format!("output geometry: {e}"))?;
+    queue
+        .roundtrip(&mut wl)
+        .map_err(|e| format!("output geometry: {e}"))?;
     // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
     let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
     order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
-    let registry_index = *order.get(output).ok_or_else(|| format!("output {output} not found ({} output(s))", wl.outputs.len()))?;
+    let registry_index = *order
+        .get(output)
+        .ok_or_else(|| format!("output {output} not found ({} output(s))", wl.outputs.len()))?;
     let wl_output = wl.outputs[registry_index].clone();
     let _stream = screencast.stream_output(&wl_output, POINTER_HIDDEN, &qh, ());
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -202,7 +270,9 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
         if std::time::Instant::now() > deadline {
             return Err("timed out waiting for the PipeWire node".into());
         }
-        queue.roundtrip(&mut wl).map_err(|e| format!("Wayland: {e}"))?;
+        queue
+            .roundtrip(&mut wl)
+            .map_err(|e| format!("Wayland: {e}"))?;
         std::thread::sleep(Duration::from_millis(20));
     }
     if let Some(e) = wl.failed.take() {
@@ -212,9 +282,13 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
 
     // 2. PipeWire: consume the stream (mapped SHM).
     pw::init();
-    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| format!("pipewire mainloop : {e}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| format!("pipewire context : {e}"))?;
-    let core = context.connect_rc(None).map_err(|e| format!("PipeWire connection: {e}"))?;
+    let mainloop =
+        pw::main_loop::MainLoopRc::new(None).map_err(|e| format!("pipewire mainloop : {e}"))?;
+    let context = pw::context::ContextRc::new(&mainloop, None)
+        .map_err(|e| format!("pipewire context : {e}"))?;
+    let core = context
+        .connect_rc(None)
+        .map_err(|e| format!("PipeWire connection: {e}"))?;
     let stream = pw::stream::StreamBox::new(
         &core,
         "rdsktp-capture",
@@ -229,7 +303,11 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
     let ready_ok = ready.clone();
     let announced = std::cell::Cell::new(false);
     let _listener = stream
-        .add_local_listener_with_user_data(PwData { format: Default::default(), mailbox, waker })
+        .add_local_listener_with_user_data(PwData {
+            format: Default::default(),
+            mailbox,
+            waker,
+        })
         .state_changed(|_, _, old, new| tracing_log(format_args!("pipewire: {old:?} -> {new:?}")))
         .param_changed(|_, d, id, param| {
             let Some(param) = param else { return };
@@ -237,14 +315,20 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
                 return;
             }
             if let Ok((mt, st)) = spa::param::format_utils::parse_format(param) {
-                if mt == spa::param::format::MediaType::Video && st == spa::param::format::MediaSubtype::Raw {
+                if mt == spa::param::format::MediaType::Video
+                    && st == spa::param::format::MediaSubtype::Raw
+                {
                     let _ = d.format.parse(param);
                 }
             }
         })
         .process(move |stream, d| {
-            let Some(mut buffer) = stream.dequeue_buffer() else { return };
-            let Some(data) = buffer.datas_mut().first_mut() else { return };
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
+            let Some(data) = buffer.datas_mut().first_mut() else {
+                return;
+            };
             let (size, stride, offset) = {
                 let c = data.chunk();
                 (c.size() as usize, c.stride(), c.offset() as usize)
@@ -263,14 +347,22 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
                 // The descriptor is duplicated; the producer may reuse the buffer once it is requeued.
                 let raw = data.as_raw();
                 // SAFETY: `fd` of a DmaBuf-typed data is a valid descriptor owned by PipeWire for this buffer.
-                let Ok(fd) = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw.fd as i32) }.try_clone_to_owned() else { return };
+                let Ok(fd) = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw.fd as i32) }
+                    .try_clone_to_owned()
+                else {
+                    return;
+                };
                 let frame = Frame {
                     output: OutputId(0),
                     width: sz.width,
                     height: sz.height,
                     stride: stride as u32,
                     format: pixel,
-                    data: FrameData::DmaBuf(rdsktp_core::DmaBuf { fd, offset: offset as u32, modifier: d.format.modifier() }),
+                    data: FrameData::DmaBuf(rdsktp_core::DmaBuf {
+                        fd,
+                        offset: offset as u32,
+                        modifier: d.format.modifier(),
+                    }),
                 };
                 *d.mailbox.lock().expect("mailbox") = Some(frame);
                 if let Some(w) = d.waker.lock().expect("waker").as_ref() {
@@ -286,7 +378,13 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
             if src.len() < offset + need {
                 return;
             }
-            dump_debug_frame(&src[offset..offset + need], sz.width, sz.height, stride as usize, pixel);
+            dump_debug_frame(
+                &src[offset..offset + need],
+                sz.width,
+                sz.height,
+                stride as usize,
+                pixel,
+            );
             let frame = Frame {
                 output: OutputId(0),
                 width: sz.width,
@@ -306,12 +404,25 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
         .register()
         .map_err(|e| format!("PipeWire listener: {e}"))?;
 
-    let formats = [VideoFormat::BGRx, VideoFormat::BGRA, VideoFormat::RGBx, VideoFormat::RGBA];
+    let formats = [
+        VideoFormat::BGRx,
+        VideoFormat::BGRA,
+        VideoFormat::RGBx,
+        VideoFormat::RGBA,
+    ];
     let obj = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
-        spa::pod::property!(spa::param::format::FormatProperties::MediaType, Id, spa::param::format::MediaType::Video),
-        spa::pod::property!(spa::param::format::FormatProperties::MediaSubtype, Id, spa::param::format::MediaSubtype::Raw),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoFormat,
             Choice,
@@ -328,9 +439,18 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
             Choice,
             Range,
             Rectangle,
-            spa::utils::Rectangle { width: 1920, height: 1080 },
-            spa::utils::Rectangle { width: 1, height: 1 },
-            spa::utils::Rectangle { width: 8192, height: 8192 }
+            spa::utils::Rectangle {
+                width: 1920,
+                height: 1080
+            },
+            spa::utils::Rectangle {
+                width: 1,
+                height: 1
+            },
+            spa::utils::Rectangle {
+                width: 8192,
+                height: 8192
+            }
         ),
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoFramerate,
@@ -339,29 +459,43 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
             Fraction,
             spa::utils::Fraction { num: 30, denom: 1 },
             spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: 1000, denom: 1 }
+            spa::utils::Fraction {
+                num: 1000,
+                denom: 1
+            }
         ),
     );
-    let bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj.clone()))
-        .map_err(|e| format!("pod : {e:?}"))?
-        .0
-        .into_inner();
+    let bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj.clone()),
+    )
+    .map_err(|e| format!("pod : {e:?}"))?
+    .0
+    .into_inner();
     // With DMA-BUF enabled, the linear-modifier variant comes first (preferred), SHM stays as a fallback.
     let mut obj_dma = obj.clone();
     obj_dma.properties.push(spa::pod::Property {
         key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
         // MANDATORY | DONT_FIXATE (the latter is behind a libspa feature flag).
-        flags: spa::pod::PropertyFlags::from_bits_retain(spa::pod::PropertyFlags::MANDATORY.bits() | (1 << 4)),
+        flags: spa::pod::PropertyFlags::from_bits_retain(
+            spa::pod::PropertyFlags::MANDATORY.bits() | (1 << 4),
+        ),
         value: spa::pod::Value::Choice(spa::pod::ChoiceValue::Long(spa::utils::Choice(
             spa::utils::ChoiceFlags::empty(),
             // DRM_FORMAT_MOD_LINEAR only: the CPU can still read it if the GPU import is unavailable.
-            spa::utils::ChoiceEnum::Enum { default: 0i64, alternatives: vec![0i64] },
+            spa::utils::ChoiceEnum::Enum {
+                default: 0i64,
+                alternatives: vec![0i64],
+            },
         ))),
     });
-    let bytes_dma: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj_dma))
-        .map_err(|e| format!("pod : {e:?}"))?
-        .0
-        .into_inner();
+    let bytes_dma: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj_dma),
+    )
+    .map_err(|e| format!("pod : {e:?}"))?
+    .0
+    .into_inner();
     let mut params = vec![Pod::from_bytes(&bytes).ok_or("invalid pod")?];
     if dmabuf {
         params.insert(0, Pod::from_bytes(&bytes_dma).ok_or("invalid pod")?);
@@ -382,7 +516,10 @@ fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: W
             ml.quit();
         }
     });
-    let _ = timer.update_timer(Some(Duration::from_millis(100)), Some(Duration::from_millis(100)));
+    let _ = timer.update_timer(
+        Some(Duration::from_millis(100)),
+        Some(Duration::from_millis(100)),
+    );
     mainloop.run();
     drop(conn);
     Ok(())
@@ -396,12 +533,15 @@ fn tracing_log(args: std::fmt::Arguments<'_>) {
 fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelFormat) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNT: AtomicU32 = AtomicU32::new(0);
-    let Ok(path) = std::env::var("RDSKTP_DUMP_FRAME") else { return };
+    let Ok(path) = std::env::var("RDSKTP_DUMP_FRAME") else {
+        return;
+    };
     if COUNT.fetch_add(1, Ordering::Relaxed) != 20 {
         return;
     }
     let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
     for row in src.chunks_exact(stride).take(h as usize) {
+        #[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks` is too recent for the MSRV
         for px in row[..w as usize * 4].chunks_exact(4) {
             match format {
                 PixelFormat::Bgra8 => out.extend_from_slice(&[px[2], px[1], px[0]]),

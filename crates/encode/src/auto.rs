@@ -55,7 +55,14 @@ pub struct AutoEncoder {
 
 impl AutoEncoder {
     pub fn new(choice: EncoderChoice, fps: f32, bitrate_bps: u32) -> Self {
-        Self { choice, fps, bitrate_bps, inner: None, name: "none", keyframe_pending: false }
+        Self {
+            choice,
+            fps,
+            bitrate_bps,
+            inner: None,
+            name: "none",
+            keyframe_pending: false,
+        }
     }
 
     /// Backend in use (`"none"` until the first frame).
@@ -65,24 +72,40 @@ impl AutoEncoder {
 
     #[cfg(feature = "vaapi")]
     fn hardware(&self, frame: &Frame) -> Result<Box<dyn FrameEncoder>, EncodeError> {
-        let cfg = crate::VaapiConfig { device: None, bitrate_bps: self.bitrate_bps, fps: self.fps };
-        Ok(Box::new(crate::VaapiEncoder::new(&cfg, frame.width, frame.height)?))
+        let cfg = crate::VaapiConfig {
+            device: None,
+            bitrate_bps: self.bitrate_bps,
+            fps: self.fps,
+        };
+        Ok(Box::new(crate::VaapiEncoder::new(
+            &cfg,
+            frame.width,
+            frame.height,
+        )?))
     }
 
     #[cfg(not(feature = "vaapi"))]
     fn hardware(&self, _frame: &Frame) -> Result<Box<dyn FrameEncoder>, EncodeError> {
-        Err(EncodeError::Unsupported("built without the `vaapi` feature".into()))
+        Err(EncodeError::Unsupported(
+            "built without the `vaapi` feature".into(),
+        ))
     }
 
     #[cfg(feature = "openh264")]
     fn software(&self) -> Result<Box<dyn FrameEncoder>, EncodeError> {
-        let cfg = crate::OpenH264Config { fps: self.fps, bitrate_bps: self.bitrate_bps, ..Default::default() };
+        let cfg = crate::OpenH264Config {
+            fps: self.fps,
+            bitrate_bps: self.bitrate_bps,
+            ..Default::default()
+        };
         Ok(Box::new(crate::OpenH264Encoder::new(&cfg)?))
     }
 
     #[cfg(not(feature = "openh264"))]
     fn software(&self) -> Result<Box<dyn FrameEncoder>, EncodeError> {
-        Err(EncodeError::Unsupported("built without the `openh264` feature".into()))
+        Err(EncodeError::Unsupported(
+            "built without the `openh264` feature".into(),
+        ))
     }
 
     fn init(&mut self, frame: &Frame) -> Result<(), EncodeError> {

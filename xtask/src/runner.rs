@@ -178,7 +178,15 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         ("deploy", deploy_cmd, min(5), None),
         (
             "configure-kwin",
-            format!("VM_OUTPUTS={} bash {VM} {}", o.outputs, if o.login { "login-config" } else { "kwin-config" }),
+            format!(
+                "VM_OUTPUTS={} bash {VM} {}",
+                o.outputs,
+                if o.login {
+                    "login-config"
+                } else {
+                    "kwin-config"
+                }
+            ),
             min(if o.login { 6 } else { 3 }),
             (!o.kwin).then_some("--session synthetic"),
         ),
@@ -219,8 +227,16 @@ pub fn vm_test(o: &Opts) -> ExitCode {
             format!("bash {VM} logs journal rdsktp"),
             min(2),
         ),
-        ("journal-authd", format!("bash {VM} logs journal rdsktp-authd"), min(2)),
-        ("journal-agent", format!("bash {VM} logs journal rdsktp-agent@dev"), min(2)),
+        (
+            "journal-authd",
+            format!("bash {VM} logs journal rdsktp-authd"),
+            min(2),
+        ),
+        (
+            "journal-agent",
+            format!("bash {VM} logs journal rdsktp-agent@dev"),
+            min(2),
+        ),
         ("journal-all", format!("bash {VM} logs journal"), min(2)),
         ("console", format!("bash {VM} logs console"), min(2)),
     ];

@@ -34,7 +34,11 @@ pub enum Request {
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Login { username, .. } => f.debug_struct("Login").field("username", username).field("password", &"***").finish(),
+            Self::Login { username, .. } => f
+                .debug_struct("Login")
+                .field("username", username)
+                .field("password", &"***")
+                .finish(),
         }
     }
 }
@@ -43,10 +47,14 @@ impl std::fmt::Debug for Request {
 #[serde(tag = "type")]
 pub enum Response {
     /// Accompanied by a descriptor connected to the session agent.
-    Granted { uid: u32 },
+    Granted {
+        uid: u32,
+    },
     /// Authentication refused, without detail (no oracle on account existence).
     Denied,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -86,15 +94,25 @@ pub fn read_request(stream: &mut UnixStream) -> Result<Request, ProtoError> {
 }
 
 /// Sends the response; `fd` (at most one) is passed with the first byte.
-pub fn send_response(stream: &mut UnixStream, resp: &Response, fd: Option<RawFd>) -> Result<(), ProtoError> {
+pub fn send_response(
+    stream: &mut UnixStream,
+    resp: &Response,
+    fd: Option<RawFd>,
+) -> Result<(), ProtoError> {
     let buf = encode(resp)?;
     match fd {
         None => stream.write_all(&buf)?,
         Some(fd) => {
             let fds = [fd];
             let cmsg = [ControlMessage::ScmRights(&fds)];
-            let sent = sendmsg::<()>(stream.as_raw_fd(), &[IoSlice::new(&buf)], &cmsg, MsgFlags::empty(), None)
-                .map_err(|e| ProtoError::Io(e.into()))?;
+            let sent = sendmsg::<()>(
+                stream.as_raw_fd(),
+                &[IoSlice::new(&buf)],
+                &cmsg,
+                MsgFlags::empty(),
+                None,
+            )
+            .map_err(|e| ProtoError::Io(e.into()))?;
             if sent < buf.len() {
                 stream.write_all(&buf[sent..])?;
             }
@@ -109,8 +127,13 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
     let mut cmsg_space = nix::cmsg_space!([RawFd; 1]);
     let (got, fd) = {
         let mut iov = [IoSliceMut::new(&mut buf)];
-        let msg = recvmsg::<()>(stream.as_raw_fd(), &mut iov, Some(&mut cmsg_space), MsgFlags::MSG_CMSG_CLOEXEC)
-            .map_err(|e| ProtoError::Io(e.into()))?;
+        let msg = recvmsg::<()>(
+            stream.as_raw_fd(),
+            &mut iov,
+            Some(&mut cmsg_space),
+            MsgFlags::MSG_CMSG_CLOEXEC,
+        )
+        .map_err(|e| ProtoError::Io(e.into()))?;
         let mut fd = None;
         if let Ok(cmsgs) = msg.cmsgs() {
             for c in cmsgs {
@@ -128,7 +151,9 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
         (msg.bytes, fd)
     };
     if got == 0 {
-        return Err(ProtoError::Invalid("connection closed without a response".into()));
+        return Err(ProtoError::Invalid(
+            "connection closed without a response".into(),
+        ));
     }
     // The length may arrive in several chunks: complete it with normal reads.
     let mut have = got;
@@ -153,8 +178,12 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
 /// or a path (`/`, `@`, spaces, control characters…).
 pub fn valid_username(name: &str) -> bool {
     let mut chars = name.chars();
-    let ok_first = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
-    ok_first && name.len() <= 32 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    let ok_first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_');
+    ok_first
+        && name.len() <= 32
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 #[cfg(test)]
@@ -165,7 +194,10 @@ mod tests {
     #[test]
     fn request_roundtrip_and_password_not_in_debug() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        let req = Request::Login { username: "alice".into(), password: "s3cret!".into() };
+        let req = Request::Login {
+            username: "alice".into(),
+            password: "s3cret!".into(),
+        };
         send_request(&mut a, &req).unwrap();
         let got = read_request(&mut b).unwrap();
         assert_eq!(got, req);
@@ -175,7 +207,10 @@ mod tests {
     #[test]
     fn oversized_credentials_are_rejected() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        let req = Request::Login { username: "u".repeat(MAX_USERNAME + 1), password: "x".into() };
+        let req = Request::Login {
+            username: "u".repeat(MAX_USERNAME + 1),
+            password: "x".into(),
+        };
         send_request(&mut a, &req).unwrap();
         assert!(read_request(&mut b).is_err());
     }
@@ -184,7 +219,12 @@ mod tests {
     fn granted_response_carries_a_working_fd() {
         let (mut server, mut client) = UnixStream::pair().unwrap();
         let (agent_side, mut agent_peer) = UnixStream::pair().unwrap();
-        send_response(&mut server, &Response::Granted { uid: 1000 }, Some(agent_side.as_fd().as_raw_fd())).unwrap();
+        send_response(
+            &mut server,
+            &Response::Granted { uid: 1000 },
+            Some(agent_side.as_fd().as_raw_fd()),
+        )
+        .unwrap();
         let (resp, fd) = recv_response(&mut client).unwrap();
         assert_eq!(resp, Response::Granted { uid: 1000 });
         let mut passed = UnixStream::from(fd.expect("descriptor passed"));
@@ -208,7 +248,18 @@ mod tests {
         for ok in ["alice", "dev", "_apt", "a-b_c9"] {
             assert!(valid_username(ok), "{ok}");
         }
-        for bad in ["", "Alice", "a b", "a/b", "a@b", "-x", "9x", "a\nb", "../x", &"a".repeat(33)] {
+        for bad in [
+            "",
+            "Alice",
+            "a b",
+            "a/b",
+            "a@b",
+            "-x",
+            "9x",
+            "a\nb",
+            "../x",
+            &"a".repeat(33),
+        ] {
             assert!(!valid_username(bad), "{bad:?}");
         }
     }

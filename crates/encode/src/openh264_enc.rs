@@ -80,7 +80,10 @@ impl OpenH264Encoder {
             .intra_frame_period(period);
         let inner = Encoder::with_api_config(api, config)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
-        Ok(Self { inner, scratch: Vec::new() })
+        Ok(Self {
+            inner,
+            scratch: Vec::new(),
+        })
     }
 
     pub fn force_keyframe(&mut self) {
@@ -100,10 +103,19 @@ impl FrameEncoder for OpenH264Encoder {
                 // No GPU path here: copy the pixels out of the buffer and encode them as SHM.
                 let need = frame.stride as usize * frame.height as usize;
                 let copy = crate::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
-                let shm = Frame { output: frame.output, width: frame.width, height: frame.height, stride: frame.stride, format: frame.format, data: FrameData::Shm(copy) };
+                let shm = Frame {
+                    output: frame.output,
+                    width: frame.width,
+                    height: frame.height,
+                    stride: frame.stride,
+                    format: frame.format,
+                    data: FrameData::Shm(copy),
+                };
                 return self.encode(&shm);
             }
-            FrameData::Encoded { .. } => return Err(EncodeError::Unsupported("already-encoded frame".into())),
+            FrameData::Encoded { .. } => {
+                return Err(EncodeError::Unsupported("already-encoded frame".into()))
+            }
         };
         let (w, h) = (frame.width as usize, frame.height as usize);
         let compact = frame.format == PixelFormat::Rgba8 && frame.stride as usize == w * 4;
@@ -113,14 +125,19 @@ impl FrameEncoder for OpenH264Encoder {
             // BGRA and/or non-compact stride (PipeWire): normalization to compact RGBA.
             let stride = frame.stride as usize;
             if data.len() < stride * h || stride < w * 4 {
-                return Err(EncodeError::Unsupported("buffer too short for stride/height".into()));
+                return Err(EncodeError::Unsupported(
+                    "buffer too short for stride/height".into(),
+                ));
             }
             self.scratch.clear();
             self.scratch.reserve(w * h * 4);
             for row in data.chunks_exact(stride).take(h) {
+                #[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks` needs a newer MSRV
                 for px in row[..w * 4].chunks_exact(4) {
                     match frame.format {
-                        PixelFormat::Bgra8 => self.scratch.extend_from_slice(&[px[2], px[1], px[0], 255]),
+                        PixelFormat::Bgra8 => {
+                            self.scratch.extend_from_slice(&[px[2], px[1], px[0], 255])
+                        }
                         PixelFormat::Rgba8 => self.scratch.extend_from_slice(px),
                     }
                 }

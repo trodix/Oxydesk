@@ -11,6 +11,7 @@ use rdp_test_client::session::UnimplementedSession;
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
 [--no-nla] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
 #[cfg_attr(not(feature = "ironrdp"), allow(dead_code))]
@@ -90,8 +91,43 @@ fn real_session(_: &Args) -> Box<dyn Session> {
     Box::new(UnimplementedSession)
 }
 
+/// `--analyze-wav FILE [HZ MIN_WINDOWS NAME]`: checks that a recording (QEMU `wav` backend) carries a tone
+/// (default: the 440 Hz test tone, 3 half-second windows). Prints one JSON line like a report check;
+/// exit code 0 iff the tone is present.
+fn analyze_wav(path: &str, hz: f64, min_windows: usize, name: &str) -> ExitCode {
+    let (passed, detail) = match std::fs::read(path) {
+        Ok(bytes) => rdp_test_client::audio::analyze_wav(&bytes, hz, min_windows),
+        Err(e) => (false, format!("cannot read {path}: {e}")),
+    };
+    println!(
+        "{}",
+        serde_json::json!({"name": name, "passed": passed, "detail": detail})
+    );
+    if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 fn main() -> ExitCode {
-    let args = match parse(std::env::args().skip(1).collect()) {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("--analyze-wav") {
+        return match raw.as_slice() {
+            [_, path] => analyze_wav(
+                path,
+                rdp_test_client::audio::TONE_HZ,
+                3,
+                "audio_tone_in_guest",
+            ),
+            [_, path, hz, min, name] => match (hz.parse(), min.parse()) {
+                (Ok(hz), Ok(min)) => analyze_wav(path, hz, min, name),
+                _ => ExitCode::from(2),
+            },
+            _ => ExitCode::from(2),
+        };
+    }
+    let args = match parse(raw) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}\n{USAGE}");

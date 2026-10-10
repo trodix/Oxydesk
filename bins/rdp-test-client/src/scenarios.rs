@@ -13,6 +13,8 @@ pub struct Config {
     pub key_samples: usize,
     pub max_key_latency_ms: f64,
     pub timeout: Duration,
+    /// How long to retry connecting after a connection loss.
+    pub reconnect_timeout: Duration,
 }
 
 impl Default for Config {
@@ -24,6 +26,7 @@ impl Default for Config {
             key_samples: 20,
             max_key_latency_ms: 250.0,
             timeout: Duration::from_secs(10),
+            reconnect_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -62,6 +65,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "clipboard_roundtrip",
             "clipboard_roundtrip_large",
             "audio_tone",
+            "reconnect",
         ]
         .into_iter()
         .chain((cfg.outputs > 1).then_some("multi_screen"))
@@ -79,6 +83,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
     audio_tone(s, cfg, r);
+    reconnect(s, cfg, r);
     s.close();
 }
 
@@ -107,17 +112,37 @@ fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     let start = Instant::now();
     let mut detail = String::new();
     while start.elapsed() < cfg.timeout {
-        let Ok(f) = s.next_frame(cfg.timeout) else { break };
+        let Ok(f) = s.next_frame(cfg.timeout) else {
+            break;
+        };
         let seen: Vec<Option<[u8; 3]>> = (0..cfg.outputs)
             .map(|k| f.block_mean(k * cfg.width + 2 * BLOCK, 0, BLOCK))
             .collect();
-        if seen.iter().enumerate().all(|(k, m)| m.is_some_and(|m| close_to(m, PALETTE[k % PALETTE.len()]))) {
-            r.check("multi_screen", true, format!("{} screens identified in a {}x{} desktop", cfg.outputs, f.width, f.height));
+        if seen
+            .iter()
+            .enumerate()
+            .all(|(k, m)| m.is_some_and(|m| close_to(m, PALETTE[k % PALETTE.len()])))
+        {
+            r.check(
+                "multi_screen",
+                true,
+                format!(
+                    "{} screens identified in a {}x{} desktop",
+                    cfg.outputs, f.width, f.height
+                ),
+            );
             return;
         }
-        detail = format!("desktop {}x{}, identity blocks read: {seen:?}", f.width, f.height);
+        detail = format!(
+            "desktop {}x{}, identity blocks read: {seen:?}",
+            f.width, f.height
+        );
     }
-    r.check("multi_screen", false, format!("screens not identified ({detail})"));
+    r.check(
+        "multi_screen",
+        false,
+        format!("screens not identified ({detail})"),
+    );
 }
 
 /// The server plays `TONE_HZ`: we must receive ≥ 1 s of continuous PCM (at real-time pace) whose
@@ -125,7 +150,7 @@ fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
 fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     const WINDOW_SECS: f64 = 1.5;
     const SKIP_SECS: f64 = 0.3; // stream priming
-    // Packets accumulated during the other scenarios are stale: restart from a fresh stream.
+                                // Packets accumulated during the other scenarios are stale: restart from a fresh stream.
     while let Ok(Some(c)) = s.next_audio(Duration::ZERO) {
         if c.arrived.elapsed() < Duration::from_millis(5) {
             break;
@@ -150,7 +175,9 @@ fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
                     samples.extend(mono);
                 }
                 last_at = Some(now);
-                if first.is_some_and(|f| now.duration_since(f).as_secs_f64() >= WINDOW_SECS + SKIP_SECS) {
+                if first
+                    .is_some_and(|f| now.duration_since(f).as_secs_f64() >= WINDOW_SECS + SKIP_SECS)
+                {
                     break;
                 }
             }
@@ -162,7 +189,11 @@ fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         }
     }
     let (Some((rate, channels)), Some(first), Some(last_at)) = (format, first, last_at) else {
-        r.check("audio_tone", false, "no audio packet received (RDPSND channel not negotiated?)");
+        r.check(
+            "audio_tone",
+            false,
+            "no audio packet received (RDPSND channel not negotiated?)",
+        );
         return;
     };
     let wall = last_at.duration_since(first).as_secs_f64().max(1e-6);
@@ -292,4 +323,65 @@ fn clipboard(s: &mut dyn Session, cfg: &Config, name: &str, text: &str, r: &mut 
         Ok(None) => r.check(name, false, "no text received before the timeout"),
         Err(e) => r.check(name, false, e),
     }
+}
+
+/// Reconnects on the same server after an abrupt link loss, then after a clean disconnect. The
+/// session of the server must survive both: a non-black desktop of the expected size comes back.
+/// The server handles one connection at a time and only notices a dead peer after a while, so the
+/// first attempts after an abort may be refused: they are retried until the timeout.
+fn reconnect(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    let mut detail = Vec::new();
+    let mut ok = true;
+    for (how, abrupt) in [("abort", true), ("close", false)] {
+        if abrupt {
+            s.abort();
+        } else {
+            s.close();
+        }
+        let start = Instant::now();
+        let outcome = loop {
+            match s.connect() {
+                Ok(size) => break Ok((size, start.elapsed())),
+                Err(e) if start.elapsed() < cfg.reconnect_timeout => {
+                    let _ = e;
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        match outcome {
+            Err(e) => {
+                ok = false;
+                detail.push(format!("after {how}: {e}"));
+                break;
+            }
+            Ok((size, took)) => {
+                let expected = (cfg.width * cfg.outputs, cfg.height);
+                let shown = s.next_frame(cfg.timeout).map(|f| {
+                    let non_black = f.rgba.chunks(4).any(|p| p[0] > 8 || p[1] > 8 || p[2] > 8);
+                    (
+                        (f.width, f.height) == expected && size == expected && non_black,
+                        f,
+                    )
+                });
+                match shown {
+                    Ok((true, _)) => {
+                        detail.push(format!("after {how}: ok in {} ms", took.as_millis()))
+                    }
+                    Ok((false, f)) => {
+                        ok = false;
+                        detail.push(format!(
+                            "after {how}: bad desktop {}x{} (negotiated {}x{})",
+                            f.width, f.height, size.0, size.1
+                        ));
+                    }
+                    Err(e) => {
+                        ok = false;
+                        detail.push(format!("after {how}: no image: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    r.check("reconnect", ok, detail.join("; "));
 }

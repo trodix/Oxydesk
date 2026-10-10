@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 
 use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
 use rdsktp_core::layout::OutputId;
-use rdsktp_core::ports::{AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink, PointerButton};
+use rdsktp_core::ports::{
+    AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
+    PointerButton,
+};
 use rdsktp_encode::{AutoEncoder, EncoderChoice};
 
 const AUDIO_PACKET_MS: u32 = 20;
@@ -37,7 +40,9 @@ struct Desktop {
 }
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
-    args.windows(2).find(|w| w[0] == name).and_then(|w| w[1].parse().ok())
+    args.windows(2)
+        .find(|w| w[0] == name)
+        .and_then(|w| w[1].parse().ok())
 }
 
 fn runtime_dir() -> PathBuf {
@@ -52,9 +57,13 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     let width: u32 = arg(args, "--width").unwrap_or(1920);
     let height: u32 = arg(args, "--height").unwrap_or(1080);
     let outputs: u32 = arg(args, "--outputs").unwrap_or(1);
-    anyhow::ensure!((1..=16).contains(&outputs), "--outputs must be between 1 and 16");
+    anyhow::ensure!(
+        (1..=16).contains(&outputs),
+        "--outputs must be between 1 and 16"
+    );
     let fps: f32 = arg(args, "--fps").unwrap_or(30.0);
-    let audio_mode: String = arg(args, "--audio").unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
+    let audio_mode: String = arg(args, "--audio")
+        .unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
     let audio: Option<Arc<dyn AudioProvider>> = match audio_mode.as_str() {
         "off" => None,
         "tone" => Some(Arc::new(rdsktp_audio::ToneProvider)),
@@ -64,13 +73,17 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     let encoder: EncoderChoice = arg::<String>(args, "--encoder")
         .map_or(Ok(EncoderChoice::Auto), |v| v.parse())
         .map_err(|e: String| anyhow::anyhow!(e))?;
+    #[cfg_attr(not(feature = "kwin"), allow(unused_variables))]
     let dmabuf = match arg::<String>(args, "--dmabuf").as_deref() {
         Some("on") => true,
         Some("off") => false,
         None | Some("auto") => encoder.wants_dmabuf(),
         Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
     };
-    let make = |capture: Box<dyn CaptureSource>, input: Box<dyn InputSink>, clipboard: Box<dyn ClipboardBackend>, keep: Box<dyn std::any::Any + Send>| Desktop {
+    let make = |capture: Box<dyn CaptureSource>,
+                input: Box<dyn InputSink>,
+                clipboard: Box<dyn ClipboardBackend>,
+                keep: Box<dyn std::any::Any + Send>| Desktop {
         capture: Mutex::new(capture),
         input: Mutex::new(input),
         clipboard: Mutex::new(clipboard),
@@ -89,7 +102,12 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         "synthetic" => {
             anyhow::ensure!(outputs == 1, "--outputs > 1 requires --session kwin");
             let d = rdsktp_capture::SyntheticDesktop::new(width, height);
-            Ok(make(Box::new(d.clone()), Box::new(d.clone()), Box::new(d), Box::new(())))
+            Ok(make(
+                Box::new(d.clone()),
+                Box::new(d.clone()),
+                Box::new(d),
+                Box::new(()),
+            ))
         }
         "kwin" => {
             #[cfg(feature = "kwin")]
@@ -100,27 +118,38 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                         tracing::warn!("audio unavailable: {e}");
                     }
                 }
-                let socket: String = arg(args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
+                let socket: String =
+                    arg(args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
                 let programs = args
                     .windows(2)
                     .filter(|w| w[0] == "--session-app")
                     .map(|w| w[1].split_whitespace().map(str::to_owned).collect())
                     .collect();
-                let mut kwin = rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
-                    socket: socket.clone(),
-                    width,
-                    height,
-                    outputs,
-                    programs,
-                });
-                kwin.start().map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
+                let mut kwin =
+                    rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
+                        socket: socket.clone(),
+                        width,
+                        height,
+                        outputs,
+                        programs,
+                    });
+                kwin.start()
+                    .map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
                 let sources = (0..outputs as usize)
-                    .map(|i| rdsktp_capture::KwinCapture::start_with(Some(&socket), i, dmabuf).map(|c| Box::new(c) as Box<dyn CaptureSource>))
+                    .map(|i| {
+                        rdsktp_capture::KwinCapture::start_with(Some(&socket), i, dmabuf)
+                            .map(|c| Box::new(c) as Box<dyn CaptureSource>)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let capture = rdsktp_capture::MultiCapture::new(sources);
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
                 let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
-                Ok(make(Box::new(capture), Box::new(input), Box::new(clipboard), Box::new(kwin)))
+                Ok(make(
+                    Box::new(capture),
+                    Box::new(input),
+                    Box::new(clipboard),
+                    Box::new(kwin),
+                ))
             }
             #[cfg(not(feature = "kwin"))]
             anyhow::bail!("binary built without the `kwin` feature");
@@ -155,10 +184,16 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         encoders.push(Box::new(AutoEncoder::new(d.encoder, fps, 8_000_000)));
     }
     let mut last: Vec<Option<rdsktp_core::Frame>> = (0..d.outputs).map(|_| None).collect();
-    let period = d.poll_ms.map_or_else(|| Duration::from_secs_f32(1.0 / fps), |ms| Duration::from_secs_f32(ms / 1000.0));
+    let period = d.poll_ms.map_or_else(
+        || Duration::from_secs_f32(1.0 / fps),
+        |ms| Duration::from_secs_f32(ms / 1000.0),
+    );
     let min_interval = Duration::from_secs_f32(d.min_interval_ms / 1000.0);
     let wake = Arc::new(rdsktp_core::wake::Wake::default());
-    d.capture.lock().expect("capture mutex").set_waker(wake.clone());
+    d.capture
+        .lock()
+        .expect("capture mutex")
+        .set_waker(wake.clone());
     let mut next = Instant::now();
     let mut first = true;
     let mut seen = 0u64;
@@ -181,7 +216,12 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             if wanted_key {
                 encoders[i].request_keyframe();
             }
-            let fresh = match d.capture.lock().expect("capture mutex").recv_latest(OutputId(i as u32)) {
+            let fresh = match d
+                .capture
+                .lock()
+                .expect("capture mutex")
+                .recv_latest(OutputId(i as u32))
+            {
                 Ok(f) => f,
                 Err(e) => {
                     send(&w, &FromAgent::Fatal(format!("capture: {e}")));
@@ -209,7 +249,13 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
                     return;
                 }
             };
-            let msg = FromAgent::Video { output: i as u32, keyframe: encoded.keyframe, width: frame.width, height: frame.height, data: encoded.data };
+            let msg = FromAgent::Video {
+                output: i as u32,
+                keyframe: encoded.keyframe,
+                width: frame.width,
+                height: frame.height,
+                data: encoded.data,
+            };
             if !send(&w, &msg) {
                 stop.store(true, Ordering::Relaxed);
                 return;
@@ -222,7 +268,12 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
     }
 }
 
-fn audio_loop(provider: Arc<dyn AudioProvider>, params: AudioParams, w: Writer, stop: Arc<AtomicBool>) {
+fn audio_loop(
+    provider: Arc<dyn AudioProvider>,
+    params: AudioParams,
+    w: Writer,
+    stop: Arc<AtomicBool>,
+) {
     let mut source = match provider.open(params) {
         Ok(s) => s,
         Err(e) => {
@@ -246,11 +297,19 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             return;
         }
     };
-    if !send(&writer, &FromAgent::Hello { outputs: d.outputs, width: d.width, height: d.height }) {
+    if !send(
+        &writer,
+        &FromAgent::Hello {
+            outputs: d.outputs,
+            width: d.width,
+            height: d.height,
+        },
+    ) {
         return;
     }
     let stop = Arc::new(AtomicBool::new(false));
-    let keyframes: Arc<Vec<AtomicBool>> = Arc::new((0..d.outputs).map(|_| AtomicBool::new(true)).collect());
+    let keyframes: Arc<Vec<AtomicBool>> =
+        Arc::new((0..d.outputs).map(|_| AtomicBool::new(true)).collect());
     let mut threads = vec![{
         let (d, w, stop, kf) = (d.clone(), writer.clone(), stop.clone(), keyframes.clone());
         std::thread::spawn(move || video_loop(d, w, stop, kf))
@@ -294,7 +353,11 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::PointerButton { button: b, pressed } => {
                 if let Some(b) = button(b) {
-                    let _ = d.input.lock().expect("input mutex").pointer_button(b, pressed);
+                    let _ = d
+                        .input
+                        .lock()
+                        .expect("input mutex")
+                        .pointer_button(b, pressed);
                 }
             }
             ToAgent::Wheel { dx, dy } => {
@@ -310,7 +373,10 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     tracing::warn!("clipboard: {e}");
                 }
             }
-            ToAgent::AudioOpen { sample_rate, channels } => {
+            ToAgent::AudioOpen {
+                sample_rate,
+                channels,
+            } => {
                 if let Some(s) = audio_stop.take() {
                     s.store(true, Ordering::Relaxed);
                 }
@@ -318,7 +384,10 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     let flag = Arc::new(AtomicBool::new(false));
                     audio_stop = Some(flag.clone());
                     let w = writer.clone();
-                    let params = AudioParams { sample_rate, channels };
+                    let params = AudioParams {
+                        sample_rate,
+                        channels,
+                    };
                     // Stop if the connection drops (`stop`) or if this stream is closed (`flag`).
                     let global = stop.clone();
                     let both = Arc::new(AtomicBool::new(false));
@@ -329,7 +398,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                         }
                         both2.store(true, Ordering::Relaxed);
                     });
-                    threads.push(std::thread::spawn(move || audio_loop(provider, params, w, both)));
+                    threads.push(std::thread::spawn(move || {
+                        audio_loop(provider, params, w, both)
+                    }));
                 }
             }
             ToAgent::AudioClose => {
@@ -351,7 +422,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = runtime_dir();
@@ -362,11 +435,18 @@ fn main() -> anyhow::Result<()> {
     // The systemd user manager (session bus) starts in parallel with the logind session.
     let bus = runtime.join("bus");
     let deadline = Instant::now() + Duration::from_secs(30);
-    while arg::<String>(&args, "--session").as_deref().unwrap_or("kwin") == "kwin" && !bus.exists() && Instant::now() < deadline {
+    while arg::<String>(&args, "--session")
+        .as_deref()
+        .unwrap_or("kwin")
+        == "kwin"
+        && !bus.exists()
+        && Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(200));
     }
     let desktop = Arc::new(build_desktop(&args)?);
-    let socket: PathBuf = arg(&args, "--socket").unwrap_or_else(|| runtime.join("rdsktp-agent.sock"));
+    let socket: PathBuf =
+        arg(&args, "--socket").unwrap_or_else(|| runtime.join("rdsktp-agent.sock"));
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)?;
     // Only the user (owner) and root can connect; authd (root) passes the descriptor.
@@ -380,7 +460,9 @@ fn main() -> anyhow::Result<()> {
             let _ = old.shutdown(std::net::Shutdown::Both);
             let _ = handle.join();
         }
-        let Ok(handle_stream) = stream.try_clone() else { continue };
+        let Ok(handle_stream) = stream.try_clone() else {
+            continue;
+        };
         let d = desktop.clone();
         tracing::info!("client connected");
         current = Some((handle_stream, std::thread::spawn(move || serve(d, stream))));

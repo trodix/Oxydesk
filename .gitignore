@@ -3,3 +3,4 @@
 /vm/state
 *.qcow2
 *.deb
+/iso

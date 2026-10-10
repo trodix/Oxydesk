@@ -15,3 +15,16 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
           bash ci/check-deps.sh
+  features:
+    # Optional backends (KWin/PipeWire session, VA-API GPU encoder) against Debian 13's development headers.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libva-dev curl ca-certificates git
+      - uses: actions/checkout@v4
+      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - run: |
+          . "$HOME/.cargo/env"
+          F="--features rdsktp/kwin,rdsktp-agent/kwin,bench/kwin,rdsktp/vaapi,rdsktp-agent/vaapi,bench/vaapi,rdsktp-encode/openh264"
+          cargo clippy --workspace --all-targets $F -- -D warnings
+          cargo test --workspace $F

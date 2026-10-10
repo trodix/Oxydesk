@@ -23,22 +23,49 @@ pub enum ProtoError {
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
-    Key { scancode: u16, pressed: bool },
-    PointerMove { x: i32, y: i32 },
+    Key {
+        scancode: u16,
+        pressed: bool,
+    },
+    PointerMove {
+        x: i32,
+        y: i32,
+    },
     /// 0 left, 1 right, 2 middle, 3 back, 4 forward.
-    PointerButton { button: u8, pressed: bool },
-    Wheel { dx: i32, dy: i32 },
-    RequestKeyframe { output: u32 },
+    PointerButton {
+        button: u8,
+        pressed: bool,
+    },
+    Wheel {
+        dx: i32,
+        dy: i32,
+    },
+    RequestKeyframe {
+        output: u32,
+    },
     ClipboardSet(String),
-    AudioOpen { sample_rate: u32, channels: u16 },
+    AudioOpen {
+        sample_rate: u32,
+        channels: u16,
+    },
     AudioClose,
 }
 
 /// Messages from the agent to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FromAgent {
-    Hello { outputs: u32, width: u32, height: u32 },
-    Video { output: u32, keyframe: bool, width: u32, height: u32, data: Vec<u8> },
+    Hello {
+        outputs: u32,
+        width: u32,
+        height: u32,
+    },
+    Video {
+        output: u32,
+        keyframe: bool,
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
     ClipboardText(String),
     Audio(Vec<u8>),
     Fatal(String),
@@ -82,13 +109,19 @@ impl<'a> In<'a> {
         Ok(self.u8()? != 0)
     }
     fn u16(&mut self) -> Result<u16, ProtoError> {
-        Ok(u16::from_be_bytes(self.take(2)?.try_into().expect("2 bytes")))
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("2 bytes"),
+        ))
     }
     fn u32(&mut self) -> Result<u32, ProtoError> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")))
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
     }
     fn i32(&mut self) -> Result<i32, ProtoError> {
-        Ok(i32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")))
+        Ok(i32::from_be_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
     }
     fn rest(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.0).to_vec()
@@ -97,7 +130,11 @@ impl<'a> In<'a> {
         String::from_utf8(self.rest()).map_err(|_| ProtoError::Invalid("text is not UTF-8"))
     }
     fn end(&self) -> Result<(), ProtoError> {
-        if self.0.is_empty() { Ok(()) } else { Err(ProtoError::Invalid("extra bytes")) }
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(ProtoError::Invalid("extra bytes"))
+        }
     }
 }
 
@@ -139,7 +176,10 @@ impl Message for ToAgent {
                 o.bytes(t.as_bytes());
                 6
             }
-            Self::AudioOpen { sample_rate, channels } => {
+            Self::AudioOpen {
+                sample_rate,
+                channels,
+            } => {
                 o.u32(*sample_rate);
                 o.u16(*channels);
                 7
@@ -152,13 +192,28 @@ impl Message for ToAgent {
     fn decode(tag: u8, payload: &[u8]) -> Result<Self, ProtoError> {
         let mut i = In(payload);
         let msg = match tag {
-            1 => Self::Key { scancode: i.u16()?, pressed: i.bool()? },
-            2 => Self::PointerMove { x: i.i32()?, y: i.i32()? },
-            3 => Self::PointerButton { button: i.u8()?, pressed: i.bool()? },
-            4 => Self::Wheel { dx: i.i32()?, dy: i.i32()? },
+            1 => Self::Key {
+                scancode: i.u16()?,
+                pressed: i.bool()?,
+            },
+            2 => Self::PointerMove {
+                x: i.i32()?,
+                y: i.i32()?,
+            },
+            3 => Self::PointerButton {
+                button: i.u8()?,
+                pressed: i.bool()?,
+            },
+            4 => Self::Wheel {
+                dx: i.i32()?,
+                dy: i.i32()?,
+            },
             5 => Self::RequestKeyframe { output: i.u32()? },
             6 => Self::ClipboardSet(i.string()?),
-            7 => Self::AudioOpen { sample_rate: i.u32()?, channels: i.u16()? },
+            7 => Self::AudioOpen {
+                sample_rate: i.u32()?,
+                channels: i.u16()?,
+            },
             8 => Self::AudioClose,
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -171,13 +226,23 @@ impl Message for FromAgent {
     fn encode(&self) -> (u8, Vec<u8>) {
         let mut o = Out(Vec::new());
         let tag = match self {
-            Self::Hello { outputs, width, height } => {
+            Self::Hello {
+                outputs,
+                width,
+                height,
+            } => {
                 o.u32(*outputs);
                 o.u32(*width);
                 o.u32(*height);
                 1
             }
-            Self::Video { output, keyframe, width, height, data } => {
+            Self::Video {
+                output,
+                keyframe,
+                width,
+                height,
+                data,
+            } => {
                 o.u32(*output);
                 o.u8(u8::from(*keyframe));
                 o.u32(*width);
@@ -205,11 +270,21 @@ impl Message for FromAgent {
         let mut i = In(payload);
         let msg = match tag {
             1 => {
-                let m = Self::Hello { outputs: i.u32()?, width: i.u32()?, height: i.u32()? };
+                let m = Self::Hello {
+                    outputs: i.u32()?,
+                    width: i.u32()?,
+                    height: i.u32()?,
+                };
                 i.end()?;
                 m
             }
-            2 => Self::Video { output: i.u32()?, keyframe: i.bool()?, width: i.u32()?, height: i.u32()?, data: i.rest() },
+            2 => Self::Video {
+                output: i.u32()?,
+                keyframe: i.bool()?,
+                width: i.u32()?,
+                height: i.u32()?,
+                data: i.rest(),
+            },
             3 => Self::ClipboardText(i.string()?),
             4 => Self::Audio(i.rest()),
             5 => Self::Fatal(i.string()?),
@@ -264,16 +339,35 @@ mod tests {
 
     #[test]
     fn all_messages_roundtrip() {
-        roundtrip(ToAgent::Key { scancode: 0xE01D, pressed: true });
+        roundtrip(ToAgent::Key {
+            scancode: 0xE01D,
+            pressed: true,
+        });
         roundtrip(ToAgent::PointerMove { x: -5, y: 1079 });
-        roundtrip(ToAgent::PointerButton { button: 4, pressed: false });
+        roundtrip(ToAgent::PointerButton {
+            button: 4,
+            pressed: false,
+        });
         roundtrip(ToAgent::Wheel { dx: 0, dy: -120 });
         roundtrip(ToAgent::RequestKeyframe { output: 1 });
         roundtrip(ToAgent::ClipboardSet("Café 😀 日本".into()));
-        roundtrip(ToAgent::AudioOpen { sample_rate: 48_000, channels: 2 });
+        roundtrip(ToAgent::AudioOpen {
+            sample_rate: 48_000,
+            channels: 2,
+        });
         roundtrip(ToAgent::AudioClose);
-        roundtrip(FromAgent::Hello { outputs: 2, width: 1920, height: 1080 });
-        roundtrip(FromAgent::Video { output: 1, keyframe: true, width: 1920, height: 1080, data: vec![0, 0, 0, 1, 9] });
+        roundtrip(FromAgent::Hello {
+            outputs: 2,
+            width: 1920,
+            height: 1080,
+        });
+        roundtrip(FromAgent::Video {
+            output: 1,
+            keyframe: true,
+            width: 1920,
+            height: 1080,
+            data: vec![0, 0, 0, 1, 9],
+        });
         roundtrip(FromAgent::ClipboardText("x".into()));
         roundtrip(FromAgent::Audio(vec![1, 2, 3, 4]));
         roundtrip(FromAgent::Fatal("boom".into()));

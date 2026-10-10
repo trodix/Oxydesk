@@ -1,3 +1,4 @@
+#![allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks` is too recent for the MSRV
 use std::time::{Duration, Instant};
 
 use rdsktp_core::error::AudioError;
@@ -12,7 +13,11 @@ pub struct ToneProvider;
 
 impl AudioProvider for ToneProvider {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
-        Ok(Box::new(ToneSource { params, produced: 0, started: Instant::now() }))
+        Ok(Box::new(ToneSource {
+            params,
+            produced: 0,
+            started: Instant::now(),
+        }))
     }
 }
 
@@ -29,7 +34,9 @@ impl AudioSource for ToneSource {
         let rate = f64::from(self.params.sample_rate);
         for frame in buf.chunks_exact_mut(fb) {
             let t = self.produced as f64 / rate;
-            let v = (f64::from(AMPLITUDE) * (2.0 * std::f64::consts::PI * f64::from(TONE_HZ) * t).sin() * f64::from(i16::MAX)) as i16;
+            let v = (f64::from(AMPLITUDE)
+                * (2.0 * std::f64::consts::PI * f64::from(TONE_HZ) * t).sin()
+                * f64::from(i16::MAX)) as i16;
             for ch in frame.chunks_exact_mut(2) {
                 ch.copy_from_slice(&v.to_le_bytes());
             }
@@ -50,7 +57,10 @@ mod tests {
 
     #[test]
     fn produces_paced_stereo_sine() {
-        let p = AudioParams { sample_rate: 48_000, channels: 2 };
+        let p = AudioParams {
+            sample_rate: 48_000,
+            channels: 2,
+        };
         let mut src = ToneProvider.open(p).unwrap();
         let t0 = Instant::now();
         let mut buf = vec![0u8; p.bytes_for_ms(100)];
@@ -58,6 +68,8 @@ mod tests {
         assert!(t0.elapsed() >= Duration::from_millis(95), "must be paced");
         // both channels are identical and the signal is not zero
         assert!(buf.chunks_exact(4).all(|f| f[..2] == f[2..]));
-        assert!(buf.chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]).abs() > 10_000));
+        assert!(buf
+            .chunks_exact(2)
+            .any(|s| i16::from_le_bytes([s[0], s[1]]).abs() > 10_000));
     }
 }

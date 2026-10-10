@@ -33,15 +33,25 @@ fn frame(n: u32) -> Frame {
             px[o..o + 4].copy_from_slice(&[255, 0, 0, 255]);
         }
     }
-    Frame { output: OutputId(0), width: W, height: H, stride: W * 4, format: PixelFormat::Bgra8, data: FrameData::Shm(px) }
+    Frame {
+        output: OutputId(0),
+        width: W,
+        height: H,
+        stride: W * 4,
+        format: PixelFormat::Bgra8,
+        data: FrameData::Shm(px),
+    }
 }
 
 fn decoder() -> Option<Decoder> {
     let path = std::env::var("RDSKTP_OPENH264_LIB").ok().or_else(|| {
-        ["/usr/lib64/libopenh264.so.8", "/usr/lib/x86_64-linux-gnu/libopenh264.so.8"]
-            .iter()
-            .find(|p| std::path::Path::new(p).exists())
-            .map(|p| p.to_string())
+        [
+            "/usr/lib64/libopenh264.so.8",
+            "/usr/lib/x86_64-linux-gnu/libopenh264.so.8",
+        ]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .map(|p| p.to_string())
     })?;
     // SAFETY: test-only, system library.
     let api = unsafe { OpenH264API::from_blob_path_unchecked(path) }.ok()?;
@@ -63,7 +73,14 @@ fn nal_types(annex_b: &[u8]) -> Vec<u8> {
 }
 
 fn f_clone(f: &Frame) -> Frame {
-    Frame { output: f.output, width: f.width, height: f.height, stride: f.stride, format: f.format, data: FrameData::Shm(Vec::new()) }
+    Frame {
+        output: f.output,
+        width: f.width,
+        height: f.height,
+        stride: f.stride,
+        format: f.format,
+        data: FrameData::Shm(Vec::new()),
+    }
 }
 
 fn rgb_at(rgba: &[u8], w: usize, x: usize, y: usize) -> [i32; 3] {
@@ -75,7 +92,9 @@ fn rgb_at(rgba: &[u8], w: usize, x: usize, y: usize) -> [i32; 3] {
 /// (independent of VA-API). `None` when udmabuf is not available.
 fn to_dmabuf(f: &Frame) -> Option<Frame> {
     use std::os::fd::{FromRawFd, OwnedFd};
-    let FrameData::Shm(px) = &f.data else { return None };
+    let FrameData::Shm(px) = &f.data else {
+        return None;
+    };
     let size = px.len().div_ceil(4096) * 4096;
     // SAFETY: plain syscalls on descriptors created here; every return value is checked.
     unsafe {
@@ -98,7 +117,12 @@ fn to_dmabuf(f: &Frame) -> Option<Frame> {
             offset: u64,
             size: u64,
         }
-        let req = Create { memfd: mem as u32, flags: 1, offset: 0, size: size as u64 };
+        let req = Create {
+            memfd: mem as u32,
+            flags: 1,
+            offset: 0,
+            size: size as u64,
+        };
         let fd = libc::ioctl(dev, 0x4018_7542, &req as *const Create);
         libc::close(dev);
         libc::close(mem);
@@ -111,7 +135,11 @@ fn to_dmabuf(f: &Frame) -> Option<Frame> {
             height: f.height,
             stride: f.stride,
             format: f.format,
-            data: FrameData::DmaBuf(DmaBuf { fd: OwnedFd::from_raw_fd(fd), offset: 0, modifier: 0 }),
+            data: FrameData::DmaBuf(DmaBuf {
+                fd: OwnedFd::from_raw_fd(fd),
+                offset: 0,
+                modifier: 0,
+            }),
         })
     }
 }
@@ -150,46 +178,79 @@ fn run(dmabuf: bool) {
             };
             d
         } else {
-            Frame { data: FrameData::Shm(match &f.data { FrameData::Shm(v) => v.clone(), _ => unreachable!() }), ..f_clone(&f) }
+            Frame {
+                data: FrameData::Shm(match &f.data {
+                    FrameData::Shm(v) => v.clone(),
+                    _ => unreachable!(),
+                }),
+                ..f_clone(&f)
+            }
         };
         let out = enc.encode(&sent).expect("encode");
         let types = nal_types(&out.data);
         if n == 0 || n == 15 {
             assert!(out.keyframe, "frame {n} must be a keyframe");
-            assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "frame {n}: SPS/PPS/IDR expected, got {types:?}");
+            assert!(
+                types.contains(&7) && types.contains(&8) && types.contains(&5),
+                "frame {n}: SPS/PPS/IDR expected, got {types:?}"
+            );
         } else {
             assert!(!out.keyframe, "frame {n} must be inter");
-            assert!(types.contains(&1) && !types.contains(&5), "frame {n}: P slice expected, got {types:?}");
+            assert!(
+                types.contains(&1) && !types.contains(&5),
+                "frame {n}: P slice expected, got {types:?}"
+            );
         }
 
         let yuv = dec.decode(&out.data).expect("decode").expect("picture");
         let (w, h) = yuv.dimensions();
-        assert_eq!((w as u32, h as u32), (W, H), "cropping must give the visible size");
+        assert_eq!(
+            (w as u32, h as u32),
+            (W, H),
+            "cropping must give the visible size"
+        );
         let mut rgba = vec![0u8; w * h * 4];
         yuv.write_rgba8(&mut rgba);
 
         // Markers survive lossy coding within a tolerance.
         let red = rgb_at(&rgba, w, 16, 16);
         let blue = rgb_at(&rgba, w, 80, 16);
-        assert!(red[0] > 200 && red[1] < 60 && red[2] < 60, "frame {n}: red marker {red:?}");
-        assert!(blue[2] > 200 && blue[0] < 60 && blue[1] < 60, "frame {n}: blue marker {blue:?}");
+        assert!(
+            red[0] > 200 && red[1] < 60 && red[2] < 60,
+            "frame {n}: red marker {red:?}"
+        );
+        assert!(
+            blue[2] > 200 && blue[0] < 60 && blue[1] < 60,
+            "frame {n}: blue marker {blue:?}"
+        );
 
         // Mean absolute error over a sampled grid (source is BGRA, decoded is RGBA).
-        let FrameData::Shm(src) = &f.data else { unreachable!() };
+        let FrameData::Shm(src) = &f.data else {
+            unreachable!()
+        };
         let (mut sum, mut cnt) = (0i64, 0i64);
         for y in (0..h).step_by(7) {
             for x in (0..w).step_by(7) {
                 let s = (y * w + x) * 4;
                 let d = rgb_at(&rgba, w, x, y);
-                sum += (d[0] - src[s + 2] as i32).abs() as i64 + (d[1] - src[s + 1] as i32).abs() as i64 + (d[2] - src[s] as i32).abs() as i64;
+                sum += (d[0] - src[s + 2] as i32).abs() as i64
+                    + (d[1] - src[s + 1] as i32).abs() as i64
+                    + (d[2] - src[s] as i32).abs() as i64;
                 cnt += 3;
             }
         }
         max_err = max_err.max(sum as f64 / cnt as f64);
     }
     if dmabuf {
-        assert_eq!(enc.gpu_frames(), 30, "every frame must go through the GPU import path");
+        assert_eq!(
+            enc.gpu_frames(),
+            30,
+            "every frame must go through the GPU import path"
+        );
     }
     eprintln!("max mean absolute error over 30 frames: {max_err:.2}");
-    assert!(max_err < 12.0, "decoded picture too far from the source: {max_err:.2}");
+    assert!(
+        max_err < 12.0,
+        "decoded picture too far from the source: {max_err:.2}"
+    );
 }

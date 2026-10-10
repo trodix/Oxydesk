@@ -30,7 +30,13 @@ use proto::zwlr_data_control_offer_v1::{self as offer_ev, ZwlrDataControlOfferV1
 use proto::zwlr_data_control_source_v1::{self as source_ev, ZwlrDataControlSourceV1};
 
 /// Text MIME types, from most to least preferred (receiving); all are offered (sending).
-const TEXT_MIMES: &[&str] = &["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"];
+const TEXT_MIMES: &[&str] = &[
+    "text/plain;charset=utf-8",
+    "UTF8_STRING",
+    "text/plain",
+    "TEXT",
+    "STRING",
+];
 /// Read cap for a remote selection.
 const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -52,11 +58,27 @@ struct State {
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
-    fn event(state: &mut Self, registry: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        if let wl_registry::Event::Global { name, interface, version } = event {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
             match interface.as_str() {
-                "zwlr_data_control_manager_v1" => state.manager = Some(registry.bind(name, version.min(1), qh, ())),
-                "wl_seat" if state.seat.is_none() => state.seat = Some(registry.bind(name, version.min(1), qh, ())),
+                "zwlr_data_control_manager_v1" => {
+                    state.manager = Some(registry.bind(name, version.min(1), qh, ()))
+                }
+                "wl_seat" if state.seat.is_none() => {
+                    state.seat = Some(registry.bind(name, version.min(1), qh, ()))
+                }
                 _ => {}
             }
         }
@@ -64,15 +86,38 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for State {
-    fn event(_: &mut Self, _: &wl_seat::WlSeat, _: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_seat::WlSeat,
+        _: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ZwlrDataControlManagerV1, ()> for State {
-    fn event(_: &mut Self, _: &ZwlrDataControlManagerV1, _: proto::zwlr_data_control_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &ZwlrDataControlManagerV1,
+        _: proto::zwlr_data_control_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ZwlrDataControlDeviceV1, ()> for State {
-    fn event(state: &mut Self, _: &ZwlrDataControlDeviceV1, event: device_ev::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlDeviceV1,
+        event: device_ev::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let device_ev::Event::Selection { id: Some(offer) } = event {
             state.on_selection(offer);
         }
@@ -84,7 +129,14 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for State {
 }
 
 impl Dispatch<ZwlrDataControlOfferV1, OfferMimes> for State {
-    fn event(_: &mut Self, _: &ZwlrDataControlOfferV1, event: offer_ev::Event, data: &OfferMimes, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrDataControlOfferV1,
+        event: offer_ev::Event,
+        data: &OfferMimes,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let offer_ev::Event::Offer { mime_type } = event;
         data.0.lock().expect("mimes").push(mime_type);
     }
@@ -94,7 +146,14 @@ impl Dispatch<ZwlrDataControlOfferV1, OfferMimes> for State {
 struct SourceText(String);
 
 impl Dispatch<ZwlrDataControlSourceV1, SourceText> for State {
-    fn event(_: &mut Self, source: &ZwlrDataControlSourceV1, event: source_ev::Event, data: &SourceText, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        source: &ZwlrDataControlSourceV1,
+        event: source_ev::Event,
+        data: &SourceText,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             source_ev::Event::Send { fd, .. } => {
                 let text = data.0.clone();
@@ -111,7 +170,10 @@ impl Dispatch<ZwlrDataControlSourceV1, SourceText> for State {
 
 impl State {
     fn on_selection(&mut self, offer: ZwlrDataControlOfferV1) {
-        let mimes = offer.data::<OfferMimes>().map(|m| m.0.lock().expect("mimes").clone()).unwrap_or_default();
+        let mimes = offer
+            .data::<OfferMimes>()
+            .map(|m| m.0.lock().expect("mimes").clone())
+            .unwrap_or_default();
         if mimes.contains(&self.instance_mime) {
             offer.destroy(); // our own selection
             return;
@@ -132,7 +194,8 @@ impl State {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             if reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-                *shared.incoming.lock().expect("incoming") = Some(String::from_utf8_lossy(&bytes).into_owned());
+                *shared.incoming.lock().expect("incoming") =
+                    Some(String::from_utf8_lossy(&bytes).into_owned());
             }
         });
     }
@@ -153,27 +216,50 @@ impl WaylandClipboard {
         let err = |m: String| ClipboardError::Backend(m);
         let conn = match socket {
             Some(name) => {
-                let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
-                let stream = std::os::unix::net::UnixStream::connect(std::path::Path::new(&dir).join(name))
-                    .map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
+                let dir = std::env::var_os("XDG_RUNTIME_DIR")
+                    .ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
+                let stream =
+                    std::os::unix::net::UnixStream::connect(std::path::Path::new(&dir).join(name))
+                        .map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
                 Connection::from_socket(stream)
             }
             None => Connection::connect_to_env(),
         }
         .map_err(|e| err(format!("Wayland connection: {e}")))?;
 
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let instance_mime = format!("application/x-rdsktp-instance-{}-{nonce:x}", std::process::id());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let instance_mime = format!(
+            "application/x-rdsktp-instance-{}-{nonce:x}",
+            std::process::id()
+        );
         let shared = Arc::new(Shared::default());
         let mut queue = conn.new_event_queue::<State>();
         let qh = queue.handle();
         let _registry = conn.display().get_registry(&qh, ());
-        let mut state = State { shared: shared.clone(), instance_mime: instance_mime.clone(), manager: None, seat: None, conn: conn.clone() };
-        queue.roundtrip(&mut state).map_err(|e| err(format!("Wayland registry: {e}")))?;
-        let manager = state.manager.clone().ok_or_else(|| err("zwlr_data_control_manager_v1 not announced by the compositor".into()))?;
-        let seat = state.seat.clone().ok_or_else(|| err("wl_seat missing".into()))?;
+        let mut state = State {
+            shared: shared.clone(),
+            instance_mime: instance_mime.clone(),
+            manager: None,
+            seat: None,
+            conn: conn.clone(),
+        };
+        queue
+            .roundtrip(&mut state)
+            .map_err(|e| err(format!("Wayland registry: {e}")))?;
+        let manager = state.manager.clone().ok_or_else(|| {
+            err("zwlr_data_control_manager_v1 not announced by the compositor".into())
+        })?;
+        let seat = state
+            .seat
+            .clone()
+            .ok_or_else(|| err("wl_seat missing".into()))?;
         let device = manager.get_data_device(&seat, &qh, ());
-        queue.roundtrip(&mut state).map_err(|e| err(format!("data device : {e}")))?;
+        queue
+            .roundtrip(&mut state)
+            .map_err(|e| err(format!("data device : {e}")))?;
 
         std::thread::Builder::new()
             .name("clipboard-wayland".into())
@@ -182,19 +268,30 @@ impl WaylandClipboard {
                 while queue.blocking_dispatch(&mut state).is_ok() {}
             })
             .map_err(|e| err(e.to_string()))?;
-        Ok(Self { conn, qh, manager, device, shared, instance_mime })
+        Ok(Self {
+            conn,
+            qh,
+            manager,
+            device,
+            shared,
+            instance_mime,
+        })
     }
 }
 
 impl ClipboardBackend for WaylandClipboard {
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        let source = self.manager.create_data_source(&self.qh, SourceText(text.to_string()));
+        let source = self
+            .manager
+            .create_data_source(&self.qh, SourceText(text.to_string()));
         for mime in TEXT_MIMES {
             source.offer((*mime).to_string());
         }
         source.offer(self.instance_mime.clone());
         self.device.set_selection(Some(&source));
-        self.conn.flush().map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
+        self.conn
+            .flush()
+            .map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
     }
 
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {

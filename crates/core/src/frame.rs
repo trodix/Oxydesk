@@ -23,7 +23,10 @@ pub enum FrameData {
     Shm(Vec<u8>),
     DmaBuf(DmaBuf),
     /// Already encoded as H.264 Annex-B by the session agent (see `PassthroughEncoder`).
-    Encoded { keyframe: bool, data: Vec<u8> },
+    Encoded {
+        keyframe: bool,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
