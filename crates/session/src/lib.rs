@@ -65,10 +65,55 @@ impl KwinSession {
             .env("XDG_MENU_PREFIX", "plasma-")
             .env("QT_QPA_PLATFORM", "wayland")
             .env("WAYLAND_DISPLAY", socket);
+        // Thème de curseur transparent : le backend virtuel de KWin dessine toujours son curseur
+        // logiciel dans l'image capturée (même en mode `hidden`/`metadata`), ce qui le doublerait
+        // avec celui du client RDP. Variables d'environnement seules : la config de l'utilisateur
+        // (kcminputrc) n'est pas modifiée.
+        let icons = runtime.join(BLANK_ICONS_DIR);
+        if icons.join(BLANK_THEME).is_dir() {
+            cmd.env("XCURSOR_PATH", &icons).env("XCURSOR_THEME", BLANK_THEME).env("XCURSOR_SIZE", "24");
+        }
         if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
             cmd.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/bus", runtime.display()));
         }
     }
+}
+
+const BLANK_ICONS_DIR: &str = "rdsktp-icons";
+const BLANK_THEME: &str = "rdsktp-blank";
+/// Noms de curseurs demandés par KWin/Qt ; tous pointent vers le même fichier transparent.
+const CURSOR_NAMES: &[&str] = &[
+    "default", "arrow", "top_left_arrow", "pointer", "text", "xterm", "ibeam", "hand1", "hand2", "pointing_hand",
+    "watch", "wait", "progress", "crosshair", "cross", "fleur", "move", "size_all", "size_hor", "size_ver",
+    "sb_h_double_arrow", "sb_v_double_arrow", "size_fdiag", "size_bdiag", "not-allowed", "forbidden",
+    "question_arrow", "help", "grab", "grabbing", "openhand", "closedhand", "copy", "alias", "context-menu",
+    "cell", "vertical-text", "col-resize", "row-resize", "e-resize", "w-resize", "n-resize", "s-resize",
+    "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize",
+];
+
+/// Fichier Xcursor d'une image 1x1 entièrement transparente (taille nominale 24).
+fn blank_xcursor() -> Vec<u8> {
+    let le = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let mut out = b"Xcur".to_vec();
+    out.extend(le(&[16, 0x1_0000, 1])); // en-tête, version, 1 entrée
+    out.extend(le(&[0xfffd_0002, 24, 28])); // type image, taille nominale, offset du chunk
+    out.extend(le(&[36, 0xfffd_0002, 24, 1, 1, 1, 0, 0, 0])); // chunk : w=h=1, hotspot 0, délai 0
+    out.extend(le(&[0])); // pixel ARGB transparent
+    out
+}
+
+fn write_blank_cursor_theme(runtime: &std::path::Path) -> std::io::Result<()> {
+    let dir = runtime.join(BLANK_ICONS_DIR).join(BLANK_THEME);
+    let cursors = dir.join("cursors");
+    std::fs::create_dir_all(&cursors)?;
+    std::fs::write(dir.join("index.theme"), format!("[Icon Theme]\nName={BLANK_THEME}\n"))?;
+    std::fs::write(cursors.join("left_ptr"), blank_xcursor())?;
+    for name in CURSOR_NAMES {
+        let link = cursors.join(name);
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink("left_ptr", link)?;
+    }
+    Ok(())
 }
 
 impl SessionProvider for KwinSession {
@@ -78,6 +123,9 @@ impl SessionProvider for KwinSession {
         let text = String::from_utf8_lossy(&out.stdout);
         let version = parse_kwin_version(&text).ok_or_else(|| format!("version de KWin illisible : {text:?}"))?;
         check_version(version)?;
+
+        // Un échec ici est sans gravité : le curseur du serveur sera simplement visible dans l'image.
+        let _ = write_blank_cursor_theme(&runtime);
 
         // Le cache des services doit connaître notre .desktop avant le démarrage de KWin.
         let mut sycoca = Command::new("kbuildsycoca6");
@@ -147,6 +195,16 @@ impl Drop for KwinSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blank_xcursor_is_well_formed() {
+        let b = super::blank_xcursor();
+        assert_eq!(&b[..4], b"Xcur");
+        assert_eq!(b.len(), 16 + 12 + 36 + 4);
+        assert_eq!(&b[b.len() - 4..], &[0, 0, 0, 0]);
+        // l'offset annoncé (28) pointe bien sur le chunk (16 octets d'en-tête + 12 de table)
+        assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()), 36);
+    }
+
     use super::*;
 
     #[test]

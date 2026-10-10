@@ -234,6 +234,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
             if src.len() < offset + need {
                 return;
             }
+            dump_debug_frame(&src[offset..offset + need], sz.width, sz.height, stride as usize, pixel);
             let frame = Frame {
                 output: OutputId(0),
                 width: sz.width,
@@ -315,4 +316,24 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
 
 fn tracing_log(args: std::fmt::Arguments<'_>) {
     eprintln!("{args}");
+}
+
+/// Diagnostic : `RDSKTP_DUMP_FRAME=/chemin/img.ppm` écrit la 20e image reçue (PPM) puis se tait.
+fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelFormat) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let Ok(path) = std::env::var("RDSKTP_DUMP_FRAME") else { return };
+    if COUNT.fetch_add(1, Ordering::Relaxed) != 20 {
+        return;
+    }
+    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for row in src.chunks_exact(stride).take(h as usize) {
+        for px in row[..w as usize * 4].chunks_exact(4) {
+            match format {
+                PixelFormat::Bgra8 => out.extend_from_slice(&[px[2], px[1], px[0]]),
+                PixelFormat::Rgba8 => out.extend_from_slice(&px[..3]),
+            }
+        }
+    }
+    let _ = std::fs::write(path, out);
 }
