@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev curl ca-certificates git
+      - uses: actions/checkout@v4
+      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - run: |
+          . "$HOME/.cargo/env"
+          rustup show
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          bash ci/check-deps.sh

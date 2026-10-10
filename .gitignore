@@ -1,0 +1,5 @@
+/target
+/artifacts
+/vm/state
+*.qcow2
+*.deb

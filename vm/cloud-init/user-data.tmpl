@@ -1,0 +1,32 @@
+#cloud-config
+# Gabarit : @VM_USER@ et @SSH_PUBKEY@ sont remplacés par vm.sh.
+users:
+  - name: @VM_USER@
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @SSH_PUBKEY@
+ssh_pwauth: false
+disable_root: true
+write_files:
+  - path: /usr/local/sbin/provision-rdsktp.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -u
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update || exit 1
+      # Paquets obligatoires : un échec stoppe le provisioning (pas de marqueur).
+      apt-get install -y --no-install-recommends \
+        kwin-wayland plasma-workspace pipewire pipewire-pulse wireplumber \
+        xdg-desktop-portal xdg-desktop-portal-kde dbus-user-session libpam-systemd \
+        libgl1-mesa-dri libegl1 libgbm1 curl jq ca-certificates || exit 1
+      # Paquets optionnels : un par un, sans échec si absents.
+      for p in kwin-wayland-backend-virtual libx264-164 libopenh264-8 libpam0g libpipewire-0.3-0; do
+        apt-get install -y --no-install-recommends "$p" || echo "optionnel absent : $p"
+      done
+      loginctl enable-linger @VM_USER@ || exit 1
+      touch /var/lib/rdsktp-provisioned
+runcmd:
+  - [ bash, -c, "/usr/local/sbin/provision-rdsktp.sh > /var/log/provision-rdsktp.log 2>&1" ]
