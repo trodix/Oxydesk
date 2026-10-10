@@ -4,6 +4,7 @@
 pub mod clipboard;
 mod pump;
 mod server;
+mod sound;
 
 pub use clipboard::TextClipboard;
 pub use server::{run, Ports, ServerConfig};

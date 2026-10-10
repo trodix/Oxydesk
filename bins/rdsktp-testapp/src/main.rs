@@ -144,13 +144,36 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
     }
 }
 
+fn play_tone() {
+    use rdsktp_core::ports::{AudioParams, AudioProvider};
+    use std::process::{Command, Stdio};
+    let params = AudioParams { sample_rate: 48_000, channels: 2 };
+    let mut source = rdsktp_audio::ToneProvider.open(params).expect("tonalité");
+    let mut player = Command::new("paplay")
+        .args(["--raw", "--rate=48000", "--channels=2", "--format=s16le", "--latency-msec=20", "-d", "rdsktp"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("paplay (paquet pulseaudio-utils)");
+    let mut stdin = player.stdin.take().expect("stdin paplay");
+    let mut buf = vec![0u8; params.bytes_for_ms(20)];
+    while source.read_exact(&mut buf).is_ok() {
+        if stdin.write_all(&buf).is_err() {
+            break;
+        }
+    }
+}
+
 fn main() {
     let (mut width, mut height) = (1920u32, 1080u32); // taille indicative avant le premier configure
     let echo = std::env::args().any(|a| a == "--clipboard-echo");
-    let args: Vec<String> = std::env::args().filter(|a| a != "--clipboard-echo").collect();
+    let args: Vec<String> = std::env::args().filter(|a| a != "--clipboard-echo" && a != "--tone").collect();
     if args.len() == 3 {
         width = args[1].parse().expect("largeur");
         height = args[2].parse().expect("hauteur");
+    }
+    if std::env::args().any(|a| a == "--tone") {
+        // Oracle audio : joue la tonalité de test dans le puits PipeWire de la session (voir ADR 007).
+        std::thread::spawn(play_tone);
     }
     if echo {
         // Oracle déterministe du presse-papiers : recopie toute sélection texte reçue, comme le

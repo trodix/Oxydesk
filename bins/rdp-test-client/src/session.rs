@@ -36,6 +36,10 @@ pub trait Session {
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String>;
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String>;
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String>;
+    /// Prochain paquet audio (`None` si rien avant le délai).
+    fn next_audio(&mut self, _timeout: Duration) -> Result<Option<crate::audio::AudioChunk>, String> {
+        Err("audio non supporté par ce backend".into())
+    }
     fn close(&mut self);
 }
 

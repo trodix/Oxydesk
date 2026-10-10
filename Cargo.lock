@@ -2593,6 +2593,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-svc",
  "openh264",
@@ -2610,6 +2611,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rcgen",
+ "rdsktp-audio",
  "rdsktp-capture",
  "rdsktp-clipboard",
  "rdsktp-core",
@@ -2620,6 +2622,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rdsktp-audio"
+version = "0.1.0"
+dependencies = [
+ "rdsktp-core",
 ]
 
 [[package]]
@@ -2679,6 +2688,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-egfx",
  "ironrdp-pdu",
+ "ironrdp-rdpsnd",
  "ironrdp-server",
  "ironrdp-svc",
  "rdsktp-core",
@@ -2698,6 +2708,7 @@ dependencies = [
 name = "rdsktp-testapp"
 version = "0.1.0"
 dependencies = [
+ "rdsktp-audio",
  "rdsktp-capture",
  "rdsktp-clipboard",
  "rdsktp-core",

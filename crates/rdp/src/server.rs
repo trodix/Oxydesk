@@ -13,11 +13,12 @@ use ironrdp_server::{
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
 use rdsktp_core::layout::Layout;
-use rdsktp_core::ports::{CaptureSource, ClipboardBackend, FrameEncoder, InputSink};
+use rdsktp_core::ports::{AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::clipboard::{announce, LocalText, TextClipboard};
 use crate::pump::{self, PumpParams, Shared};
+use crate::sound::SoundFactory;
 
 pub struct ServerConfig {
     pub addr: SocketAddr,
@@ -37,6 +38,8 @@ pub struct Ports {
     pub encoders: Vec<Box<dyn FrameEncoder>>,
     pub input: Box<dyn InputSink>,
     pub clipboard: Box<dyn ClipboardBackend>,
+    /// Audio sortant (RDPSND) ; `None` = pas de canal audio.
+    pub audio: Option<Arc<dyn AudioProvider>>,
 }
 
 struct GfxHandler;
@@ -201,6 +204,9 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
         }))
         .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
+        .with_sound_factory(ports.audio.map(|provider| {
+            Box::new(SoundFactory { shared: shared.clone(), provider }) as Box<dyn ironrdp_server::SoundServerFactory>
+        }))
         .build();
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {

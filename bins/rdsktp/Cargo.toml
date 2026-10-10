@@ -14,6 +14,7 @@ kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", 
 [dependencies]
 rdsktp-input = { workspace = true, optional = true }
 rdsktp-clipboard = { workspace = true, optional = true }
+rdsktp-audio.workspace = true
 rdsktp-session = { workspace = true, optional = true }
 rdsktp-core.workspace = true
 rdsktp-capture.workspace = true

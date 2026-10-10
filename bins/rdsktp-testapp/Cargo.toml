@@ -10,5 +10,6 @@ description = "Fenêtre plein écran déterministe (marqueur + heartbeat) pour t
 rdsktp-capture.workspace = true
 rdsktp-core.workspace = true
 rdsktp-clipboard = { workspace = true, features = ["wayland"] }
+rdsktp-audio.workspace = true
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }

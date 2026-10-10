@@ -27,3 +27,11 @@ pub enum ClipboardError {
     #[error("clipboard backend failure: {0}")]
     Backend(String),
 }
+
+#[derive(Debug, Error)]
+pub enum AudioError {
+    #[error("audio backend failure: {0}")]
+    Backend(String),
+    #[error("audio stream closed")]
+    Closed,
+}

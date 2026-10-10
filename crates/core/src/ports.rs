@@ -50,9 +50,34 @@ pub trait ClipboardBackend: Send {
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError>;
 }
 
+/// Format PCM 16 bits little-endian entrelacé demandé à une source audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioParams {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+impl AudioParams {
+    /// Octets par trame (un échantillon par canal).
+    pub fn frame_bytes(&self) -> usize {
+        usize::from(self.channels) * 2
+    }
+
+    /// Octets correspondant à `ms` millisecondes.
+    pub fn bytes_for_ms(&self, ms: u32) -> usize {
+        (self.sample_rate as usize * ms as usize / 1000) * self.frame_bytes()
+    }
+}
+
+/// Flux audio PCM en cours de capture.
 pub trait AudioSource: Send {
-    /// Remplit `buf` de PCM 16 bits ; retourne le nombre d'octets écrits.
-    fn read(&mut self, buf: &mut [u8]) -> usize;
+    /// Bloque jusqu'à avoir rempli `buf` (multiple de `frame_bytes`) ; erreur si le flux est fermé.
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), AudioError>;
+}
+
+/// Ouvre des flux audio au format négocié avec le client.
+pub trait AudioProvider: Send + Sync {
+    fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError>;
 }
 
 pub trait OutputManager: Send {

@@ -10,7 +10,7 @@ use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
 use rdsktp_core::layout::Layout;
 use rdsktp_rdp::{Ports, ServerConfig};
 
-const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--width W] [--height H] [--fps F] [--nla-user U]\n\
+const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--audio tone|pulse|off] [--width W] [--height H] [--fps F] [--nla-user U]\n\
   --test-mode   bureau synthétique\n\
   --session kwin  démarre kwin_wayland --virtual (+ programmes --session-app) et le capture\n\
   --state-dir   certificat TLS auto-signé généré s'il est absent (défaut : /var/lib/rdsktp)\n\
@@ -90,6 +90,14 @@ async fn main() -> anyhow::Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     #[cfg(feature = "kwin")]
     let mut _session = None;
+    // Audio : tonalité de test en mode synthétique, capture PipeWire en session KWin.
+    let audio: Option<std::sync::Arc<dyn rdsktp_core::ports::AudioProvider>> =
+        match arg::<String>(&args, "--audio").unwrap_or_else(|| if kwin_mode { "pulse" } else { "tone" }.into()).as_str() {
+            "off" => None,
+            "tone" => Some(std::sync::Arc::new(rdsktp_audio::ToneProvider)),
+            "pulse" => Some(std::sync::Arc::new(rdsktp_audio::PulseCapture)),
+            other => anyhow::bail!("--audio inconnu : {other}"),
+        };
     let (capture, input, clipboard): (
         Box<dyn rdsktp_core::ports::CaptureSource>,
         Box<dyn rdsktp_core::ports::InputSink>,
@@ -99,6 +107,12 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(feature = "kwin")]
             {
                 use rdsktp_core::ports::SessionProvider;
+                if audio.is_some() {
+                    // Le puits doit exister avant les applications de la session (elles y jouent par défaut).
+                    if let Err(e) = rdsktp_audio::PulseCapture::ensure_sink() {
+                        tracing::warn!("audio indisponible : {e}");
+                    }
+                }
                 let socket: String = arg(&args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
                 let programs = args
                     .windows(2)
@@ -138,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         encoders,
         input,
         clipboard,
+        audio,
     };
     let config = ServerConfig {
         addr,

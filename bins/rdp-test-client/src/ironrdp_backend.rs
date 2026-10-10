@@ -29,6 +29,8 @@ use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decode
 use ironrdp_graphics::zgfx;
 use ironrdp_input::{Database, Operation, Scancode};
 use ironrdp_pdu::gcc::KeyboardType;
+use ironrdp_rdpsnd::client::{Rdpsnd, RdpsndClientHandler};
+use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
@@ -58,6 +60,7 @@ struct State {
     frame: Option<Frame>,
     seq: u64,
     clip_inbox: VecDeque<String>,
+    audio_inbox: VecDeque<crate::audio::AudioChunk>,
     error: Option<String>,
 }
 
@@ -168,6 +171,24 @@ impl Session for IronRdpSession {
 
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         self.send(Command::Clipboard(text.to_owned()))
+    }
+
+    fn next_audio(&mut self, timeout: Duration) -> Result<Option<crate::audio::AudioChunk>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.shared.lock();
+        loop {
+            if let Some(c) = s.audio_inbox.pop_front() {
+                return Ok(Some(c));
+            }
+            if let Some(e) = &s.error {
+                return Err(e.clone());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            s = self.shared.cond.wait_timeout(s, left).expect("état client").0;
+        }
     }
 
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String> {
@@ -405,6 +426,64 @@ impl H264Decoder for OpenH264Decoder {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Audio (RDPSND)
+
+/// Reçoit les paquets PCM du serveur dans `State::audio_inbox`.
+struct AudioSink {
+    shared: Arc<Shared>,
+    formats: Vec<AudioFormat>,
+}
+
+impl std::fmt::Debug for AudioSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AudioSink")
+    }
+}
+
+impl AudioSink {
+    fn new(shared: Arc<Shared>) -> Self {
+        let pcm = |rate: u32| AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: rate,
+            n_avg_bytes_per_sec: rate * 4,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        };
+        // Un seul format : ironrdp-rdpsnd (client) envoie l'intersection dans un ordre de HashSet,
+        // le `format_no` des paquets n'est donc pas relisible avec plusieurs formats.
+        Self { shared, formats: vec![pcm(48_000)] }
+    }
+}
+
+impl RdpsndClientHandler for AudioSink {
+    fn get_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn wave(&mut self, format_no: usize, _ts: u32, data: std::borrow::Cow<'_, [u8]>) {
+        let Some(f) = self.formats.get(format_no) else { return };
+        let mut s = self.shared.lock();
+        if s.audio_inbox.len() < 1000 {
+            s.audio_inbox.push_back(crate::audio::AudioChunk {
+                arrived: Instant::now(),
+                sample_rate: f.n_samples_per_sec,
+                channels: f.n_channels,
+                pcm: data.into_owned(),
+            });
+        }
+        self.shared.cond.notify_all();
+    }
+
+    fn set_volume(&mut self, _volume: VolumePdu) {}
+
+    fn set_pitch(&mut self, _pitch: PitchPdu) {}
+
+    fn close(&mut self) {}
+}
+
+// ---------------------------------------------------------------------------------------------
 // Connexion
 
 struct NoNetwork;
@@ -512,7 +591,7 @@ fn connector_config(opts: &Options) -> Config {
         enable_server_pointer: false,
         request_data: None,
         autologon: false,
-        enable_audio_playback: false,
+        enable_audio_playback: true,
         compression_type: None,
         pointer_software_rendering: true,
         multitransport_flags: None,
@@ -574,6 +653,7 @@ fn run_worker(
         buf: Vec::new(),
     };
     connector.attach_static_channel(DrdynvcClient::new().with_dynamic_channel(gfx));
+    connector.attach_static_channel(Rdpsnd::new(Box::new(AudioSink::new(shared.clone()))));
     connector.attach_static_channel(CliprdrClient::new(Box::new(TextClipboard::new(
         send.clone(),
         local.clone(),

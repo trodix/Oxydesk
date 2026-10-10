@@ -61,6 +61,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "key_to_pixel",
             "clipboard_roundtrip",
             "clipboard_roundtrip_large",
+            "audio_tone",
         ]
         .into_iter()
         .chain((cfg.outputs > 1).then_some("multi_screen"))
@@ -77,6 +78,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     key_to_pixel(s, cfg, r);
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
+    audio_tone(s, cfg, r);
     s.close();
 }
 
@@ -116,6 +118,65 @@ fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         detail = format!("bureau {}x{}, blocs d'identité lus : {seen:?}", f.width, f.height);
     }
     r.check("multi_screen", false, format!("écrans non identifiés ({detail})"));
+}
+
+/// Le serveur joue `TONE_HZ` : on doit recevoir ≥ 1 s de PCM continu (au rythme du temps réel) dont
+/// l'énergie est portée par cette fréquence.
+fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    const WINDOW_SECS: f64 = 1.5;
+    const SKIP_SECS: f64 = 0.3; // amorçage du flux
+    // Les paquets accumulés pendant les autres scénarios sont périmés : on repart d'un flux frais.
+    while let Ok(Some(c)) = s.next_audio(Duration::ZERO) {
+        if c.arrived.elapsed() < Duration::from_millis(5) {
+            break;
+        }
+    }
+    let start = Instant::now();
+    let (mut samples, mut format) = (Vec::new(), None);
+    let (mut first, mut last_at) = (None, None);
+    let mut total = 0usize;
+    while start.elapsed() < cfg.timeout {
+        match s.next_audio(Duration::from_secs(2)) {
+            Ok(Some(c)) => {
+                let now = c.arrived;
+                format = Some((c.sample_rate, c.channels));
+                let mono = c.left();
+                if first.is_none() {
+                    first = Some(now);
+                } else {
+                    total += mono.len();
+                }
+                if first.is_some_and(|f| now.duration_since(f).as_secs_f64() >= SKIP_SECS) {
+                    samples.extend(mono);
+                }
+                last_at = Some(now);
+                if first.is_some_and(|f| now.duration_since(f).as_secs_f64() >= WINDOW_SECS + SKIP_SECS) {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                r.check("audio_tone", false, e);
+                return;
+            }
+        }
+    }
+    let (Some((rate, channels)), Some(first), Some(last_at)) = (format, first, last_at) else {
+        r.check("audio_tone", false, "aucun paquet audio reçu (canal RDPSND non négocié ?)");
+        return;
+    };
+    let wall = last_at.duration_since(first).as_secs_f64().max(1e-6);
+    let received = total as f64 / f64::from(rate);
+    let continuity = received / wall;
+    let ratio = crate::audio::tone_ratio(&samples, rate, crate::audio::TONE_HZ);
+    r.metric("audio_tone_ratio", ratio);
+    r.metric("audio_continuity", continuity);
+    let enough = samples.len() as f64 >= f64::from(rate) * 1.0;
+    r.check(
+        "audio_tone",
+        enough && ratio > 0.5 && continuity > 0.9,
+        format!("{rate} Hz, {channels} canaux, tonalité {:.0} Hz : ratio {ratio:.2}, continuité {continuity:.2}, {:.1} s analysées", crate::audio::TONE_HZ, samples.len() as f64 / f64::from(rate)),
+    );
 }
 
 fn frames_flow(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
