@@ -23,4 +23,9 @@ Contrôle négatif : sans `--clipboard-echo`, les deux checks échouent (« aucu
 - Pas de sélection primaire (clic milieu).
 - La sélection déjà présente au démarrage est transmise au premier client.
 - Le thread Wayland n'est pas arrêté explicitement (il se termine avec le processus).
-- Non testé avec de vraies applications Plasma ni avec Klipper.
+- Non testé avec Klipper.
+
+## Test manuel
+xfreerdp 3.31 (+clipboard) vers la VM, Plasma + KWrite : copier-coller hôte -> VM et VM -> hôte validés
+par l'utilisateur, avec accents et `€`. Non essayés manuellement : emoji, retours à la ligne, texte > 64 Kio
+(couverts seulement par les checks automatisés avec l'agent d'écho).
