@@ -269,7 +269,7 @@ fn client(o: &TestOpts) -> Result<(), String> {
             "--kwin-socket",
             "rdsktp-wintest",
             "--session-app",
-            &format!("{} --tone", app.display()),
+            &format!("{} --tone --clipboard-echo", app.display()),
         ]);
     } else {
         server.arg("--test-mode");

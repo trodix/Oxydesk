@@ -88,6 +88,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // Client loop to wait for before announcing the new size through EGFX (reactivation in progress).
             let mut reactivation: Option<u64> = None;
             let mut stale_logged: Option<(u32, u32)> = None;
+            // Since when frames of another size than the layout keep arriving (and which size).
+            let mut mismatch: Option<(Instant, (u32, u32))> = None;
             let mut capture: Option<Box<dyn CaptureSource>> = None;
             let mut outputs: Vec<OutputState> = Vec::new();
             // Current connection and one EGFX surface per output (empty until created).
@@ -230,12 +232,14 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 let mut lost = false;
                 for (i, out) in outputs.iter_mut().enumerate() {
                     match capture_src.recv_latest(OutputId(i as u32)) {
-                        // Frame of the previous size (resize in progress): ignored.
+                        // Frame of another size: ignored (resize in progress, or the compositor did not
+                        // start at the configured size, e.g. a size remembered from a previous session).
                         Ok(Some(f))
                             if (f.width, f.height)
                                 != (layout.outputs[i].width, layout.outputs[i].height) =>
                         {
-                            if stale_logged != Some((f.width, f.height)) {
+                            let size = (f.width, f.height);
+                            if stale_logged != Some(size) {
                                 tracing::debug!(
                                     "frame {}x{} ignored (expected {}x{})",
                                     f.width,
@@ -243,11 +247,40 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                     layout.outputs[i].width,
                                     layout.outputs[i].height
                                 );
-                                stale_logged = Some((f.width, f.height));
+                                stale_logged = Some(size);
+                            }
+                            let since = match mismatch {
+                                Some((t, s)) if s == size => t,
+                                _ => Instant::now(),
+                            };
+                            mismatch = Some((since, size));
+                            // A resize in flight is over within a second: if the mismatch lasts,
+                            // ask for the layout size, otherwise follow the compositor's size.
+                            if since.elapsed() > Duration::from_secs(1)
+                                && layout.outputs.len() == 1
+                                && shared.resize.lock().expect("resize mutex").is_none()
+                            {
+                                mismatch = None;
+                                let (lw, lh) = layout.desktop_size();
+                                match capture_src.resize(lw, lh) {
+                                    Ok(()) => tracing::info!(lw, lh, "desktop size restored"),
+                                    Err(e) => {
+                                        tracing::info!(
+                                            "desktop stays {}x{} ({e}): announced to the client",
+                                            f.width,
+                                            f.height
+                                        );
+                                        *shared.resize.lock().expect("resize mutex") =
+                                            Some((f.width, f.height & !1));
+                                    }
+                                }
                             }
                             continue;
                         }
-                        Ok(Some(f)) => out.last = Some(f),
+                        Ok(Some(f)) => {
+                            mismatch = None;
+                            out.last = Some(f);
+                        }
                         Ok(None) if repeat && out.last.is_some() => {}
                         Ok(None) => continue,
                         Err(e) => {

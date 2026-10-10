@@ -1,4 +1,5 @@
-//! Text clipboard through `zwlr_data_control_manager_v1`.
+//! Text clipboard through the Wayland data-control protocols: `ext_data_control_manager_v1`
+//! (KWin 6.4+, tried first) or `zwlr_data_control_manager_v1` (older KWin, wlroots).
 //!
 //! A dedicated thread dispatches Wayland events; `poll_text` / `set_text` do not block.
 //! Our own selection is recognized thanks to a private MIME type specific to the instance, never
@@ -12,22 +13,6 @@ use rdsktp_core::error::ClipboardError;
 use rdsktp_core::ports::ClipboardBackend;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
-
-mod proto {
-    #![allow(clippy::all, non_camel_case_types, non_upper_case_globals, unused)]
-    use wayland_client;
-    use wayland_client::protocol::*;
-    pub mod __interfaces {
-        use wayland_client::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("protocols/wlr-data-control-unstable-v1.xml");
-    }
-    use self::__interfaces::*;
-    wayland_scanner::generate_client_code!("protocols/wlr-data-control-unstable-v1.xml");
-}
-use proto::zwlr_data_control_device_v1::{self as device_ev, ZwlrDataControlDeviceV1};
-use proto::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-use proto::zwlr_data_control_offer_v1::{self as offer_ev, ZwlrDataControlOfferV1};
-use proto::zwlr_data_control_source_v1::{self as source_ev, ZwlrDataControlSourceV1};
 
 /// Text MIME types, from most to least preferred (receiving); all are offered (sending).
 const TEXT_MIMES: &[&str] = &[
@@ -49,165 +34,299 @@ struct Shared {
 #[derive(Default)]
 struct OfferMimes(Mutex<Vec<String>>);
 
-struct State {
-    shared: Arc<Shared>,
-    instance_mime: String,
-    manager: Option<ZwlrDataControlManagerV1>,
-    seat: Option<wl_seat::WlSeat>,
-    conn: Connection,
-}
-
-impl Dispatch<wl_registry::WlRegistry, ()> for State {
-    fn event(
-        state: &mut Self,
-        registry: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        _: &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
-                "zwlr_data_control_manager_v1" => {
-                    state.manager = Some(registry.bind(name, version.min(1), qh, ()))
-                }
-                "wl_seat" if state.seat.is_none() => {
-                    state.seat = Some(registry.bind(name, version.min(1), qh, ()))
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<wl_seat::WlSeat, ()> for State {
-    fn event(
-        _: &mut Self,
-        _: &wl_seat::WlSeat,
-        _: wl_seat::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<ZwlrDataControlManagerV1, ()> for State {
-    fn event(
-        _: &mut Self,
-        _: &ZwlrDataControlManagerV1,
-        _: proto::zwlr_data_control_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<ZwlrDataControlDeviceV1, ()> for State {
-    fn event(
-        state: &mut Self,
-        _: &ZwlrDataControlDeviceV1,
-        event: device_ev::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let device_ev::Event::Selection { id: Some(offer) } = event {
-            state.on_selection(offer);
-        }
-    }
-
-    event_created_child!(State, ZwlrDataControlDeviceV1, [
-        device_ev::EVT_DATA_OFFER_OPCODE => (ZwlrDataControlOfferV1, OfferMimes::default()),
-    ]);
-}
-
-impl Dispatch<ZwlrDataControlOfferV1, OfferMimes> for State {
-    fn event(
-        _: &mut Self,
-        _: &ZwlrDataControlOfferV1,
-        event: offer_ev::Event,
-        data: &OfferMimes,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        let offer_ev::Event::Offer { mime_type } = event;
-        data.0.lock().expect("mimes").push(mime_type);
-    }
-}
-
 /// Text served by a source; one source = one `set_text`.
 struct SourceText(String);
 
-impl Dispatch<ZwlrDataControlSourceV1, SourceText> for State {
-    fn event(
-        _: &mut Self,
-        source: &ZwlrDataControlSourceV1,
-        event: source_ev::Event,
-        data: &SourceText,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            source_ev::Event::Send { fd, .. } => {
-                let text = data.0.clone();
-                // Dedicated thread: a slow reader must not block the Wayland loop.
-                std::thread::spawn(move || {
-                    let mut file = std::fs::File::from(fd);
-                    let _ = file.write_all(text.as_bytes());
-                });
-            }
-            source_ev::Event::Cancelled => source.destroy(),
-        }
-    }
+/// Why a protocol could not be started.
+enum StartError {
+    NotAnnounced(&'static str),
+    Failed(String),
 }
 
-impl State {
-    fn on_selection(&mut self, offer: ZwlrDataControlOfferV1) {
-        let mimes = offer
-            .data::<OfferMimes>()
-            .map(|m| m.0.lock().expect("mimes").clone())
-            .unwrap_or_default();
-        if mimes.contains(&self.instance_mime) {
-            offer.destroy(); // our own selection
-            return;
-        }
-        let Some(mime) = TEXT_MIMES.iter().find(|w| mimes.iter().any(|m| m == **w)) else {
-            offer.destroy();
-            return;
-        };
-        let Ok((reader, writer)) = std::io::pipe() else {
-            offer.destroy();
-            return;
-        };
-        offer.receive((*mime).to_string(), OwnedFd::from(writer).as_fd());
-        offer.destroy();
-        // The write descriptor is closed (drop) after sending: the reader will see the end of the stream.
-        let _ = self.conn.flush();
-        let shared = self.shared.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-                *shared.incoming.lock().expect("incoming") =
-                    Some(String::from_utf8_lossy(&bytes).into_owned());
-            }
-        });
-    }
+/// Sends a text as the selection of the seat (implemented by each protocol).
+trait Backend: Send {
+    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
 }
+
+/// Reads the received selection in a thread and stores it in `shared`.
+fn read_selection(reader: std::io::PipeReader, shared: Arc<Shared>) {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
+            *shared.incoming.lock().expect("incoming") =
+                Some(String::from_utf8_lossy(&bytes).into_owned());
+        }
+    });
+}
+
+/// Writes `text` into the descriptor of a reader in a dedicated thread (a slow reader must not block the loop).
+fn serve_text(fd: OwnedFd, text: String) {
+    std::thread::spawn(move || {
+        let mut file = std::fs::File::from(fd);
+        let _ = file.write_all(text.as_bytes());
+    });
+}
+
+/// Instantiates the client of one data-control protocol; both have the same requests and events.
+macro_rules! data_control {
+    (
+        $m:ident, xml $xml:literal, global $global:literal,
+        $mm:ident :: $Manager:ident, $dm:ident :: $Device:ident,
+        $om:ident :: $Offer:ident, $sm:ident :: $Source:ident
+    ) => {
+        mod $m {
+            use super::*;
+
+            mod proto {
+                #![allow(clippy::all, non_camel_case_types, non_upper_case_globals, unused)]
+                use wayland_client;
+                use wayland_client::protocol::*;
+                pub mod __interfaces {
+                    use wayland_client::protocol::__interfaces::*;
+                    wayland_scanner::generate_interfaces!($xml);
+                }
+                use self::__interfaces::*;
+                wayland_scanner::generate_client_code!($xml);
+            }
+            use proto::$dm::{self as device_ev, $Device};
+            use proto::$mm::$Manager;
+            use proto::$om::{self as offer_ev, $Offer};
+            use proto::$sm::{self as source_ev, $Source};
+
+            struct State {
+                shared: Arc<Shared>,
+                instance_mime: String,
+                manager: Option<$Manager>,
+                seat: Option<wl_seat::WlSeat>,
+                conn: Connection,
+            }
+
+            impl Dispatch<wl_registry::WlRegistry, ()> for State {
+                fn event(
+                    state: &mut Self,
+                    registry: &wl_registry::WlRegistry,
+                    event: wl_registry::Event,
+                    _: &(),
+                    _: &Connection,
+                    qh: &QueueHandle<Self>,
+                ) {
+                    if let wl_registry::Event::Global {
+                        name,
+                        interface,
+                        version,
+                    } = event
+                    {
+                        match interface.as_str() {
+                            $global => {
+                                state.manager = Some(registry.bind(name, version.min(1), qh, ()))
+                            }
+                            "wl_seat" if state.seat.is_none() => {
+                                state.seat = Some(registry.bind(name, version.min(1), qh, ()))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            impl Dispatch<wl_seat::WlSeat, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &wl_seat::WlSeat,
+                    _: wl_seat::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+
+            impl Dispatch<$Manager, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &$Manager,
+                    _: proto::$mm::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+
+            impl Dispatch<$Device, ()> for State {
+                fn event(
+                    state: &mut Self,
+                    _: &$Device,
+                    event: device_ev::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                    match event {
+                        device_ev::Event::Selection { id: Some(offer) } => state.on_selection(offer),
+                        // The primary selection is not synchronized: its offers are only released.
+                        device_ev::Event::PrimarySelection { id: Some(offer) } => offer.destroy(),
+                        _ => {}
+                    }
+                }
+
+                event_created_child!(State, $Device, [
+                    device_ev::EVT_DATA_OFFER_OPCODE => ($Offer, OfferMimes::default()),
+                ]);
+            }
+
+            impl Dispatch<$Offer, OfferMimes> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &$Offer,
+                    event: offer_ev::Event,
+                    data: &OfferMimes,
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                    let offer_ev::Event::Offer { mime_type } = event;
+                    data.0.lock().expect("mimes").push(mime_type);
+                }
+            }
+
+            impl Dispatch<$Source, SourceText> for State {
+                fn event(
+                    _: &mut Self,
+                    source: &$Source,
+                    event: source_ev::Event,
+                    data: &SourceText,
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                    match event {
+                        source_ev::Event::Send { fd, .. } => serve_text(fd, data.0.clone()),
+                        source_ev::Event::Cancelled => source.destroy(),
+                    }
+                }
+            }
+
+            impl State {
+                fn on_selection(&mut self, offer: $Offer) {
+                    let mimes = offer
+                        .data::<OfferMimes>()
+                        .map(|m| m.0.lock().expect("mimes").clone())
+                        .unwrap_or_default();
+                    if mimes.contains(&self.instance_mime) {
+                        offer.destroy(); // our own selection
+                        return;
+                    }
+                    let Some(mime) = TEXT_MIMES.iter().find(|w| mimes.iter().any(|m| m == **w))
+                    else {
+                        offer.destroy();
+                        return;
+                    };
+                    let Ok((reader, writer)) = std::io::pipe() else {
+                        offer.destroy();
+                        return;
+                    };
+                    offer.receive((*mime).to_string(), OwnedFd::from(writer).as_fd());
+                    offer.destroy();
+                    // The write descriptor is closed (drop) after sending: the reader sees the end of the stream.
+                    let _ = self.conn.flush();
+                    read_selection(reader, self.shared.clone());
+                }
+            }
+
+            struct Client {
+                conn: Connection,
+                qh: QueueHandle<State>,
+                manager: $Manager,
+                device: $Device,
+                instance_mime: String,
+            }
+
+            impl Backend for Client {
+                fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+                    let source = self
+                        .manager
+                        .create_data_source(&self.qh, SourceText(text.to_string()));
+                    for mime in TEXT_MIMES {
+                        source.offer((*mime).to_string());
+                    }
+                    source.offer(self.instance_mime.clone());
+                    self.device.set_selection(Some(&source));
+                    self.conn
+                        .flush()
+                        .map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
+                }
+            }
+
+            /// Starts the protocol on `conn` if the compositor announces it.
+            pub(super) fn start(
+                conn: &Connection,
+                instance_mime: &str,
+                shared: &Arc<Shared>,
+            ) -> Result<Box<dyn Backend>, StartError> {
+                let failed = |what: &str, e: &dyn std::fmt::Display| {
+                    StartError::Failed(format!("{what}: {e}"))
+                };
+                let mut queue = conn.new_event_queue::<State>();
+                let qh = queue.handle();
+                let _registry = conn.display().get_registry(&qh, ());
+                let mut state = State {
+                    shared: shared.clone(),
+                    instance_mime: instance_mime.to_string(),
+                    manager: None,
+                    seat: None,
+                    conn: conn.clone(),
+                };
+                queue
+                    .roundtrip(&mut state)
+                    .map_err(|e| failed("Wayland registry", &e))?;
+                let manager = state
+                    .manager
+                    .clone()
+                    .ok_or(StartError::NotAnnounced($global))?;
+                let seat = state
+                    .seat
+                    .clone()
+                    .ok_or_else(|| StartError::Failed("wl_seat missing".into()))?;
+                let device = manager.get_data_device(&seat, &qh, ());
+                queue
+                    .roundtrip(&mut state)
+                    .map_err(|e| failed("data device", &e))?;
+                std::thread::Builder::new()
+                    .name("clipboard-wayland".into())
+                    .spawn(move || {
+                        // The thread lives as long as the process: the connection closes with it.
+                        while queue.blocking_dispatch(&mut state).is_ok() {}
+                    })
+                    .map_err(|e| StartError::Failed(e.to_string()))?;
+                Ok(Box::new(Client {
+                    conn: conn.clone(),
+                    qh,
+                    manager,
+                    device,
+                    instance_mime: instance_mime.to_string(),
+                }))
+            }
+        }
+    };
+}
+
+data_control!(
+    ext, xml "protocols/ext-data-control-v1.xml", global "ext_data_control_manager_v1",
+    ext_data_control_manager_v1::ExtDataControlManagerV1,
+    ext_data_control_device_v1::ExtDataControlDeviceV1,
+    ext_data_control_offer_v1::ExtDataControlOfferV1,
+    ext_data_control_source_v1::ExtDataControlSourceV1
+);
+data_control!(
+    wlr, xml "protocols/wlr-data-control-unstable-v1.xml", global "zwlr_data_control_manager_v1",
+    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+    zwlr_data_control_device_v1::ZwlrDataControlDeviceV1,
+    zwlr_data_control_offer_v1::ZwlrDataControlOfferV1,
+    zwlr_data_control_source_v1::ZwlrDataControlSourceV1
+);
 
 pub struct WaylandClipboard {
-    conn: Connection,
-    qh: QueueHandle<State>,
-    manager: ZwlrDataControlManagerV1,
-    device: ZwlrDataControlDeviceV1,
+    backend: Box<dyn Backend>,
     shared: Arc<Shared>,
-    instance_mime: String,
 }
 
 impl WaylandClipboard {
@@ -236,62 +355,24 @@ impl WaylandClipboard {
             std::process::id()
         );
         let shared = Arc::new(Shared::default());
-        let mut queue = conn.new_event_queue::<State>();
-        let qh = queue.handle();
-        let _registry = conn.display().get_registry(&qh, ());
-        let mut state = State {
-            shared: shared.clone(),
-            instance_mime: instance_mime.clone(),
-            manager: None,
-            seat: None,
-            conn: conn.clone(),
-        };
-        queue
-            .roundtrip(&mut state)
-            .map_err(|e| err(format!("Wayland registry: {e}")))?;
-        let manager = state.manager.clone().ok_or_else(|| {
-            err("zwlr_data_control_manager_v1 not announced by the compositor".into())
-        })?;
-        let seat = state
-            .seat
-            .clone()
-            .ok_or_else(|| err("wl_seat missing".into()))?;
-        let device = manager.get_data_device(&seat, &qh, ());
-        queue
-            .roundtrip(&mut state)
-            .map_err(|e| err(format!("data device : {e}")))?;
-
-        std::thread::Builder::new()
-            .name("clipboard-wayland".into())
-            .spawn(move || {
-                // The thread lives as long as the process: the connection closes with it.
-                while queue.blocking_dispatch(&mut state).is_ok() {}
-            })
-            .map_err(|e| err(e.to_string()))?;
-        Ok(Self {
-            conn,
-            qh,
-            manager,
-            device,
-            shared,
-            instance_mime,
-        })
+        let mut missing = Vec::new();
+        for start in [ext::start, wlr::start] {
+            match start(&conn, &instance_mime, &shared) {
+                Ok(backend) => return Ok(Self { backend, shared }),
+                Err(StartError::NotAnnounced(global)) => missing.push(global),
+                Err(StartError::Failed(m)) => return Err(err(m)),
+            }
+        }
+        Err(err(format!(
+            "no data-control protocol announced by the compositor ({} missing)",
+            missing.join(", ")
+        )))
     }
 }
 
 impl ClipboardBackend for WaylandClipboard {
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        let source = self
-            .manager
-            .create_data_source(&self.qh, SourceText(text.to_string()));
-        for mime in TEXT_MIMES {
-            source.offer((*mime).to_string());
-        }
-        source.offer(self.instance_mime.clone());
-        self.device.set_selection(Some(&source));
-        self.conn
-            .flush()
-            .map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
+        self.backend.set_text(text)
     }
 
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
