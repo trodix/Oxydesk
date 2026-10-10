@@ -55,6 +55,7 @@ fn locate(cfg: &OpenH264Config) -> Result<PathBuf, EncodeError> {
 /// Encodeur H.264 logiciel, flux Annex-B, sans B-frames, faible latence.
 pub struct OpenH264Encoder {
     inner: Encoder,
+    scratch: Vec<u8>,
 }
 
 impl OpenH264Encoder {
@@ -79,7 +80,7 @@ impl OpenH264Encoder {
             .intra_frame_period(period);
         let inner = Encoder::with_api_config(api, config)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self { inner, scratch: Vec::new() })
     }
 
     pub fn force_keyframe(&mut self) {
@@ -88,16 +89,38 @@ impl OpenH264Encoder {
 }
 
 impl FrameEncoder for OpenH264Encoder {
+    fn request_keyframe(&mut self) {
+        self.force_keyframe();
+    }
+
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
         let FrameData::Shm(data) = &frame.data else {
             return Err(EncodeError::Unsupported(
                 "DmaBuf non géré par le backend logiciel".into(),
             ));
         };
-        if frame.format != PixelFormat::Rgba8 || frame.stride != frame.width * 4 {
-            return Err(EncodeError::Unsupported("RGBA compact attendu".into()));
-        }
-        let rgba = RgbaSliceU8::new(data, (frame.width as usize, frame.height as usize));
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        let compact = frame.format == PixelFormat::Rgba8 && frame.stride as usize == w * 4;
+        let rgba = if compact {
+            RgbaSliceU8::new(data, (w, h))
+        } else {
+            // BGRA et/ou stride non compact (PipeWire) : normalisation vers RGBA compact.
+            let stride = frame.stride as usize;
+            if data.len() < stride * h || stride < w * 4 {
+                return Err(EncodeError::Unsupported("buffer trop court pour stride/hauteur".into()));
+            }
+            self.scratch.clear();
+            self.scratch.reserve(w * h * 4);
+            for row in data.chunks_exact(stride).take(h) {
+                for px in row[..w * 4].chunks_exact(4) {
+                    match frame.format {
+                        PixelFormat::Bgra8 => self.scratch.extend_from_slice(&[px[2], px[1], px[0], 255]),
+                        PixelFormat::Rgba8 => self.scratch.extend_from_slice(px),
+                    }
+                }
+            }
+            RgbaSliceU8::new(&self.scratch, (w, h))
+        };
         let yuv = YUVBuffer::from_rgba8_source(rgba);
         let stream = self
             .inner
@@ -111,5 +134,30 @@ impl FrameEncoder for OpenH264Encoder {
             ),
             data: stream.to_vec(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdsktp_core::layout::OutputId;
+
+    #[test]
+    fn bgra_with_padded_stride_encodes() {
+        let Ok(mut enc) = OpenH264Encoder::new(&OpenH264Config::default()) else {
+            eprintln!("libopenh264 absente : test ignoré");
+            return;
+        };
+        let (w, h, stride) = (64u32, 64u32, 64 * 4 + 32);
+        let frame = Frame {
+            output: OutputId(0),
+            width: w,
+            height: h,
+            stride,
+            format: PixelFormat::Bgra8,
+            data: FrameData::Shm(vec![128; (stride * h) as usize]),
+        };
+        let out = enc.encode(&frame).unwrap();
+        assert!(out.keyframe && !out.data.is_empty());
     }
 }

@@ -18,11 +18,31 @@ pub struct EncodedFrame {
 
 pub trait FrameEncoder: Send {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError>;
+    /// Le prochain `encode` doit produire une image clé autonome (nouveau client).
+    fn request_keyframe(&mut self) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerButton {
+    Left,
+    Right,
+    Middle,
+    Back,
+    Forward,
 }
 
 pub trait InputSink: Send {
+    /// `scancode` : scancode RDP (set 1), préfixe 0xE000 pour les touches étendues.
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError>;
+    /// Position absolue dans l'espace virtuel du bureau.
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError>;
+    fn pointer_button(&mut self, _button: PointerButton, _pressed: bool) -> Result<(), InputError> {
+        Ok(())
+    }
+    /// Molette en unités RDP (120 = un cran), `dy` > 0 = vers le haut.
+    fn wheel(&mut self, _dx: i32, _dy: i32) -> Result<(), InputError> {
+        Ok(())
+    }
 }
 
 pub trait ClipboardBackend: Send {

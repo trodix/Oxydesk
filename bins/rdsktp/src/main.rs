@@ -1,5 +1,6 @@
 //! Serveur RDP RustyDesktop. Composition root : choisit les adaptateurs et les injecte dans `rdsktp-rdp`.
-//! Mode actuel : `--test-mode` (bureau synthétique, voir le contrat du client de test).
+//! Modes : `--test-mode` (bureau synthétique, contrat du client de test) ou `--session kwin`
+//! (session KWin virtuelle réelle, feature `kwin`, autologin pour l'utilisateur courant).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -8,8 +9,9 @@ use rdsktp_capture::SyntheticDesktop;
 use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
 use rdsktp_rdp::{Ports, ServerConfig};
 
-const USAGE: &str = "usage: rdsktp --test-mode [--listen ADDR:PORT] [--state-dir DIR] [--width W] [--height H] [--fps F] [--nla-user U]\n\
-  --test-mode   bureau synthétique (seul mode disponible pour l'instant)\n\
+const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--width W] [--height H] [--fps F] [--nla-user U]\n\
+  --test-mode   bureau synthétique\n\
+  --session kwin  démarre kwin_wayland --virtual (+ programmes --session-app) et le capture\n\
   --state-dir   certificat TLS auto-signé généré s'il est absent (défaut : /var/lib/rdsktp)\n\
   --nla-user    active NLA ; mot de passe via la variable RDSKTP_PASSWORD uniquement";
 
@@ -47,7 +49,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") || !args.iter().any(|a| a == "--test-mode") {
+    let kwin_mode = arg::<String>(&args, "--session").as_deref() == Some("kwin");
+    if args.iter().any(|a| a == "--help" || a == "-h")
+        || !(kwin_mode || args.iter().any(|a| a == "--test-mode"))
+    {
         eprintln!("{USAGE}");
         std::process::exit(if args.iter().any(|a| a == "--help") {
             0
@@ -73,16 +78,48 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
-    let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
     let encoder = OpenH264Encoder::new(&OpenH264Config {
         fps,
         ..Default::default()
     })?;
+    // Presse-papiers : écho en mémoire jusqu'à M4.
+    let echo = SyntheticDesktop::new(u32::from(width), u32::from(height));
+    #[cfg(feature = "kwin")]
+    let mut _session = None;
+    let (capture, input): (Box<dyn rdsktp_core::ports::CaptureSource>, Box<dyn rdsktp_core::ports::InputSink>) =
+        if kwin_mode {
+            #[cfg(feature = "kwin")]
+            {
+                use rdsktp_core::ports::SessionProvider;
+                let socket: String = arg(&args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
+                let programs = args
+                    .windows(2)
+                    .filter(|w| w[0] == "--session-app")
+                    .map(|w| w[1].split_whitespace().map(str::to_owned).collect())
+                    .collect();
+                let mut session = rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
+                    socket: socket.clone(),
+                    width: u32::from(width),
+                    height: u32::from(height),
+                    programs,
+                });
+                session.start().map_err(|e| anyhow::anyhow!("session KWin : {e}"))?;
+                _session = Some(session);
+                let capture = rdsktp_capture::KwinCapture::start(Some(&socket), 0)?;
+                let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
+                (Box::new(capture), Box::new(input))
+            }
+            #[cfg(not(feature = "kwin"))]
+            anyhow::bail!("binaire compilé sans la feature `kwin`");
+        } else {
+            let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
+            (Box::new(desktop.clone()), Box::new(desktop))
+        };
     let ports = Ports {
-        capture: Box::new(desktop.clone()),
+        capture,
         encoder: Box::new(encoder),
-        input: Box::new(desktop.clone()),
-        clipboard: Box::new(desktop),
+        input,
+        clipboard: Box::new(echo),
     };
     let config = ServerConfig {
         addr,

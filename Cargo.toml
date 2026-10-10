@@ -4,9 +4,12 @@ members = [
     "crates/core",
     "crates/capture",
     "crates/encode",
+    "crates/input",
     "crates/rdp",
+    "crates/session",
     "bins/bench",
     "bins/rdsktp",
+    "bins/rdsktp-testapp",
     "bins/rdp-test-client",
     "xtask",
 ]
@@ -23,5 +26,7 @@ serde_json = "1"
 thiserror = "2"
 rdsktp-core = { path = "crates/core" }
 rdsktp-capture = { path = "crates/capture" }
+rdsktp-input = { path = "crates/input" }
 rdsktp-encode = { path = "crates/encode" }
+rdsktp-session = { path = "crates/session" }
 rdsktp-rdp = { path = "crates/rdp" }

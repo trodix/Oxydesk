@@ -125,8 +125,25 @@ impl RdpServerInputHandler for Input {
         }
     }
     fn mouse(&mut self, event: MouseEvent) {
-        if let MouseEvent::Move { x, y } = event {
-            let _ = self.0.pointer_move(i32::from(x), i32::from(y));
+        use rdsktp_core::ports::PointerButton as B;
+        let r = match event {
+            MouseEvent::Move { x, y } => self.0.pointer_move(i32::from(x), i32::from(y)),
+            MouseEvent::LeftPressed => self.0.pointer_button(B::Left, true),
+            MouseEvent::LeftReleased => self.0.pointer_button(B::Left, false),
+            MouseEvent::RightPressed => self.0.pointer_button(B::Right, true),
+            MouseEvent::RightReleased => self.0.pointer_button(B::Right, false),
+            MouseEvent::MiddlePressed => self.0.pointer_button(B::Middle, true),
+            MouseEvent::MiddleReleased => self.0.pointer_button(B::Middle, false),
+            MouseEvent::Button4Pressed => self.0.pointer_button(B::Back, true),
+            MouseEvent::Button4Released => self.0.pointer_button(B::Back, false),
+            MouseEvent::Button5Pressed => self.0.pointer_button(B::Forward, true),
+            MouseEvent::Button5Released => self.0.pointer_button(B::Forward, false),
+            MouseEvent::VerticalScroll { value } => self.0.wheel(0, i32::from(value)),
+            MouseEvent::Scroll { x, y } => self.0.wheel(x, y),
+            MouseEvent::RelMove { .. } => Ok(()),
+        };
+        if let Err(e) = r {
+            tracing::warn!("entrée: {e}");
         }
     }
 }

@@ -41,6 +41,9 @@ pub fn spawn(
             let mut next = Instant::now();
             let mut current: Option<(GfxServerHandle, Option<u16>)> = None;
             let (mut sent, mut dropped) = (0u64, 0u64);
+            // Dernière frame capturée, ré-encodée pour un nouveau client si le bureau est statique.
+            let mut last: Option<rdsktp_core::Frame> = None;
+            let mut repeat = false;
             let mut report = Instant::now();
             while !shared.stop.load(Ordering::Relaxed) {
                 next += period;
@@ -70,21 +73,28 @@ pub fn spawn(
                         };
                         g.map_surface_to_output(id, 0, 0);
                         *surface = Some(id);
+                        encoder.request_keyframe();
+                        repeat = true;
                     }
                     if g.should_backpressure() {
                         dropped += 1;
                         continue;
                     }
                 }
-                let frame = match capture.recv_latest(OutputId(0)) {
-                    Ok(Some(f)) => f,
+                match capture.recv_latest(OutputId(0)) {
+                    Ok(Some(f)) => {
+                        last = Some(f);
+                        repeat = false;
+                    }
+                    Ok(None) if repeat && last.is_some() => repeat = false,
                     Ok(None) => continue,
                     Err(e) => {
                         tracing::error!("capture: {e}");
                         break;
                     }
-                };
-                let encoded = match encoder.encode(&frame) {
+                }
+                let Some(frame) = last.as_ref() else { continue };
+                let encoded = match encoder.encode(frame) {
                     Ok(e) => e,
                     Err(e) => {
                         tracing::error!("encodage: {e}");

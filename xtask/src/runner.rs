@@ -149,6 +149,12 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         ("vm-up", format!("bash {VM} up"), min(8), None),
         ("deploy", deploy_cmd, min(5), None),
         (
+            "configure-kwin",
+            format!("bash {VM} kwin-config"),
+            min(3),
+            (!o.kwin).then_some("--session synthetic"),
+        ),
+        (
             "client",
             client_cmd,
             Duration::from_secs(o.client_timeout_s),

@@ -1,0 +1,17 @@
+[package]
+name = "rdsktp-input"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Injection via org_kde_kwin_fake_input (client Wayland autorisé par un .desktop, voir ADR 004).
+kwin = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
+
+[dependencies]
+rdsktp-core.workspace = true
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", optional = true }
+wayland-scanner = { version = "0.31", optional = true }

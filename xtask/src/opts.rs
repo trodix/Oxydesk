@@ -5,15 +5,16 @@ pub const HELP: &str = "cargo xtask vm-test [options]
   --no-reset            ne pas repartir d'un overlay neuf
   --keep                ne pas éteindre la VM à la fin
   --deb <fichier>       .deb à déployer (défaut : le plus récent de target/debian/)
-  --build-cmd <cmd>     commande de build (env XTASK_BUILD_CMD, défaut : cargo deb -p rdsktp)
+  --build-cmd <cmd>     commande de build (env XTASK_BUILD_CMD, défaut : testapp release + cargo deb -p rdsktp)
   --client-cmd <cmd>    commande client, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
+  --session <synthetic|kwin>  source du bureau côté serveur (défaut synthetic ; kwin = vrai KWin virtuel)
   --timeout <s>         timeout de l'étape client (défaut 600)
   --out <dir>           dossier des artefacts (défaut artifacts/vm-test)
   --help                cette aide
 env : VM_RDP_PORT (défaut 3390)
 code de sortie : 0 tout passe, 1 échec, 2 arguments";
 
-pub const DEFAULT_BUILD_CMD: &str = "cargo deb -p rdsktp";
+pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp && cargo deb -p rdsktp";
 pub const DEFAULT_CLIENT_CMD: &str =
     "cargo run --quiet --release -p rdp-test-client --features ironrdp -- --host {host} --port {port} --out {out}";
 
@@ -22,6 +23,7 @@ pub struct Opts {
     pub no_build: bool,
     pub no_reset: bool,
     pub keep: bool,
+    pub kwin: bool,
     pub deb: Option<String>,
     pub build_cmd: String,
     pub client_cmd: String,
@@ -41,6 +43,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         no_build: false,
         no_reset: false,
         keep: false,
+        kwin: false,
         deb: None,
         build_cmd: env("XTASK_BUILD_CMD").unwrap_or_else(|| DEFAULT_BUILD_CMD.into()),
         client_cmd: env("XTASK_CLIENT_CMD").unwrap_or_else(|| DEFAULT_CLIENT_CMD.into()),
@@ -61,6 +64,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             "--no-build" => o.no_build = true,
             "--no-reset" => o.no_reset = true,
             "--keep" => o.keep = true,
+            "--session" => {
+                o.kwin = match val("--session")?.as_str() {
+                    "kwin" => true,
+                    "synthetic" => false,
+                    other => return Err(format!("--session inconnu : {other}")),
+                }
+            }
             "--deb" => o.deb = Some(val("--deb")?),
             "--build-cmd" => o.build_cmd = val("--build-cmd")?,
             "--client-cmd" => o.client_cmd = val("--client-cmd")?,
@@ -113,6 +123,15 @@ mod tests {
         };
         assert_eq!(o.build_cmd, "x");
         assert!(o.keep && o.no_build);
+    }
+
+    #[test]
+    fn session_flag() {
+        let Parsed::Run(o) = p(&["--session", "kwin"], &[]).unwrap() else { panic!() };
+        assert!(o.kwin);
+        let Parsed::Run(o) = p(&[], &[]).unwrap() else { panic!() };
+        assert!(!o.kwin);
+        assert!(p(&["--session", "x"], &[]).is_err());
     }
 
     #[test]

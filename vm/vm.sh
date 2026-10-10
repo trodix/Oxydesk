@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # VM de test jetable (QEMU/KVM, Debian 13). Voir docs/ et le brief §11.1.
-# Usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|logs|status> [args]
+# Usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|logs|status> [args]
 #
 # ATTENTION : les overlays qcow2 référencent leur backing file par chemin ABSOLU.
 # Déplacer le dossier vm/ (ou le dépôt) casse les overlays : relancer `create`.
@@ -14,7 +14,7 @@ VM_MEM="${VM_MEM:-4096}"
 VM_DISK="${VM_DISK:-20G}"
 VM_CPU_MODEL="${VM_CPU_MODEL:-host}"
 VM_NIC="${VM_NIC:-vmxnet3}"
-VM_VGA="${VM_VGA:-vmware}"
+VM_VGA="${VM_VGA:-virtio-gl}"
 VM_SSH_PORT="${VM_SSH_PORT:-2222}"
 VM_RDP_PORT="${VM_RDP_PORT:-3390}"
 VM_USER="${VM_USER:-dev}"
@@ -96,13 +96,18 @@ start_qemu() { # start_qemu <disque>
   check_kvm
   is_running && die "la VM tourne déjà (pid $(cat "$PIDFILE"))"
   : > "$CONSOLE"
+  local -a VGA_ARGS
+  case "$VM_VGA" in
+    virtio-gl) VGA_ARGS=(-device virtio-vga-gl -display egl-headless) ;; # virgl : rendu 3D via le GPU de l'hôte
+    *) VGA_ARGS=(-vga "$VM_VGA" -display none) ;;
+  esac
   qemu-system-x86_64 \
     -machine q35,accel=kvm -cpu "$VM_CPU_MODEL" -smp "$VM_CPUS" -m "$VM_MEM" \
     -drive "file=$1,if=virtio,format=qcow2" \
     -drive "file=$SEED,if=virtio,format=raw,readonly=on" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${VM_SSH_PORT}-:22,hostfwd=tcp:127.0.0.1:${VM_RDP_PORT}-:3389" \
     -device "$VM_NIC,netdev=n0" \
-    -vga "$VM_VGA" -display none \
+    "${VGA_ARGS[@]}" \
     -serial "file:$CONSOLE" \
     -daemonize -pidfile "$PIDFILE"
 }
@@ -189,6 +194,24 @@ cmd_deploy() {
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
+# Configure le service rdsktp pour une session KWin réelle (autologin de $VM_USER) : drop-in systemd + restart.
+cmd_kwin_config() {
+  local uid_run="/run/user/$(vm_ssh 'id -u')"
+  vm_ssh 'sudo mkdir -p /etc/systemd/system/rdsktp.service.d && sudo tee /etc/systemd/system/rdsktp.service.d/kwin.conf >/dev/null' <<EOF
+[Service]
+User=$VM_USER
+SupplementaryGroups=video render kvm
+DynamicUser=no
+ProtectHome=no
+ProtectSystem=full
+PrivateTmp=no
+Environment=XDG_RUNTIME_DIR=$uid_run
+ExecStart=
+ExecStart=/usr/bin/rdsktp --session kwin --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+EOF
+  vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
+}
+
 cmd_logs() {
   case "${1:-console}" in
     console) [[ -f "$CONSOLE" ]] && cat "$CONSOLE" || die "pas de console ($CONSOLE)" ;;
@@ -213,9 +236,10 @@ main() {
     reset) cmd_reset ;;
     ssh) cmd_ssh "$@" ;;
     deploy) cmd_deploy "$@" ;;
+    kwin-config) cmd_kwin_config ;;
     logs) cmd_logs "$@" ;;
     status) cmd_status ;;
-    *) die "usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|logs|status>" ;;
+    *) die "usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|logs|status>" ;;
   esac
 }
 main "$@"

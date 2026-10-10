@@ -4,6 +4,7 @@ users:
   - name: @VM_USER@
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: [video, render, kvm]
     lock_passwd: true
     ssh_authorized_keys:
       - @SSH_PUBKEY@
