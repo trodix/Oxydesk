@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--no-nla] [--multi-resize [--no-identity-blocks]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -39,6 +39,9 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--no-nla" => no_nla = true,
             "--multi-resize" => cfg.multi_resize = true,
             "--no-identity-blocks" => cfg.identity_blocks = false,
+            "--max-monitors" => {
+                cfg.max_monitors = val(&a)?.parse().map_err(|_| "--max-monitors invalid")?
+            }
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalid")?,

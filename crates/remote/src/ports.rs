@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use rdsktp_agent_proto::ToAgent;
+use rdsktp_agent_proto::{Rect, ToAgent};
 use rdsktp_core::error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError};
 use rdsktp_core::frame::{Frame, FrameData};
-use rdsktp_core::layout::OutputId;
+use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::*;
 
 use crate::link::AgentLink;
@@ -53,6 +53,29 @@ impl CaptureSource for RemoteCapture {
             Err(CaptureError::Unavailable(format!(
                 "the agent could not resize to {width}x{height}"
             )))
+        }
+    }
+
+    fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
+        let outputs = layout
+            .outputs
+            .iter()
+            .map(|o| Rect {
+                x: o.x,
+                y: o.y,
+                width: o.width,
+                height: o.height,
+            })
+            .collect();
+        if self
+            .0
+            .set_layout(outputs, std::time::Duration::from_secs(15))
+        {
+            Ok(())
+        } else {
+            Err(CaptureError::Unavailable(
+                "the agent could not apply the layout".into(),
+            ))
         }
     }
 

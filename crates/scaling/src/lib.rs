@@ -21,6 +21,37 @@ struct State {
     /// Native size of the last frame received from the wrapped source.
     native: Option<(u32, u32)>,
     map: Option<ScaleMap>,
+    /// Native size of the last frame of each output.
+    natives: Vec<Option<(u32, u32)>>,
+    /// Several outputs scaled individually (the compositor refused the layout).
+    multi: Option<Vec<Slot>>,
+}
+
+/// One output of a scaled multi-output layout.
+#[derive(Clone, Copy)]
+struct Slot {
+    /// Rectangle of the output in the client's desktop.
+    rect: (i32, i32, u32, u32),
+    /// Position of the native output in the compositor's desktop (outputs side by side).
+    origin: (i32, i32),
+    map: Option<ScaleMap>,
+}
+
+impl Slot {
+    fn distance(&self, x: i32, y: i32) -> i64 {
+        let (rx, ry, rw, rh) = self.rect;
+        let dx = i64::from((rx - x).max(x - (rx + rw as i32 - 1)).max(0));
+        let dy = i64::from((ry - y).max(y - (ry + rh as i32 - 1)).max(0));
+        dx * dx + dy * dy
+    }
+
+    fn to_source(self, x: i32, y: i32) -> (i32, i32) {
+        let (local_x, local_y) = (x - self.rect.0, y - self.rect.1);
+        let (sx, sy) = self
+            .map
+            .map_or((local_x, local_y), |m| m.to_source(local_x, local_y));
+        (self.origin.0 + sx, self.origin.1 + sy)
+    }
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -54,6 +85,7 @@ impl CaptureSource for ScalingCapture {
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        self.state.lock().expect("scaling mutex").multi = None;
         let native = self.state.lock().expect("scaling mutex").native;
         if native == Some((width, height)) {
             self.state.lock().expect("scaling mutex").map = None;
@@ -78,17 +110,47 @@ impl CaptureSource for ScalingCapture {
         Ok(())
     }
 
-    /// One output keeps the scaling fallback; several outputs go straight to the source (scaling is
-    /// still single-output, so a KWin without custom modes refuses them).
+    /// One output keeps the scaling fallback. Several outputs go to the source first; when it refuses
+    /// (KWin 6.3: fixed, identical outputs), each output is scaled to its requested size, provided a
+    /// frame told its native size. The native outputs are assumed side by side, left to right.
     fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
-        match layout.outputs.as_slice() {
-            [o] => self.resize(o.width, o.height),
-            _ => {
-                self.inner.apply_layout(layout)?;
-                self.state.lock().expect("scaling mutex").map = None;
-                Ok(())
-            }
+        if let [o] = layout.outputs.as_slice() {
+            return self.resize(o.width, o.height);
         }
+        let refused = match self.inner.apply_layout(layout) {
+            Ok(()) => {
+                let mut s = self.state.lock().expect("scaling mutex");
+                s.map = None;
+                s.multi = None;
+                return Ok(());
+            }
+            Err(e) => e,
+        };
+        let mut s = self.state.lock().expect("scaling mutex");
+        let mut origin = 0;
+        let mut slots = Vec::new();
+        for o in &layout.outputs {
+            let Some(native) = s.natives.get(o.id.0 as usize).copied().flatten() else {
+                return Err(refused);
+            };
+            let map = if native == (o.width, o.height) {
+                None
+            } else {
+                Some(ScaleMap::fit(native, (o.width, o.height)).ok_or_else(|| {
+                    CaptureError::Unavailable("cannot scale an empty output".into())
+                })?)
+            };
+            slots.push(Slot {
+                rect: (o.x, o.y, o.width, o.height),
+                origin: (origin, 0),
+                map,
+            });
+            origin += native.0 as i32;
+        }
+        tracing::info!("{refused}: {} outputs scaled individually", slots.len());
+        s.map = None;
+        s.multi = Some(slots);
+        Ok(())
     }
 
     fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
@@ -102,8 +164,17 @@ impl CaptureSource for ScalingCapture {
         let map = {
             let mut s = self.state.lock().expect("scaling mutex");
             s.native = Some((frame.width, frame.height));
+            let index = output.0 as usize;
+            if s.natives.len() <= index {
+                s.natives.resize(index + 1, None);
+            }
+            s.natives[index] = Some((frame.width, frame.height));
+            let map = match &s.multi {
+                Some(slots) => slots.get(index).and_then(|slot| slot.map),
+                None => s.map,
+            };
             // A frame of another size than the mapping's source (real resize in flight): not scaled.
-            s.map.filter(|m| m.src == (frame.width, frame.height))
+            map.filter(|m| m.src == (frame.width, frame.height))
         };
         match map {
             Some(m) if !matches!(frame.data, FrameData::Encoded { .. }) => scale_frame(&frame, &m)
@@ -125,8 +196,16 @@ impl InputSink for ScalingInput {
     }
 
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
-        let map = self.state.lock().expect("scaling mutex").map;
-        let (x, y) = map.map_or((x, y), |m| m.to_source(x, y));
+        let (x, y) = {
+            let s = self.state.lock().expect("scaling mutex");
+            match &s.multi {
+                Some(slots) => slots
+                    .iter()
+                    .min_by_key(|slot| slot.distance(x, y))
+                    .map_or((x, y), |slot| slot.to_source(x, y)),
+                None => s.map.map_or((x, y), |m| m.to_source(x, y)),
+            }
+        };
         self.inner.pointer_move(x, y)
     }
 
@@ -202,5 +281,57 @@ mod tests {
         assert_eq!(cap.recv_latest(OutputId(0)).unwrap().unwrap().width, 8);
         input.pointer_move(3, 1).unwrap();
         assert_eq!(spy.0.lock().unwrap().last(), Some(&(3, 1)));
+    }
+
+    /// Two 8x4 outputs side by side, left half red / right half blue, refuse any layout.
+    struct FixedPair;
+    impl CaptureSource for FixedPair {
+        fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Fixed.recv_latest(output)
+        }
+    }
+
+    #[test]
+    fn refused_layout_scales_each_output_and_maps_the_pointer() {
+        let spy = Spy::default();
+        let (mut cap, mut input) = wrap(Box::new(FixedPair), Box::new(spy.clone()));
+        let layout = Layout {
+            outputs: vec![
+                rdsktp_core::layout::OutputInfo {
+                    id: OutputId(0),
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 2,
+                    primary: true,
+                },
+                rdsktp_core::layout::OutputInfo {
+                    id: OutputId(1),
+                    x: 4,
+                    y: 0,
+                    width: 4,
+                    height: 2,
+                    primary: false,
+                },
+            ],
+        };
+        // Native sizes unknown until each output delivered a frame.
+        assert!(cap.apply_layout(&layout).is_err());
+        for i in 0..2 {
+            cap.recv_latest(OutputId(i)).unwrap();
+        }
+        cap.apply_layout(&layout).unwrap();
+        for i in 0..2 {
+            let f = cap.recv_latest(OutputId(i)).unwrap().unwrap();
+            assert_eq!((f.width, f.height), (4, 2));
+        }
+        // Last pixel of the second output lands in the second native output (x 8..16).
+        input.pointer_move(7, 1).unwrap();
+        input.pointer_move(0, 0).unwrap();
+        assert_eq!(spy.0.lock().unwrap().as_slice(), &[(15, 3), (0, 0)]);
+        // A layout the source accepts, or a single output, drops the individual scaling.
+        cap.apply_layout(&Layout::side_by_side(1, 8, 4)).unwrap();
+        input.pointer_move(5, 2).unwrap();
+        assert_eq!(spy.0.lock().unwrap().last(), Some(&(5, 2)));
     }
 }

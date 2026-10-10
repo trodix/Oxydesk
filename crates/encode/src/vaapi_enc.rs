@@ -474,7 +474,7 @@ impl VaapiEncoder {
                 .fd
                 .try_clone()
                 .map_err(|e| EncodeError::Backend(format!("dup dmabuf: {e}")))?,
-            size: u32::try_from(crate::dmabuf::size(dma)?).unwrap_or(u32::MAX),
+            size: u32::try_from(rdsktp_core::dmabuf::size(dma)?).unwrap_or(u32::MAX),
             modifier: dma.modifier,
             drm_format: if frame.format == PixelFormat::Bgra8 {
                 DRM_FORMAT_XRGB8888
@@ -761,7 +761,7 @@ impl FrameEncoder for VaapiEncoder {
                         .ok()
                 };
                 if gpu.is_none() {
-                    crate::dmabuf::with_pixels(frame, dma, |px| self.convert(frame, px))??;
+                    rdsktp_core::dmabuf::with_pixels(frame, dma, |px| self.convert(frame, px))??;
                 }
                 gpu
             }

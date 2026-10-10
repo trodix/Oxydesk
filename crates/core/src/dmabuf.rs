@@ -2,8 +2,8 @@
 use std::io::{Seek, SeekFrom};
 use std::os::fd::{AsRawFd, BorrowedFd};
 
-use rdsktp_core::error::EncodeError;
-use rdsktp_core::frame::{DmaBuf, Frame};
+use crate::error::EncodeError;
+use crate::frame::{DmaBuf, Frame};
 
 // <linux/dma-buf.h>: struct dma_buf_sync { __u64 flags; }, DMA_BUF_IOCTL_SYNC = _IOW('b', 0, ...).
 const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
@@ -19,7 +19,7 @@ fn sync(fd: BorrowedFd<'_>, flags: u64) {
 }
 
 /// Size of a DMA-BUF in bytes (`lseek(SEEK_END)`).
-pub(crate) fn size(dma: &DmaBuf) -> Result<u64, EncodeError> {
+pub fn size(dma: &DmaBuf) -> Result<u64, EncodeError> {
     let mut f = std::fs::File::from(
         dma.fd
             .try_clone()

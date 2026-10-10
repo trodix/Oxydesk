@@ -102,7 +102,7 @@ impl FrameEncoder for OpenH264Encoder {
             FrameData::DmaBuf(dma) => {
                 // No GPU path here: copy the pixels out of the buffer and encode them as SHM.
                 let need = frame.stride as usize * frame.height as usize;
-                let copy = crate::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
+                let copy = rdsktp_core::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
                 let shm = Frame {
                     output: frame.output,
                     width: frame.width,

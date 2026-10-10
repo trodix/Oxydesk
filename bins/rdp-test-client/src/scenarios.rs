@@ -17,6 +17,8 @@ pub struct Config {
     pub multi_resize: bool,
     /// `multi_resize` also looks for the synthetic identity blocks (not on a real desktop).
     pub identity_blocks: bool,
+    /// `multi_resize` skips the layouts with more monitors than this (compositor with a fixed number of outputs).
+    pub max_monitors: usize,
     /// How long to retry connecting after a connection loss.
     pub reconnect_timeout: Duration,
 }
@@ -29,6 +31,7 @@ impl Default for Config {
             outputs: 1,
             multi_resize: false,
             identity_blocks: true,
+            max_monitors: usize::MAX,
             key_samples: 20,
             max_key_latency_ms: 250.0,
             timeout: Duration::from_secs(10),
@@ -133,6 +136,9 @@ fn multi_resize(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         ("multi_resize_restore", row(&configured)),
     ];
     for (name, monitors) in steps {
+        if monitors.len() > cfg.max_monitors {
+            continue;
+        }
         let width = monitors
             .iter()
             .map(|m| m.x as u32 + m.width)

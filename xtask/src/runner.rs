@@ -146,6 +146,14 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     }
     if o.multi_resize {
         client_cmd.push_str(" --multi-resize");
+        if o.login {
+            // The login VM runs KWin 6.3: fixed outputs, scaled to the requested sizes (the
+            // identity blocks are scaled with them).
+            client_cmd.push_str(&format!(
+                " --max-monitors {} --no-identity-blocks",
+                o.outputs
+            ));
+        }
     }
     if o.login {
         client_cmd.push_str(" --no-nla --user dev");

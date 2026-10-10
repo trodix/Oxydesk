@@ -135,6 +135,20 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
 type Mailbox = Arc<Mutex<Option<Frame>>>;
 type Waker = Arc<Mutex<Option<Arc<rdsktp_core::wake::Wake>>>>;
 
+/// Source factory of a `MultiCapture` over a KWin session: the outputs the session started with (`base` of them)
+/// are captured again by name, beyond that they are virtual outputs that vanish with their capture (KWin 6.7).
+pub fn source_factory(socket: String, base: usize, dmabuf: bool) -> crate::multi::SourceFactory {
+    Box::new(move |i, o| {
+        let name = format!("Virtual-{i}");
+        let capture = if i < base {
+            KwinCapture::start_named(Some(&socket), &name, dmabuf)
+        } else {
+            KwinCapture::start_virtual(Some(&socket), &name, o.width, o.height, dmabuf)
+        };
+        capture.map(|c| Box::new(c) as Box<dyn CaptureSource>)
+    })
+}
+
 /// What a capture stream is bound to.
 #[derive(Debug, Clone)]
 enum Target {

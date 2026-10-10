@@ -10,7 +10,7 @@ pub use synthetic::{
 #[cfg(feature = "kwin")]
 mod kwin;
 #[cfg(feature = "kwin")]
-pub use kwin::KwinCapture;
+pub use kwin::{source_factory, KwinCapture};
 
 mod multi;
-pub use multi::MultiCapture;
+pub use multi::{MultiCapture, SourceFactory};

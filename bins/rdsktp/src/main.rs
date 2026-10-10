@@ -180,27 +180,9 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Result<Vec<_>, _>>()?;
             // More outputs than the session started with (KWin 6.7): virtual outputs, which vanish with
             // their capture; the session's own outputs are disabled and enabled again.
-            let factory_socket = socket.clone();
-            let capture =
-                rdsktp_capture::MultiCapture::new(sources).with_factory(Box::new(move |i, o| {
-                    let name = format!("Virtual-{i}");
-                    let capture = if i < outputs as usize {
-                        rdsktp_capture::KwinCapture::start_named(
-                            Some(&factory_socket),
-                            &name,
-                            dmabuf,
-                        )
-                    } else {
-                        rdsktp_capture::KwinCapture::start_virtual(
-                            Some(&factory_socket),
-                            &name,
-                            o.width,
-                            o.height,
-                            dmabuf,
-                        )
-                    };
-                    capture.map(|c| Box::new(c) as Box<dyn rdsktp_core::ports::CaptureSource>)
-                }));
+            let capture = rdsktp_capture::MultiCapture::new(sources).with_factory(
+                rdsktp_capture::source_factory(socket.clone(), outputs as usize, dmabuf),
+            );
             let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
             let clipboard: Box<dyn rdsktp_core::ports::ClipboardBackend> =
                 match rdsktp_clipboard::WaylandClipboard::connect(Some(&socket)) {

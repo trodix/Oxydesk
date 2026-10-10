@@ -4,10 +4,10 @@
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
-use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
+use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, Rect, ToAgent, MAX_OUTPUTS};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
 
@@ -32,13 +32,17 @@ struct AudioQueue {
 
 pub struct AgentLink {
     writer: Mutex<UnixStream>,
-    video: Vec<Mutex<Mailbox>>,
+    /// One mailbox per output; the list follows the layout (`LayoutApplied`).
+    video: RwLock<Vec<Mutex<Mailbox>>>,
     clipboard: Mutex<Option<String>>,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
     /// Answer of the agent to the last `Resize` (None while pending).
     resize_reply: Mutex<Option<bool>>,
     resize_cv: Condvar,
+    /// Answer of the agent to the last `SetLayout` (None while pending).
+    layout_reply: Mutex<Option<bool>>,
+    layout_cv: Condvar,
     dead: AtomicBool,
     waker: Mutex<Option<Arc<rdsktp_core::wake::Wake>>>,
 }
@@ -50,27 +54,36 @@ impl AgentLink {
             .set_read_timeout(Some(Duration::from_secs(60)))
             .map_err(|e| e.to_string())?;
         let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
-        match read_msg::<_, FromAgent>(&mut reader).map_err(|e| e.to_string())? {
-            Some(FromAgent::Hello { outputs, .. }) if outputs == expected_outputs => {}
-            Some(FromAgent::Hello { outputs, .. }) => {
-                return Err(format!(
-                    "the agent exposes {outputs} output(s), {expected_outputs} expected"
-                ));
-            }
-            Some(FromAgent::Fatal(m)) => return Err(format!("agent: {m}")),
-            _ => return Err("the agent did not send Hello".into()),
-        }
+        // The desktop session outlives connections: the agent may still have another number of outputs than
+        // configured (a previous client changed it); it is then brought back to the configured layout below.
+        let (hello_outputs, width, height) =
+            match read_msg::<_, FromAgent>(&mut reader).map_err(|e| e.to_string())? {
+                Some(FromAgent::Hello {
+                    outputs,
+                    width,
+                    height,
+                }) if (1..=MAX_OUTPUTS as u32).contains(&outputs) => (outputs, width, height),
+                Some(FromAgent::Hello { outputs, .. }) => {
+                    return Err(format!("the agent exposes {outputs} output(s)"));
+                }
+                Some(FromAgent::Fatal(m)) => return Err(format!("agent: {m}")),
+                _ => return Err("the agent did not send Hello".into()),
+            };
         reader.set_read_timeout(None).map_err(|e| e.to_string())?;
         let link = Arc::new(Self {
             writer: Mutex::new(stream),
-            video: (0..expected_outputs)
-                .map(|_| Mutex::new(Mailbox::default()))
-                .collect(),
+            video: RwLock::new(
+                (0..hello_outputs)
+                    .map(|_| Mutex::new(Mailbox::default()))
+                    .collect(),
+            ),
             clipboard: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
             resize_reply: Mutex::new(None),
             resize_cv: Condvar::new(),
+            layout_reply: Mutex::new(None),
+            layout_cv: Condvar::new(),
             dead: AtomicBool::new(false),
             waker: Mutex::new(None),
         });
@@ -91,9 +104,25 @@ impl AgentLink {
                 l.dead.store(true, Ordering::Relaxed);
                 l.audio_cv.notify_all();
                 l.resize_cv.notify_all();
+                l.layout_cv.notify_all();
                 l.wake();
             })
             .map_err(|e| e.to_string())?;
+        if hello_outputs != expected_outputs {
+            let outputs = (0..expected_outputs)
+                .map(|i| Rect {
+                    x: (i * width) as i32,
+                    y: 0,
+                    width,
+                    height,
+                })
+                .collect();
+            if !link.set_layout(outputs, Duration::from_secs(20)) {
+                return Err(format!(
+                    "the agent exposes {hello_outputs} output(s), {expected_outputs} expected, and could not change"
+                ));
+            }
+        }
         Ok(link)
     }
 
@@ -107,7 +136,8 @@ impl AgentLink {
                 height,
                 data,
             } => {
-                let Some(slot) = self.video.get(output as usize) else {
+                let video = self.video.read().expect("video lock");
+                let Some(slot) = video.get(output as usize) else {
                     return;
                 };
                 let mut mb = slot.lock().expect("mailbox mutex");
@@ -130,12 +160,14 @@ impl AgentLink {
                     mb.queue.clear();
                     mb.wait_key = true;
                     drop(mb);
+                    drop(video);
                     self.send(&ToAgent::RequestKeyframe { output });
                     return;
                 } else {
                     mb.queue.push_back(frame);
                 }
                 drop(mb);
+                drop(video);
                 self.wake();
             }
             FromAgent::ClipboardText(t) => {
@@ -153,6 +185,21 @@ impl AgentLink {
                 }
             }
             FromAgent::Fatal(m) => tracing::error!("agent: {m}"),
+            FromAgent::LayoutApplied { ok, outputs } => {
+                if ok {
+                    // Here, in the reader thread: the frames that follow belong to the new layout, so the
+                    // mailboxes must be ready before the next message is dispatched.
+                    let mut video = self.video.write().expect("video lock");
+                    video.resize_with(outputs as usize, Default::default);
+                    for slot in video.iter() {
+                        let mut mb = slot.lock().expect("mailbox mutex");
+                        mb.queue.clear();
+                        mb.wait_key = false; // the agent starts every output with a keyframe
+                    }
+                }
+                *self.layout_reply.lock().expect("layout mutex") = Some(ok);
+                self.layout_cv.notify_all();
+            }
             FromAgent::Resized { ok } => {
                 *self.resize_reply.lock().expect("resize mutex") = Some(ok);
                 self.resize_cv.notify_all();
@@ -185,6 +232,8 @@ impl AgentLink {
 
     pub fn take_frame(&self, output: OutputId) -> Option<Frame> {
         self.video
+            .read()
+            .expect("video lock")
             .get(output.0 as usize)?
             .lock()
             .expect("mailbox mutex")
@@ -194,7 +243,12 @@ impl AgentLink {
 
     /// The next `take_frame` will only return a keyframe, requested from the agent.
     pub fn request_keyframe(&self, output: OutputId) {
-        if let Some(slot) = self.video.get(output.0 as usize) {
+        if let Some(slot) = self
+            .video
+            .read()
+            .expect("video lock")
+            .get(output.0 as usize)
+        {
             let mut mb = slot.lock().expect("mailbox mutex");
             mb.queue.clear();
             mb.wait_key = true;
@@ -216,13 +270,28 @@ impl AgentLink {
         let ok = guard.unwrap_or(false);
         drop(guard);
         if ok {
-            for slot in &self.video {
+            for slot in self.video.read().expect("video lock").iter() {
                 let mut mb = slot.lock().expect("mailbox mutex");
                 mb.queue.clear();
                 mb.wait_key = true;
             }
         }
         ok
+    }
+
+    /// Asks the agent to apply a whole layout (number, sizes and positions of the outputs) and waits for its
+    /// answer. The mailboxes follow the new number of outputs.
+    pub fn set_layout(&self, outputs: Vec<Rect>, timeout: Duration) -> bool {
+        *self.layout_reply.lock().expect("layout mutex") = None;
+        if !self.send(&ToAgent::SetLayout { outputs }) {
+            return false;
+        }
+        let guard = self.layout_reply.lock().expect("layout mutex");
+        let (guard, _) = self
+            .layout_cv
+            .wait_timeout_while(guard, timeout, |r| r.is_none() && !self.is_dead())
+            .expect("layout mutex");
+        guard.unwrap_or(false)
     }
 
     pub fn take_clipboard(&self) -> Option<String> {
@@ -309,7 +378,14 @@ mod tests {
     fn resize_waits_for_the_agent_and_drops_old_frames() {
         let (link, mut agent) = pair();
         write_msg(&mut agent, &video(true, 1)).unwrap();
-        wait_for(|| link.video[0].lock().unwrap().queue.front().map(|_| ()));
+        wait_for(|| {
+            link.video.read().unwrap()[0]
+                .lock()
+                .unwrap()
+                .queue
+                .front()
+                .map(|_| ())
+        });
         answering(agent, true);
         assert!(link.resize(1024, 576, Duration::from_secs(5)));
         assert!(
@@ -357,18 +433,32 @@ mod tests {
         }
     }
 
+    fn hello(outputs: u32) -> FromAgent {
+        FromAgent::Hello {
+            outputs,
+            width: 8,
+            height: 8,
+        }
+    }
+
     #[test]
-    fn hello_with_wrong_output_count_is_rejected() {
+    fn hello_with_another_output_count_is_brought_back_to_the_configured_one() {
         let (server, mut agent) = UnixStream::pair().unwrap();
-        write_msg(
-            &mut agent,
-            &FromAgent::Hello {
-                outputs: 2,
-                width: 1,
-                height: 1,
-            },
-        )
-        .unwrap();
+        write_msg(&mut agent, &hello(3)).unwrap();
+        layout_agent(agent, true);
+        let link = AgentLink::connect(server, 2).unwrap();
+        wait_for(|| link.take_frame(OutputId(1)).map(tag));
+        assert!(link.take_frame(OutputId(2)).is_none(), "third output gone");
+    }
+
+    #[test]
+    fn hello_with_another_output_count_refused_by_the_agent_is_an_error() {
+        let (server, mut agent) = UnixStream::pair().unwrap();
+        write_msg(&mut agent, &hello(2)).unwrap();
+        layout_agent(agent, false);
+        assert!(AgentLink::connect(server, 1).is_err());
+        let (server, mut agent) = UnixStream::pair().unwrap();
+        write_msg(&mut agent, &hello(0)).unwrap();
         assert!(AgentLink::connect(server, 1).is_err());
     }
 
@@ -433,5 +523,67 @@ mod tests {
         drop(agent);
         wait_for(|| link.is_dead().then_some(()));
         assert!(!link.read_audio(&mut buf));
+    }
+
+    /// Agent answering `SetLayout` with `LayoutApplied`, then one keyframe per output.
+    fn layout_agent(mut agent: UnixStream, ok: bool) {
+        std::thread::spawn(move || {
+            while let Ok(Some(msg)) = read_msg::<_, ToAgent>(&mut agent) {
+                if let ToAgent::SetLayout { outputs } = msg {
+                    let n = outputs.len() as u32;
+                    write_msg(&mut agent, &FromAgent::LayoutApplied { ok, outputs: n }).unwrap();
+                    for output in 0..n {
+                        let f = FromAgent::Video {
+                            output,
+                            keyframe: true,
+                            width: 8,
+                            height: 8,
+                            data: vec![40 + output as u8],
+                        };
+                        write_msg(&mut agent, &f).unwrap();
+                    }
+                }
+            }
+        });
+    }
+
+    fn rect(x: i32) -> Rect {
+        Rect {
+            x,
+            y: 0,
+            width: 8,
+            height: 8,
+        }
+    }
+
+    #[test]
+    fn set_layout_adds_and_removes_mailboxes() {
+        let (link, agent) = pair();
+        layout_agent(agent, true);
+        assert!(link.set_layout(vec![rect(0), rect(8), rect(16)], Duration::from_secs(5)));
+        // The keyframes sent right after the answer land in the new mailboxes.
+        for output in 0..3u32 {
+            let got = wait_for(|| link.take_frame(OutputId(output)).map(tag));
+            assert_eq!(got, (true, 40 + output as u8));
+        }
+        assert!(link.set_layout(vec![rect(0)], Duration::from_secs(5)));
+        assert_eq!(
+            wait_for(|| link.take_frame(OutputId(0)).map(tag)),
+            (true, 40)
+        );
+        assert!(link.take_frame(OutputId(1)).is_none(), "output removed");
+    }
+
+    #[test]
+    fn set_layout_refused_or_silent_agent_fails() {
+        let (link, agent) = pair();
+        layout_agent(agent, false);
+        assert!(!link.set_layout(vec![rect(0), rect(8)], Duration::from_secs(5)));
+        assert!(
+            link.take_frame(OutputId(1)).is_none(),
+            "mailboxes unchanged"
+        );
+        let (link, _agent) = pair();
+        assert!(!link.set_layout(vec![rect(0)], Duration::from_millis(200)));
     }
 }

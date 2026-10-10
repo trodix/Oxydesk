@@ -421,3 +421,150 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
         })
         .expect("spawn frame-pump")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdsktp_core::error::{CaptureError, EncodeError};
+    use rdsktp_core::ports::EncodedFrame;
+
+    struct Capture {
+        refuse_above: usize,
+    }
+
+    impl CaptureSource for Capture {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<rdsktp_core::Frame>, CaptureError> {
+            Ok(None)
+        }
+        fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
+            if layout.outputs.len() > self.refuse_above {
+                Err(CaptureError::ResizeUnsupported)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct Encoder;
+
+    impl FrameEncoder for Encoder {
+        fn encode(&mut self, _: &rdsktp_core::Frame) -> Result<EncodedFrame, EncodeError> {
+            Ok(EncodedFrame::default())
+        }
+    }
+
+    fn start(
+        refuse_above: usize,
+        factory: bool,
+    ) -> (
+        Arc<Shared>,
+        JoinHandle<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = made.clone();
+        let shared = Arc::new(Shared::default());
+        *shared.ports.lock().unwrap() = Some(PumpPorts {
+            capture: Box::new(Capture { refuse_above }),
+            encoders: vec![Box::new(Encoder) as Box<dyn FrameEncoder>],
+            make_encoder: factory.then(|| {
+                Box::new(move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Box::new(Encoder) as Box<dyn FrameEncoder>
+                }) as EncoderFactory
+            }),
+        });
+        let handle = spawn(
+            shared.clone(),
+            PumpParams {
+                layout: Layout::side_by_side(1, 800, 600),
+                fps: 200.0,
+                event: false,
+            },
+        );
+        // The session is adopted (and any pending request dropped) on the first tick.
+        while shared.ports.lock().unwrap().is_some() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        (shared, handle, made)
+    }
+
+    fn wait_desktop(shared: &Shared, expected: (u32, u32)) -> bool {
+        let end = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < end {
+            if *shared.desktop.lock().unwrap() == Some(expected) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    fn stop(shared: &Shared, handle: JoinHandle<()>) {
+        shared.stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn follows_a_growing_then_shrinking_number_of_outputs() {
+        let (shared, handle, made) = start(4, true);
+        *shared.resize.lock().unwrap() = Some(Layout::side_by_side(3, 640, 480));
+        assert!(wait_desktop(&shared, (1920, 480)));
+        assert_eq!(
+            shared
+                .layout
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .outputs
+                .len(),
+            3
+        );
+        assert_eq!(
+            made.load(Ordering::SeqCst),
+            2,
+            "one encoder per added output"
+        );
+        *shared.resize.lock().unwrap() = Some(Layout::side_by_side(1, 800, 600));
+        assert!(wait_desktop(&shared, (800, 600)));
+        *shared.resize.lock().unwrap() = Some(Layout::side_by_side(2, 640, 480));
+        assert!(wait_desktop(&shared, (1280, 480)));
+        assert_eq!(
+            made.load(Ordering::SeqCst),
+            3,
+            "the removed encoders are recreated on demand"
+        );
+        stop(&shared, handle);
+    }
+
+    #[test]
+    fn refused_layout_keeps_the_current_one() {
+        let (shared, handle, _) = start(1, true);
+        *shared.resize.lock().unwrap() = Some(Layout::side_by_side(3, 640, 480));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(*shared.desktop.lock().unwrap(), Some((800, 600)));
+        assert_eq!(
+            shared
+                .layout
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .outputs
+                .len(),
+            1
+        );
+        stop(&shared, handle);
+    }
+
+    #[test]
+    fn more_outputs_without_an_encoder_factory_are_ignored() {
+        let (shared, handle, _) = start(4, false);
+        *shared.resize.lock().unwrap() = Some(Layout::side_by_side(2, 640, 480));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(*shared.desktop.lock().unwrap(), Some((800, 600)));
+        stop(&shared, handle);
+    }
+}

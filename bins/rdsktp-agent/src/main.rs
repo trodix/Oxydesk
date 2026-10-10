@@ -7,11 +7,11 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
+use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent, MAX_OUTPUTS};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
@@ -26,7 +26,8 @@ struct Desktop {
     input: Mutex<Box<dyn InputSink>>,
     clipboard: Mutex<Box<dyn ClipboardBackend>>,
     audio: Option<Arc<dyn AudioProvider>>,
-    outputs: u32,
+    /// Outputs captured now (changes with `SetLayout`).
+    outputs: AtomicU32,
     width: u32,
     height: u32,
     fps: f32,
@@ -39,6 +40,9 @@ struct Desktop {
     _session: Mutex<Box<dyn std::any::Any + Send>>,
     /// Set after a resize: the video loop drops its last (old size) frame and restarts from keyframes.
     resized: AtomicBool,
+    /// Held by the video loop during a round and by a layout change: after the answer, no frame of the old
+    /// layout is sent any more.
+    round: Mutex<()>,
 }
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
@@ -90,7 +94,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         input: Mutex::new(input),
         clipboard: Mutex::new(clipboard),
         audio: audio.clone(),
-        outputs,
+        outputs: AtomicU32::new(outputs),
         width,
         height,
         fps,
@@ -100,11 +104,11 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
         _session: Mutex::new(keep),
         resized: AtomicBool::new(false),
+        round: Mutex::new(()),
     };
     match session.as_str() {
         "synthetic" => {
-            anyhow::ensure!(outputs == 1, "--outputs > 1 requires --session kwin");
-            let d = rdsktp_capture::SyntheticDesktop::new(width, height);
+            let d = rdsktp_capture::SyntheticDesktop::with_outputs(outputs, width, height);
             Ok(make(
                 Box::new(d.clone()),
                 Box::new(d.clone()),
@@ -144,7 +148,9 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                             .map(|c| Box::new(c) as Box<dyn CaptureSource>)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let capture = rdsktp_capture::MultiCapture::new(sources);
+                let capture = rdsktp_capture::MultiCapture::new(sources).with_factory(
+                    rdsktp_capture::source_factory(socket.clone(), outputs as usize, dmabuf),
+                );
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
                 let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
                 // KWin that cannot resize its desktop (6.3): the client's size is obtained by scaling.
@@ -185,10 +191,7 @@ fn button(b: u8) -> Option<PointerButton> {
 fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<Vec<AtomicBool>>) {
     let fps = d.fps;
     let mut encoders: Vec<Box<dyn FrameEncoder>> = Vec::new();
-    for _ in 0..d.outputs {
-        encoders.push(Box::new(AutoEncoder::new(d.encoder, fps, 8_000_000)));
-    }
-    let mut last: Vec<Option<rdsktp_core::Frame>> = (0..d.outputs).map(|_| None).collect();
+    let mut last: Vec<Option<rdsktp_core::Frame>> = Vec::new();
     let period = d.poll_ms.map_or_else(
         || Duration::from_secs_f32(1.0 / fps),
         |ms| Duration::from_secs_f32(ms / 1000.0),
@@ -216,13 +219,22 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             }
         }
         let round_start = Instant::now();
+        let _round = d.round.lock().expect("round mutex");
+        let outputs = d.outputs.load(Ordering::SeqCst) as usize;
+        // Encoders follow the number of outputs (a new one starts with a keyframe).
+        while encoders.len() < outputs {
+            encoders.push(Box::new(AutoEncoder::new(d.encoder, fps, 8_000_000)));
+            keyframes[encoders.len() - 1].store(true, Ordering::Relaxed);
+        }
+        encoders.truncate(outputs);
+        last.resize_with(outputs, || None);
         if d.resized.swap(false, Ordering::SeqCst) {
             last.iter_mut().for_each(|l| *l = None);
             keyframes
                 .iter()
                 .for_each(|k| k.store(true, Ordering::Relaxed));
         }
-        for i in 0..d.outputs as usize {
+        for i in 0..outputs {
             let wanted_key = first || keyframes[i].swap(false, Ordering::Relaxed);
             if wanted_key {
                 encoders[i].request_keyframe();
@@ -273,6 +285,7 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             }
         }
         first = false;
+        drop(_round);
         if let Some(rest) = min_interval.checked_sub(round_start.elapsed()) {
             std::thread::sleep(rest);
         }
@@ -311,7 +324,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     if !send(
         &writer,
         &FromAgent::Hello {
-            outputs: d.outputs,
+            outputs: d.outputs.load(Ordering::SeqCst),
             width: d.width,
             height: d.height,
         },
@@ -320,7 +333,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     }
     let stop = Arc::new(AtomicBool::new(false));
     let keyframes: Arc<Vec<AtomicBool>> =
-        Arc::new((0..d.outputs).map(|_| AtomicBool::new(true)).collect());
+        Arc::new((0..MAX_OUTPUTS).map(|_| AtomicBool::new(true)).collect());
     let mut threads = vec![{
         let (d, w, stop, kf) = (d.clone(), writer.clone(), stop.clone(), keyframes.clone());
         std::thread::spawn(move || video_loop(d, w, stop, kf))
@@ -374,7 +387,44 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             ToAgent::Wheel { dx, dy } => {
                 let _ = d.input.lock().expect("input mutex").wheel(dx, dy);
             }
+            ToAgent::SetLayout { outputs } => {
+                let layout = rdsktp_core::layout::Layout {
+                    outputs: outputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| rdsktp_core::layout::OutputInfo {
+                            id: OutputId(i as u32),
+                            x: r.x,
+                            y: r.y,
+                            width: r.width,
+                            height: r.height,
+                            primary: i == 0,
+                        })
+                        .collect(),
+                };
+                let _round = d.round.lock().expect("round mutex");
+                let result = d
+                    .capture
+                    .lock()
+                    .expect("capture mutex")
+                    .apply_layout(&layout);
+                let ok = result.is_ok();
+                if let Err(e) = &result {
+                    tracing::warn!("layout of {} output(s): {e}", outputs.len());
+                } else {
+                    d.outputs.store(outputs.len() as u32, Ordering::SeqCst);
+                    d.resized.store(true, Ordering::SeqCst);
+                }
+                send(
+                    &writer,
+                    &FromAgent::LayoutApplied {
+                        ok,
+                        outputs: d.outputs.load(Ordering::SeqCst),
+                    },
+                );
+            }
             ToAgent::Resize { width, height } => {
+                let _round = d.round.lock().expect("round mutex");
                 let result = d
                     .capture
                     .lock()

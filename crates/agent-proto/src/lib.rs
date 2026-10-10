@@ -20,6 +20,18 @@ pub enum ProtoError {
     Invalid(&'static str),
 }
 
+/// Most outputs a layout may carry.
+pub const MAX_OUTPUTS: usize = 16;
+
+/// An output of a layout, in desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
@@ -54,6 +66,11 @@ pub enum ToAgent {
         width: u32,
         height: u32,
     },
+    /// New number, sizes and positions of the outputs (the first one is the primary); answered by
+    /// `FromAgent::LayoutApplied`.
+    SetLayout {
+        outputs: Vec<Rect>,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -77,6 +94,12 @@ pub enum FromAgent {
     /// Answer to `ToAgent::Resize`.
     Resized {
         ok: bool,
+    },
+    /// Answer to `ToAgent::SetLayout`; `outputs` is the number of outputs now captured. Sent before any
+    /// frame of the new layout, after the last frame of the old one.
+    LayoutApplied {
+        ok: bool,
+        outputs: u32,
     },
 }
 
@@ -199,6 +222,16 @@ impl Message for ToAgent {
                 o.u32(*height);
                 9
             }
+            Self::SetLayout { outputs } => {
+                o.u32(outputs.len() as u32);
+                for r in outputs {
+                    o.i32(r.x);
+                    o.i32(r.y);
+                    o.u32(r.width);
+                    o.u32(r.height);
+                }
+                10
+            }
         };
         (tag, o.0)
     }
@@ -233,6 +266,22 @@ impl Message for ToAgent {
                 width: i.u32()?,
                 height: i.u32()?,
             },
+            10 => {
+                let n = i.u32()? as usize;
+                if n > MAX_OUTPUTS {
+                    return Err(ProtoError::Invalid("too many outputs"));
+                }
+                let mut outputs = Vec::with_capacity(n);
+                for _ in 0..n {
+                    outputs.push(Rect {
+                        x: i.i32()?,
+                        y: i.i32()?,
+                        width: i.u32()?,
+                        height: i.u32()?,
+                    });
+                }
+                Self::SetLayout { outputs }
+            }
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
@@ -284,6 +333,11 @@ impl Message for FromAgent {
                 o.u8(u8::from(*ok));
                 6
             }
+            Self::LayoutApplied { ok, outputs } => {
+                o.u8(u8::from(*ok));
+                o.u32(*outputs);
+                7
+            }
         };
         (tag, o.0)
     }
@@ -311,6 +365,10 @@ impl Message for FromAgent {
             4 => Self::Audio(i.rest()),
             5 => Self::Fatal(i.string()?),
             6 => Self::Resized { ok: i.bool()? },
+            7 => Self::LayoutApplied {
+                ok: i.bool()?,
+                outputs: i.u32()?,
+            },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         Ok(msg)
@@ -384,6 +442,26 @@ mod tests {
             height: 576,
         });
         roundtrip(FromAgent::Resized { ok: true });
+        roundtrip(ToAgent::SetLayout {
+            outputs: vec![
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                Rect {
+                    x: -1280,
+                    y: 100,
+                    width: 1280,
+                    height: 720,
+                },
+            ],
+        });
+        roundtrip(FromAgent::LayoutApplied {
+            ok: true,
+            outputs: 2,
+        });
         roundtrip(FromAgent::Hello {
             outputs: 2,
             width: 1920,
@@ -418,6 +496,9 @@ mod tests {
         // payload too short and extra bytes
         assert!(ToAgent::decode(1, &[0]).is_err());
         assert!(ToAgent::decode(8, &[0]).is_err());
+        // layout: too many outputs (no allocation), truncated list
+        assert!(ToAgent::decode(10, &1000u32.to_be_bytes()).is_err());
+        assert!(ToAgent::decode(10, &[0, 0, 0, 1, 0, 0]).is_err());
         // text is not UTF-8
         assert!(ToAgent::decode(6, &[0xFF, 0xFE]).is_err());
     }

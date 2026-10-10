@@ -26,5 +26,14 @@ ADR 006 prévoyait de ne pas patcher IronRDP. Ce n'est plus tenable : `ironrdp-a
 - Non testable avec mstsc : changer la résolution d'un moniteur local en multimon fait quitter le plein écran à mstsc, sans envoi de disposition. Le redimensionnement dynamique multi-écran est donc couvert par le client IronRDP.
 - `cargo xtask vm-test --multi-resize --outputs N` passe le scénario au serveur déployé dans la VM Debian.
 
-## 5. Reste à faire
-Protocole agent (`SetLayout`/`LayoutApplied`) et mode `--login` multi-écran ; mise à l'échelle par sortie sur KWin 6.3.
+## 5. Agent et mode `--login`
+- Protocole agent : `SetLayout` (étiquette 10, liste de rectangles) et `LayoutApplied` (étiquette 7). `AgentLink::set_layout` attend la réponse dans le thread lecteur ; les boîtes aux lettres vidéo sont par sortie et de nombre variable.
+- Côté agent, un verrou `round` garantit qu'aucune trame à l'ancienne disposition n'est émise après la réponse ; les encodeurs sont recréés dynamiquement. La session de l'agent survivant aux déconnexions, le lien réconcilie le nombre de sorties à la connexion.
+- Test d'intégration avec le vrai binaire agent : `bins/rdsktp-agent/tests/layout.rs`.
+- Validé de bout en bout : `cargo xtask vm-test --session login --outputs 2 --multi-resize` (VM Debian 13, KWin 6.3), avec `--max-monitors 2 --no-identity-blocks` ajoutés par xtask (pas de sortie supplémentaire, blocs d'identité mis à l'échelle).
+
+## 6. KWin 6.3 : mise à l'échelle par sortie
+Quand la source refuse une disposition à plusieurs sorties, `ScalingCapture` mémorise la taille native de chaque sortie (trames reçues) et met chaque sortie à la taille demandée (bandes noires). Les sorties natives sont supposées côte à côte de gauche à droite ; `ScalingInput` retrouve la sortie du pointeur (la plus proche) et le replace dans l'espace natif. Au-delà du nombre de sorties connues, la disposition reste refusée.
+
+## 7. Tests de la pompe
+`pump::tests` : nombre de sorties croissant/décroissant (encodeurs créés à la demande), disposition refusée par la capture, sorties en plus sans fabrique d'encodeurs.

@@ -2756,6 +2756,7 @@ dependencies = [
 name = "rdsktp-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "thiserror 2.0.21",
 ]
 
@@ -2815,7 +2816,6 @@ name = "rdsktp-scaling"
 version = "0.1.0"
 dependencies = [
  "rdsktp-core",
- "rdsktp-encode",
  "tracing",
 ]
 

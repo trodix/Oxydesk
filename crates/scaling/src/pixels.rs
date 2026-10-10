@@ -1,7 +1,7 @@
+use rdsktp_core::dmabuf::with_pixels;
 use rdsktp_core::error::EncodeError;
 use rdsktp_core::frame::{Frame, FrameData};
 use rdsktp_core::ScaleMap;
-use rdsktp_encode::with_pixels;
 
 /// Frame fitted into `map.dst`: bilinear resampling of the desktop inside `map.rect`, black elsewhere.
 /// The result is a compact SHM frame of the same pixel format.

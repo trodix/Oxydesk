@@ -8,5 +8,4 @@ publish.workspace = true
 
 [dependencies]
 rdsktp-core.workspace = true
-rdsktp-encode.workspace = true
 tracing = "0.1"
