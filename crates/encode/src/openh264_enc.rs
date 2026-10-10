@@ -94,10 +94,16 @@ impl FrameEncoder for OpenH264Encoder {
     }
 
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
-        let FrameData::Shm(data) = &frame.data else {
-            return Err(EncodeError::Unsupported(
-                "DmaBuf not supported by the software backend".into(),
-            ));
+        let data = match &frame.data {
+            FrameData::Shm(d) => d,
+            FrameData::DmaBuf(dma) => {
+                // No GPU path here: copy the pixels out of the buffer and encode them as SHM.
+                let need = frame.stride as usize * frame.height as usize;
+                let copy = crate::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
+                let shm = Frame { output: frame.output, width: frame.width, height: frame.height, stride: frame.stride, format: frame.format, data: FrameData::Shm(copy) };
+                return self.encode(&shm);
+            }
+            FrameData::Encoded { .. } => return Err(EncodeError::Unsupported("already-encoded frame".into())),
         };
         let (w, h) = (frame.width as usize, frame.height as usize);
         let compact = frame.format == PixelFormat::Rgba8 && frame.stride as usize == w * 4;

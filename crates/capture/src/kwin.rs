@@ -102,6 +102,12 @@ impl KwinCapture {
     /// `socket`: Wayland socket name (relative to `XDG_RUNTIME_DIR`) or `None` for the environment.
     /// `output`: index of the `wl_output` to capture.
     pub fn start(socket: Option<&str>, output: usize) -> Result<Self, CaptureError> {
+        Self::start_with(socket, output, false)
+    }
+
+    /// `dmabuf`: also offer linear DMA-BUF buffers (delivered as `FrameData::DmaBuf` when KWin accepts;
+    /// otherwise the stream stays on shared memory). Only useful with a GPU encoder that imports them.
+    pub fn start_with(socket: Option<&str>, output: usize, dmabuf: bool) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
         let waker: Waker = Arc::default();
@@ -113,7 +119,7 @@ impl KwinCapture {
             std::thread::Builder::new()
                 .name("kwin-capture".into())
                 .spawn(move || {
-                    if let Err(e) = run(conn, output, mailbox, waker, stop, &ready_tx) {
+                    if let Err(e) = run(conn, output, dmabuf, mailbox, waker, stop, &ready_tx) {
                         let _ = ready_tx.send(Err(e.clone()));
                         *dead.lock().expect("dead") = Some(e);
                     }
@@ -172,7 +178,7 @@ struct PwData {
     waker: Waker,
 }
 
-fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+fn run(conn: Connection, output: usize, dmabuf: bool, mailbox: Mailbox, waker: Waker, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
     // 1. Wayland: request the stream and obtain the PipeWire node.
     let mut queue = conn.new_event_queue::<Wl>();
     let qh = queue.handle();
@@ -253,6 +259,28 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
             if size == 0 || stride <= 0 || sz.width == 0 || sz.height == 0 {
                 return;
             }
+            if data.type_() == spa::buffer::DataType::DmaBuf {
+                // The descriptor is duplicated; the producer may reuse the buffer once it is requeued.
+                let raw = data.as_raw();
+                // SAFETY: `fd` of a DmaBuf-typed data is a valid descriptor owned by PipeWire for this buffer.
+                let Ok(fd) = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw.fd as i32) }.try_clone_to_owned() else { return };
+                let frame = Frame {
+                    output: OutputId(0),
+                    width: sz.width,
+                    height: sz.height,
+                    stride: stride as u32,
+                    format: pixel,
+                    data: FrameData::DmaBuf(rdsktp_core::DmaBuf { fd, offset: offset as u32, modifier: d.format.modifier() }),
+                };
+                *d.mailbox.lock().expect("mailbox") = Some(frame);
+                if let Some(w) = d.waker.lock().expect("waker").as_ref() {
+                    w.notify();
+                }
+                if !announced.replace(true) {
+                    let _ = ready_ok.send(Ok(()));
+                }
+                return;
+            }
             let Some(src) = data.data() else { return };
             let need = stride as usize * sz.height as usize;
             if src.len() < offset + need {
@@ -314,11 +342,30 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
             spa::utils::Fraction { num: 1000, denom: 1 }
         ),
     );
-    let bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj))
+    let bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj.clone()))
         .map_err(|e| format!("pod : {e:?}"))?
         .0
         .into_inner();
-    let mut params = [Pod::from_bytes(&bytes).ok_or("invalid pod")?];
+    // With DMA-BUF enabled, the linear-modifier variant comes first (preferred), SHM stays as a fallback.
+    let mut obj_dma = obj.clone();
+    obj_dma.properties.push(spa::pod::Property {
+        key: spa::param::format::FormatProperties::VideoModifier.as_raw(),
+        // MANDATORY | DONT_FIXATE (the latter is behind a libspa feature flag).
+        flags: spa::pod::PropertyFlags::from_bits_retain(spa::pod::PropertyFlags::MANDATORY.bits() | (1 << 4)),
+        value: spa::pod::Value::Choice(spa::pod::ChoiceValue::Long(spa::utils::Choice(
+            spa::utils::ChoiceFlags::empty(),
+            // DRM_FORMAT_MOD_LINEAR only: the CPU can still read it if the GPU import is unavailable.
+            spa::utils::ChoiceEnum::Enum { default: 0i64, alternatives: vec![0i64] },
+        ))),
+    });
+    let bytes_dma: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj_dma))
+        .map_err(|e| format!("pod : {e:?}"))?
+        .0
+        .into_inner();
+    let mut params = vec![Pod::from_bytes(&bytes).ok_or("invalid pod")?];
+    if dmabuf {
+        params.insert(0, Pod::from_bytes(&bytes_dma).ok_or("invalid pod")?);
+    }
     stream
         .connect(
             spa::utils::Direction::Input,

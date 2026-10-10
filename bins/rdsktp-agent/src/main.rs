@@ -64,6 +64,12 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     let encoder: EncoderChoice = arg::<String>(args, "--encoder")
         .map_or(Ok(EncoderChoice::Auto), |v| v.parse())
         .map_err(|e: String| anyhow::anyhow!(e))?;
+    let dmabuf = match arg::<String>(args, "--dmabuf").as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        None | Some("auto") => encoder.wants_dmabuf(),
+        Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
+    };
     let make = |capture: Box<dyn CaptureSource>, input: Box<dyn InputSink>, clipboard: Box<dyn ClipboardBackend>, keep: Box<dyn std::any::Any + Send>| Desktop {
         capture: Mutex::new(capture),
         input: Mutex::new(input),
@@ -109,7 +115,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 });
                 kwin.start().map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
                 let sources = (0..outputs as usize)
-                    .map(|i| rdsktp_capture::KwinCapture::start(Some(&socket), i).map(|c| Box::new(c) as Box<dyn CaptureSource>))
+                    .map(|i| rdsktp_capture::KwinCapture::start_with(Some(&socket), i, dmabuf).map(|c| Box::new(c) as Box<dyn CaptureSource>))
                     .collect::<Result<Vec<_>, _>>()?;
                 let capture = rdsktp_capture::MultiCapture::new(sources);
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;

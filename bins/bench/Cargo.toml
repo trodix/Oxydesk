@@ -8,8 +8,11 @@ publish.workspace = true
 [features]
 default = []
 vaapi = ["rdsktp-encode/vaapi"]
+# `--kwin`: benchmark on a real KWin virtual session (PipeWire capture, SHM or DMA-BUF).
+kwin = ["rdsktp-capture/kwin", "dep:rdsktp-session"]
 
 [dependencies]
 rdsktp-core.workspace = true
 rdsktp-capture.workspace = true
 rdsktp-encode = { workspace = true, features = ["openh264"] }
+rdsktp-session = { workspace = true, optional = true }

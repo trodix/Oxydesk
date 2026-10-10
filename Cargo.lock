@@ -250,6 +250,7 @@ dependencies = [
  "rdsktp-capture",
  "rdsktp-core",
  "rdsktp-encode",
+ "rdsktp-session",
 ]
 
 [[package]]
@@ -2765,6 +2766,7 @@ name = "rdsktp-encode"
 version = "0.1.0"
 dependencies = [
  "cros-libva",
+ "libc",
  "openh264",
  "rdsktp-core",
 ]

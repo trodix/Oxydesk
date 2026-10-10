@@ -29,6 +29,21 @@ impl FromStr for EncoderChoice {
     }
 }
 
+impl EncoderChoice {
+    /// Whether the capture should offer DMA-BUF buffers: only a GPU encoder can use them without a
+    /// slow CPU read-back.
+    pub fn wants_dmabuf(self) -> bool {
+        match self {
+            Self::OpenH264 => false,
+            Self::Vaapi => true,
+            #[cfg(feature = "vaapi")]
+            Self::Auto => crate::vaapi_available(),
+            #[cfg(not(feature = "vaapi"))]
+            Self::Auto => false,
+        }
+    }
+}
+
 pub struct AutoEncoder {
     choice: EncoderChoice,
     fps: f32,

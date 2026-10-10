@@ -6,7 +6,7 @@
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use openh264::OpenH264API;
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
+use rdsktp_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::FrameEncoder;
 use rdsktp_encode::{VaapiConfig, VaapiEncoder};
@@ -62,13 +62,72 @@ fn nal_types(annex_b: &[u8]) -> Vec<u8> {
     out
 }
 
+fn f_clone(f: &Frame) -> Frame {
+    Frame { output: f.output, width: f.width, height: f.height, stride: f.stride, format: f.format, data: FrameData::Shm(Vec::new()) }
+}
+
 fn rgb_at(rgba: &[u8], w: usize, x: usize, y: usize) -> [i32; 3] {
     let o = (y * w + x) * 4;
     [rgba[o] as i32, rgba[o + 1] as i32, rgba[o + 2] as i32]
 }
 
+/// Moves the pixels of `f` into a linear DMA-BUF created from a memfd through /dev/udmabuf
+/// (independent of VA-API). `None` when udmabuf is not available.
+fn to_dmabuf(f: &Frame) -> Option<Frame> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let FrameData::Shm(px) = &f.data else { return None };
+    let size = px.len().div_ceil(4096) * 4096;
+    // SAFETY: plain syscalls on descriptors created here; every return value is checked.
+    unsafe {
+        let mem = libc::memfd_create(c"rdsktp-test".as_ptr(), libc::MFD_ALLOW_SEALING);
+        if mem < 0 || libc::ftruncate(mem, size as i64) != 0 {
+            return None;
+        }
+        if libc::write(mem, px.as_ptr().cast(), px.len()) != px.len() as isize {
+            return None;
+        }
+        libc::fcntl(mem, libc::F_ADD_SEALS, libc::F_SEAL_SHRINK);
+        let dev = libc::open(c"/dev/udmabuf".as_ptr(), libc::O_RDWR);
+        if dev < 0 {
+            return None;
+        }
+        #[repr(C)]
+        struct Create {
+            memfd: u32,
+            flags: u32,
+            offset: u64,
+            size: u64,
+        }
+        let req = Create { memfd: mem as u32, flags: 1, offset: 0, size: size as u64 };
+        let fd = libc::ioctl(dev, 0x4018_7542, &req as *const Create);
+        libc::close(dev);
+        libc::close(mem);
+        if fd < 0 {
+            return None;
+        }
+        Some(Frame {
+            output: f.output,
+            width: f.width,
+            height: f.height,
+            stride: f.stride,
+            format: f.format,
+            data: FrameData::DmaBuf(DmaBuf { fd: OwnedFd::from_raw_fd(fd), offset: 0, modifier: 0 }),
+        })
+    }
+}
+
 #[test]
 fn gpu_stream_decodes_to_the_source_pixels() {
+    run(false);
+}
+
+/// Same oracle, but the source is a DMA-BUF imported and converted to NV12 by the GPU.
+#[test]
+fn dmabuf_import_decodes_to_the_source_pixels() {
+    run(true);
+}
+
+fn run(dmabuf: bool) {
     let Ok(mut enc) = VaapiEncoder::new(&VaapiConfig::default(), W, H) else {
         eprintln!("SKIPPED: no usable VA-API H.264 encoder");
         return;
@@ -84,7 +143,16 @@ fn gpu_stream_decodes_to_the_source_pixels() {
             enc.request_keyframe();
         }
         let f = frame(n);
-        let out = enc.encode(&f).expect("encode");
+        let sent = if dmabuf {
+            let Some(d) = to_dmabuf(&f) else {
+                eprintln!("SKIPPED: /dev/udmabuf not usable");
+                return;
+            };
+            d
+        } else {
+            Frame { data: FrameData::Shm(match &f.data { FrameData::Shm(v) => v.clone(), _ => unreachable!() }), ..f_clone(&f) }
+        };
+        let out = enc.encode(&sent).expect("encode");
         let types = nal_types(&out.data);
         if n == 0 || n == 15 {
             assert!(out.keyframe, "frame {n} must be a keyframe");
@@ -118,6 +186,9 @@ fn gpu_stream_decodes_to_the_source_pixels() {
             }
         }
         max_err = max_err.max(sum as f64 / cnt as f64);
+    }
+    if dmabuf {
+        assert_eq!(enc.gpu_frames(), 30, "every frame must go through the GPU import path");
     }
     eprintln!("max mean absolute error over 30 frames: {max_err:.2}");
     assert!(max_err < 12.0, "decoded picture too far from the source: {max_err:.2}");

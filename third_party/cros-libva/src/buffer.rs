@@ -222,6 +222,11 @@ impl Buffer {
                 std::mem::size_of::<bindings::VAEncPackedHeaderParameterBuffer>(),
             ),
 
+            BufferType::ProcPipelineParameter(ref mut p) => (
+                p as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<bindings::VAProcPipelineParameterBuffer>(),
+            ),
+
             BufferType::EncPackedHeaderData(ref mut data) => {
                 (data.as_mut_ptr() as *mut std::ffi::c_void, data.len())
             }
@@ -332,6 +337,8 @@ pub enum BufferType {
     EncPackedHeaderParameter(bindings::VAEncPackedHeaderParameterBuffer),
     /// Raw bytes of a packed header (`VAEncPackedHeaderDataBufferType`).
     EncPackedHeaderData(Vec<u8>),
+    /// Wrapper over `VAProcPipelineParameterBuffer` (patch: video processing, e.g. BGRx -> NV12).
+    ProcPipelineParameter(bindings::VAProcPipelineParameterBuffer),
 }
 
 impl BufferType {
@@ -367,6 +374,7 @@ impl BufferType {
                 bindings::VABufferType::VAEncPackedHeaderParameterBufferType
             }
             BufferType::EncPackedHeaderData(_) => bindings::VABufferType::VAEncPackedHeaderDataBufferType,
+            BufferType::ProcPipelineParameter(_) => bindings::VABufferType::VAProcPipelineParameterBufferType,
         }
     }
 }

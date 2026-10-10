@@ -14,5 +14,6 @@ vaapi = ["dep:cros-libva"]
 
 [dependencies]
 rdsktp-core.workspace = true
+libc = "0.2"
 openh264 = { version = "0.9.8", default-features = false, features = ["libloading"], optional = true }
 cros-libva = { path = "../../third_party/cros-libva", optional = true }

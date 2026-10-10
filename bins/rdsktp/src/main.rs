@@ -15,7 +15,9 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --login       remote login: PAM through rdsktp-authd, one session per user (TLS, no NLA)\n\
   --session kwin  starts kwin_wayland --virtual (+ --session-app programs) and captures it\n\
   --state-dir   self-signed TLS certificate generated if absent (default: /var/lib/rdsktp)\n\
-  --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable";
+  --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable
+  --encoder     auto (default) | vaapi | openh264; auto uses the GPU when VA-API is usable
+  --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)";
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -99,6 +101,12 @@ async fn main() -> anyhow::Result<()> {
         Some(v) => v.parse().map_err(|e: String| anyhow::anyhow!(e))?,
         None => EncoderChoice::Auto,
     };
+    let dmabuf = match arg::<String>(&args, "--dmabuf").as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        None | Some("auto") => choice.wants_dmabuf(),
+        Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
+    };
     let encoders = (0..outputs)
         .map(|_| Box::new(AutoEncoder::new(choice, fps, 8_000_000)) as Box<dyn rdsktp_core::ports::FrameEncoder>)
         .collect::<Vec<_>>();
@@ -144,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
                 _session = Some(session);
                 let sources = (0..outputs as usize)
                     .map(|i| {
-                        rdsktp_capture::KwinCapture::start(Some(&socket), i)
+                        rdsktp_capture::KwinCapture::start_with(Some(&socket), i, dmabuf)
                             .map(|c| Box::new(c) as Box<dyn rdsktp_core::ports::CaptureSource>)
                     })
                     .collect::<Result<Vec<_>, _>>()?;

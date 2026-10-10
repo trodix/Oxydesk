@@ -6,11 +6,22 @@ pub enum PixelFormat {
     Bgra8,
 }
 
-/// Frame data: shared memory or DMA-BUF (future GPU path).
+/// A single-plane DMA-BUF owned by the frame (closed on drop). The content may be overwritten by the
+/// producer once newer frames arrive, so consume it promptly.
+#[derive(Debug)]
+pub struct DmaBuf {
+    pub fd: std::os::fd::OwnedFd,
+    /// Byte offset of the first row inside the buffer.
+    pub offset: u32,
+    /// DRM format modifier (0 = linear).
+    pub modifier: u64,
+}
+
+/// Frame data: shared memory or DMA-BUF (GPU path).
 #[derive(Debug)]
 pub enum FrameData {
     Shm(Vec<u8>),
-    DmaBuf(i32),
+    DmaBuf(DmaBuf),
     /// Already encoded as H.264 Annex-B by the session agent (see `PassthroughEncoder`).
     Encoded { keyframe: bool, data: Vec<u8> },
 }

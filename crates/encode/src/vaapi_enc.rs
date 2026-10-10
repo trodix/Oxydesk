@@ -17,7 +17,7 @@ use va::{
 };
 use crate::h264_headers;
 use rdsktp_core::error::EncodeError;
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
+use rdsktp_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
 use rdsktp_core::ports::{EncodedFrame, FrameEncoder};
 
 #[derive(Debug, Clone)]
@@ -69,7 +69,58 @@ pub struct VaapiEncoder {
     idr_pic_id: u16,
     scratch: Vec<u8>,
     nv12: Vec<u8>,
+    /// Video-processing context (DMA-BUF import + BGRx -> NV12 on the GPU), created on first use.
+    vpp: Option<Vpp>,
+    /// The GPU import path failed once: DMA-BUF frames are read through the CPU from then on.
+    vpp_failed: bool,
+    gpu_frames: u64,
 }
+
+struct Vpp {
+    context: Rc<Context>,
+    _config: Config,
+}
+
+/// Imported DMA-BUF (`VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2`). Owns a duplicate of the descriptor,
+/// closed when the VA surface is dropped.
+struct DmaImport {
+    fd: std::os::fd::OwnedFd,
+    size: u32,
+    modifier: u64,
+    drm_format: u32,
+    width: u32,
+    height: u32,
+    offset: u32,
+    pitch: u32,
+}
+
+impl va::ExternalBufferDescriptor for DmaImport {
+    const MEMORY_TYPE: va::MemoryType = va::MemoryType::DrmPrime2;
+    type DescriptorAttribute = va::VADRMPRIMESurfaceDescriptor;
+
+    fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
+        use std::os::fd::AsRawFd;
+        let mut d = va::VADRMPRIMESurfaceDescriptor::default();
+        d.fourcc = va::VA_FOURCC_BGRX;
+        d.width = self.width;
+        d.height = self.height;
+        d.num_objects = 1;
+        d.objects[0].fd = self.fd.as_raw_fd();
+        d.objects[0].size = self.size;
+        d.objects[0].drm_format_modifier = self.modifier;
+        d.num_layers = 1;
+        d.layers[0].drm_format = self.drm_format;
+        d.layers[0].num_planes = 1;
+        d.layers[0].object_index[0] = 0;
+        d.layers[0].offset[0] = self.offset;
+        d.layers[0].pitch[0] = self.pitch;
+        d
+    }
+}
+
+// DRM fourcc codes (little-endian words): XRGB8888 = bytes B,G,R,x; XBGR8888 = bytes R,G,B,x.
+const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
+const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
 
 // SAFETY: `Display`, `Context` and every VA object are held in `Rc`s whose clones all live inside
 // this struct (surfaces, buffers, pictures are created and dropped within `encode`). Moving the whole
@@ -155,6 +206,9 @@ impl VaapiEncoder {
             idr_pic_id: 0,
             scratch: Vec::new(),
             nv12: Vec::new(),
+            vpp: None,
+            vpp_failed: false,
+            gpu_frames: 0,
         })
     }
 
@@ -284,17 +338,89 @@ impl VaapiEncoder {
         PictureH264::new(va::VA_INVALID_SURFACE, 0, va::VA_PICTURE_H264_INVALID, 0, 0)
     }
 
-    fn encode_inner(&mut self, idr: bool) -> Result<Vec<u8>, EncodeError> {
-        let input = match self.input.take() {
-            Some(s) => s,
-            None => self
+    /// The NV12 surface that receives the next source image (recreated after an error).
+    fn take_input(&mut self) -> Result<Surface<()>, EncodeError> {
+        match self.input.take() {
+            Some(s) => Ok(s),
+            None => Ok(self
                 .display
                 .create_surfaces(va::VA_RT_FORMAT_YUV420, Some(va::VA_FOURCC_NV12), self.aligned_w, self.aligned_h, None, vec![()])
                 .map_err(backend("surfaces"))?
                 .pop()
-                .expect("1 surface"),
+                .expect("1 surface")),
+        }
+    }
+
+    /// Imports the DMA-BUF into VA-API and converts it to NV12 with the video-processing engine.
+    fn convert_gpu(&mut self, frame: &Frame, dma: &DmaBuf) -> Result<Surface<()>, EncodeError> {
+        if (frame.width, frame.height) != (self.width, self.height) {
+            return Err(EncodeError::Unsupported("frame size differs from the encoder's".into()));
+        }
+        if self.vpp.is_none() {
+            let entrypoints = self.display.query_config_entrypoints(va::VAProfile::VAProfileNone).map_err(backend("vpp entrypoints"))?;
+            if !entrypoints.contains(&va::VAEntrypoint::VAEntrypointVideoProc) {
+                return Err(EncodeError::Unsupported("VA-API: no video processing entrypoint".into()));
+            }
+            let config = self
+                .display
+                .create_config(vec![], va::VAProfile::VAProfileNone, va::VAEntrypoint::VAEntrypointVideoProc)
+                .map_err(backend("vpp config"))?;
+            let context = self
+                .display
+                .create_context(&config, self.aligned_w, self.aligned_h, None::<&Vec<Surface<()>>>, true)
+                .map_err(backend("vpp context"))?;
+            self.vpp = Some(Vpp { context, _config: config });
+        }
+        let context = Rc::clone(&self.vpp.as_ref().expect("created above").context);
+
+        let import = DmaImport {
+            fd: dma.fd.try_clone().map_err(|e| EncodeError::Backend(format!("dup dmabuf: {e}")))?,
+            size: u32::try_from(crate::dmabuf::size(dma)?).unwrap_or(u32::MAX),
+            modifier: dma.modifier,
+            drm_format: if frame.format == PixelFormat::Bgra8 { DRM_FORMAT_XRGB8888 } else { DRM_FORMAT_XBGR8888 },
+            width: frame.width,
+            height: frame.height,
+            offset: dma.offset,
+            pitch: frame.stride,
         };
-        self.upload(&input)?;
+        let source = self
+            .display
+            .create_surfaces(va::VA_RT_FORMAT_RGB32, None, frame.width, frame.height, None, vec![import])
+            .map_err(backend("import dmabuf"))?
+            .pop()
+            .expect("1 surface");
+        let output = self.take_input()?;
+
+        let rect = va::VARectangle { x: 0, y: 0, width: frame.width as u16, height: frame.height as u16 };
+        let mut params = va::VAProcPipelineParameterBuffer::default();
+        params.surface = source.id();
+        params.surface_region = &rect;
+        params.surface_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT601;
+        params.output_region = &rect;
+        params.output_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT601;
+        params.input_color_properties.color_range = va::VA_SOURCE_RANGE_FULL as u8;
+        params.output_color_properties.color_range = va::VA_SOURCE_RANGE_REDUCED as u8;
+
+        let mut pic = Picture::new(0, Rc::clone(&context), output);
+        pic.add_buffer(context.create_buffer(BufferType::ProcPipelineParameter(params)).map_err(backend("vpp buffer"))?);
+        let pic = pic.begin::<()>().map_err(backend("vpp begin"))?;
+        let pic = pic.render().map_err(backend("vpp render"))?;
+        let pic = pic.end().map_err(backend("vpp end"))?;
+        let pic = pic.sync::<()>().map_err(|(e, _)| backend("vpp sync")(e))?;
+        // `rect` and `source` stay alive until here: the driver reads both while processing.
+        drop(source);
+        pic.take_surface().map_err(|_| EncodeError::Backend("VA-API: vpp surface still referenced".into()))
+    }
+
+    fn encode_inner(&mut self, idr: bool, prepared: Option<Surface<()>>) -> Result<Vec<u8>, EncodeError> {
+        let input = match prepared {
+            Some(s) => s,
+            None => {
+                let input = self.take_input()?;
+                self.upload(&input)?;
+                input
+            }
+        };
 
         let (mbw, mbh) = ((self.aligned_w / 16) as u16, (self.aligned_h / 16) as u16);
         if idr {
@@ -466,12 +592,26 @@ impl FrameEncoder for VaapiEncoder {
     }
 
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
-        let FrameData::Shm(data) = &frame.data else {
-            return Err(EncodeError::Unsupported("DmaBuf import not implemented in the VA-API backend".into()));
+        let prepared = match &frame.data {
+            FrameData::Shm(data) => {
+                self.convert(frame, data)?;
+                None
+            }
+            FrameData::DmaBuf(dma) => {
+                let gpu = if self.vpp_failed { None } else { self.convert_gpu(frame, dma).map_err(|e| self.gpu_path_failed(&e)).ok() };
+                if gpu.is_none() {
+                    crate::dmabuf::with_pixels(frame, dma, |px| self.convert(frame, px))??;
+                }
+                gpu
+            }
+            FrameData::Encoded { .. } => return Err(EncodeError::Unsupported("already-encoded frame".into())),
         };
-        self.convert(frame, data)?;
+        if prepared.is_some() && self.gpu_frames == 0 {
+            eprintln!("VA-API: DMA-BUF import active (GPU colour conversion)");
+        }
+        self.gpu_frames += u64::from(prepared.is_some());
         let idr = std::mem::take(&mut self.force_idr);
-        match self.encode_inner(idr) {
+        match self.encode_inner(idr, prepared) {
             Ok(data) => Ok(EncodedFrame { output: Some(frame.output), keyframe: idr, data }),
             Err(e) => {
                 // The reference chain may be broken: restart from an IDR.
@@ -480,6 +620,30 @@ impl FrameEncoder for VaapiEncoder {
             }
         }
     }
+}
+
+impl VaapiEncoder {
+    /// Frames converted by the GPU (DMA-BUF import) since creation.
+    pub fn gpu_frames(&self) -> u64 {
+        self.gpu_frames
+    }
+
+    fn gpu_path_failed(&mut self, e: &EncodeError) {
+        eprintln!("VA-API: DMA-BUF import unavailable, reading frames on the CPU: {e}");
+        self.vpp_failed = true;
+    }
+}
+
+/// True when a VA-API H.264 encoder can be opened on this machine.
+pub fn available() -> bool {
+    let Some(display) = Display::open() else { return false };
+    let Ok(profiles) = display.query_config_profiles() else { return false };
+    [va::VAProfile::VAProfileH264High, va::VAProfile::VAProfileH264Main, va::VAProfile::VAProfileH264ConstrainedBaseline]
+        .into_iter()
+        .any(|p| {
+            profiles.contains(&p)
+                && display.query_config_entrypoints(p).is_ok_and(|e| e.contains(&va::VAEntrypoint::VAEntrypointEncSlice))
+        })
 }
 
 /// Default DRM render node used when none is configured (informational).
