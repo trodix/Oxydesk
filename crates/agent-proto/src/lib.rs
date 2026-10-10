@@ -49,6 +49,11 @@ pub enum ToAgent {
         channels: u16,
     },
     AudioClose,
+    /// New desktop size (single output); answered by `FromAgent::Resized`.
+    Resize {
+        width: u32,
+        height: u32,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -69,6 +74,10 @@ pub enum FromAgent {
     ClipboardText(String),
     Audio(Vec<u8>),
     Fatal(String),
+    /// Answer to `ToAgent::Resize`.
+    Resized {
+        ok: bool,
+    },
 }
 
 struct Out(Vec<u8>);
@@ -185,6 +194,11 @@ impl Message for ToAgent {
                 7
             }
             Self::AudioClose => 8,
+            Self::Resize { width, height } => {
+                o.u32(*width);
+                o.u32(*height);
+                9
+            }
         };
         (tag, o.0)
     }
@@ -215,6 +229,10 @@ impl Message for ToAgent {
                 channels: i.u16()?,
             },
             8 => Self::AudioClose,
+            9 => Self::Resize {
+                width: i.u32()?,
+                height: i.u32()?,
+            },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
@@ -262,6 +280,10 @@ impl Message for FromAgent {
                 o.bytes(t.as_bytes());
                 5
             }
+            Self::Resized { ok } => {
+                o.u8(u8::from(*ok));
+                6
+            }
         };
         (tag, o.0)
     }
@@ -288,6 +310,7 @@ impl Message for FromAgent {
             3 => Self::ClipboardText(i.string()?),
             4 => Self::Audio(i.rest()),
             5 => Self::Fatal(i.string()?),
+            6 => Self::Resized { ok: i.bool()? },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         Ok(msg)
@@ -356,6 +379,11 @@ mod tests {
             channels: 2,
         });
         roundtrip(ToAgent::AudioClose);
+        roundtrip(ToAgent::Resize {
+            width: 1024,
+            height: 576,
+        });
+        roundtrip(FromAgent::Resized { ok: true });
         roundtrip(FromAgent::Hello {
             outputs: 2,
             width: 1920,

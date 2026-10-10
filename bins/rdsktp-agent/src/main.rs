@@ -37,6 +37,8 @@ struct Desktop {
     /// Minimum delay between two encoding rounds (caps the rate in `event` mode).
     min_interval_ms: f32,
     _session: Mutex<Box<dyn std::any::Any + Send>>,
+    /// Set after a resize: the video loop drops its last (old size) frame and restarts from keyframes.
+    resized: AtomicBool,
 }
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
@@ -97,6 +99,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         poll_ms: arg(args, "--poll-ms"),
         min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
         _session: Mutex::new(keep),
+        resized: AtomicBool::new(false),
     };
     match session.as_str() {
         "synthetic" => {
@@ -211,6 +214,12 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             }
         }
         let round_start = Instant::now();
+        if d.resized.swap(false, Ordering::SeqCst) {
+            last.iter_mut().for_each(|l| *l = None);
+            keyframes
+                .iter()
+                .for_each(|k| k.store(true, Ordering::Relaxed));
+        }
         for i in 0..d.outputs as usize {
             let wanted_key = first || keyframes[i].swap(false, Ordering::Relaxed);
             if wanted_key {
@@ -362,6 +371,19 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::Wheel { dx, dy } => {
                 let _ = d.input.lock().expect("input mutex").wheel(dx, dy);
+            }
+            ToAgent::Resize { width, height } => {
+                let result = d
+                    .capture
+                    .lock()
+                    .expect("capture mutex")
+                    .resize(width, height);
+                if let Err(e) = &result {
+                    tracing::warn!("resize {width}x{height}: {e}");
+                } else {
+                    d.resized.store(true, Ordering::SeqCst);
+                }
+                send(&writer, &FromAgent::Resized { ok: result.is_ok() });
             }
             ToAgent::RequestKeyframe { output } => {
                 if let Some(k) = keyframes.get(output as usize) {

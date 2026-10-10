@@ -51,6 +51,7 @@ pub struct AutoEncoder {
     inner: Option<Box<dyn FrameEncoder>>,
     name: &'static str,
     keyframe_pending: bool,
+    size: (u32, u32),
 }
 
 impl AutoEncoder {
@@ -62,6 +63,7 @@ impl AutoEncoder {
             inner: None,
             name: "none",
             keyframe_pending: false,
+            size: (0, 0),
         }
     }
 
@@ -119,13 +121,15 @@ impl AutoEncoder {
         };
         self.inner = Some(enc);
         self.name = name;
+        self.size = (frame.width, frame.height);
         Ok(())
     }
 }
 
 impl FrameEncoder for AutoEncoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
-        if self.inner.is_none() {
+        // Desktop resize: the codec is created again for the new size (it starts on a keyframe).
+        if self.inner.is_none() || self.size != (frame.width, frame.height) {
             self.init(frame)?;
         }
         let inner = self.inner.as_mut().expect("initialized above");

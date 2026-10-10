@@ -34,6 +34,19 @@ impl CaptureSource for RemoteCapture {
         self.0.set_waker(wake);
     }
 
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        if self
+            .0
+            .resize(width, height, std::time::Duration::from_secs(10))
+        {
+            Ok(())
+        } else {
+            Err(CaptureError::Unavailable(format!(
+                "the agent could not resize to {width}x{height}"
+            )))
+        }
+    }
+
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
         match self.0.take_frame(output) {
             Some(f) => Ok(Some(f)),

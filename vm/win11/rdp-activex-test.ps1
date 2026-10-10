@@ -205,13 +205,38 @@ try {
   $null = Pump { $false } 6000
   Check 'still_connected_after_audio' $state.connected "Connected=$($ocx.Connected)"
 
-  # Dynamic resize request: the server does not implement display control (documented gap); the
-  # session must survive the request and keep delivering frames.
+  # Bottom-right corner block of the desktop (magenta): its position in the guest window gives the size
+  # of the remote desktop. Scan a screenshot of the control for magenta pixels.
+  function MagentaBox {
+    $bmp = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($form.Location, [System.Drawing.Point]::Empty, $form.ClientSize); $g.Dispose()
+    $x0 = 99999; $y0 = 99999; $x1 = -1; $y1 = -1
+    for ($y = 0; $y -lt $h; $y += 4) { for ($x = 0; $x -lt $w; $x += 4) {
+      $c = $bmp.GetPixel($x, $y)
+      if ($c.R -gt 200 -and $c.G -lt 60 -and $c.B -gt 200) {
+        if ($x -lt $x0) { $x0 = $x }; if ($y -lt $y0) { $y0 = $y }; if ($x -gt $x1) { $x1 = $x }; if ($y -gt $y1) { $y1 = $y }
+      }
+    } }
+    $bmp.Dispose()
+    if ($x1 -lt 0) { return $null }
+    return @($x0, $y0, $x1, $y1)
+  }
+  $boxBefore = MagentaBox
+  # Dynamic resize (display control): the test desktop draws a magenta block in its bottom-right corner,
+  # so the new size is visible in the guest pixels. The session must stay connected and keep delivering frames.
   $resize = 'accepted'
   try { $ocx.UpdateSessionDisplaySettings(1024, 576, 0, 0, 0, 100, 100) } catch { $resize = "refused ($($_.Exception.Message.Trim()))" }
+  # The control centers a desktop smaller than its window: offsets of the 1024x576 desktop.
+  $ox = [int](($w - 1024) / 2); $oy = [int](($h - 576) / 2)
+  if ($p.expect_resize -eq '0') { $ox = 0; $oy = 0 }   # desktop unchanged: still at the window origin
   $seen2 = @{}
-  $null = Pump { $c = PixelAt 48 16; $seen2[[string]($c.R -gt 150)] = $true; $seen2.Count -ge 2 -or -not $state.connected } 8000
+  $null = Pump { $c = PixelAt (48 + $ox) (16 + $oy); $seen2[[string]($c.R -gt 150)] = $true; $seen2.Count -ge 2 -or -not $state.connected } 8000
+  $box = $null
+  $null = Pump { $script:box = MagentaBox; ($box -and $box[2] -ge ($ox + 1024 - 8) -and $box[2] -lt ($ox + 1024) -and $box[3] -ge ($oy + 576 - 8) -and $box[3] -lt ($oy + 576)) -or -not $state.connected } 8000
+  $cornerOk = [bool]($box -and $box[2] -ge ($ox + 1024 - 8) -and $box[2] -lt ($ox + 1024) -and $box[3] -ge ($oy + 576 - 8) -and $box[3] -lt ($oy + 576))
   Check 'resize_request_survives' ($state.connected -and $seen2.Count -ge 2) "request $resize, connected=$($state.connected), heartbeat states=$($seen2.Count)"
+  if ($p.expect_resize -eq '0') { Emit 'STEP desktop size not checked (WIN_EXPECT_RESIZE=0)' } else { Check 'desktop_resized' $cornerOk "magenta block (x0,y0,x1,y1): before $($boxBefore -join ',') after $($box -join ',') expected right/bottom edge at $($ox + 1024),$($oy + 576) (1024x576 desktop)" }
 
   # Clean disconnect.
   $ocx.Disconnect()

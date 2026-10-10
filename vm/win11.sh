@@ -133,12 +133,13 @@ case "${1:-}" in
   test) # test HOST:PORT USER [TIMEOUT_S]: restores the snapshot, swaps the data CD (params only), waits for the
         # guest script to report END on the serial port, checks the tone recorded from the guest audio output.
         # Exit 0 iff the guest RESULT passed and (unless WIN_EXPECT_TONE=0) the 440 Hz tone was heard.
+        # WIN_EXPECT_RESIZE=0: the server cannot resize its desktop (KWin < 6.4): the size is not checked.
     [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
     running && die "already running"
     addr="${2:?HOST:PORT}"; : "${3:?USER}"
     [[ -f "$S/overlay.qcow2" && "$(snapshot_key)" == "$(cat "$S/snapshot.sha" 2>/dev/null)" ]] || take_snapshot
-    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\n' \
-      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" > "$S/params.txt"
+    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\n' \
+      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" > "$S/params.txt"
     make_iso "$S/test-data.iso" RDPDATA "$S/params.txt"; rm -f "$S/params.txt" "$S/audio.wav"
     export DISK_IMG="$S/overlay.qcow2"
     : > "$S/serial.log"; launch 0 -loadvm ready

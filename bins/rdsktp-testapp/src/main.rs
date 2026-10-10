@@ -9,7 +9,7 @@ use std::os::unix::fs::FileExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rdsktp_capture::{BLOCK, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE};
+use rdsktp_capture::{BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool,
     wl_surface,
@@ -25,6 +25,7 @@ const IDENTITY_POS: (u32, u32) = (2 * BLOCK, 0);
 struct Canvas {
     file: File,
     width: u32,
+    height: u32,
     surface: wl_surface::WlSurface,
     buffer: wl_buffer::WlBuffer,
     heartbeat_on: bool,
@@ -256,6 +257,74 @@ fn play_tone() {
     let _ = player.wait();
 }
 
+/// Canvas of a window at size `w`x`h`: gradient background, contract blocks and, in the bottom-right
+/// corner, the desktop-size marker (so a client can measure the actual desktop size).
+fn make_canvas(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<App>,
+    surface: &wl_surface::WlSurface,
+    w: u32,
+    h: u32,
+    k: usize,
+) -> Canvas {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+    let path = std::path::Path::new(&dir).join(format!(
+        "rdsktp-testapp-{}-{k}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .expect("shm file");
+    std::fs::remove_file(&path).ok();
+    file.set_len(u64::from(w) * u64::from(h) * 4)
+        .expect("shm size");
+    // Non-black background (contract: first image non-black), light gradient.
+    let mut bg = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            bg.extend_from_slice(&[
+                (60 + (x * 40 / w)) as u8,
+                (80 + (y * 40 / h)) as u8,
+                110,
+                255,
+            ]);
+        }
+    }
+    (&file).write_all(&bg).expect("fond");
+    let pool = shm.create_pool(file.as_fd(), (w * h * 4) as i32, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        w as i32,
+        h as i32,
+        (w * 4) as i32,
+        wl_shm::Format::Xrgb8888,
+        qh,
+        (),
+    );
+    let canvas = Canvas {
+        file,
+        width: w,
+        height: h,
+        surface: surface.clone(),
+        buffer,
+        heartbeat_on: false,
+    };
+    canvas.fill_block(MARKER_POS, [0, 0, 0]);
+    canvas.fill_block(HEARTBEAT_POS, HEARTBEAT_OFF);
+    canvas.fill_block(IDENTITY_POS, PALETTE[k % PALETTE.len()]);
+    canvas.fill_block((w - BLOCK, h - BLOCK), CORNER_COLOR);
+    canvas.surface.attach(Some(&canvas.buffer), 0, 0);
+    canvas.surface.damage_buffer(0, 0, w as i32, h as i32);
+    canvas.surface.commit();
+    canvas
+}
+
 fn main() {
     let (mut width, mut height) = (1920u32, 1080u32); // indicative size before the first configure
     let echo = std::env::args().any(|a| a == "--clipboard-echo");
@@ -322,57 +391,9 @@ fn main() {
         queue.blocking_dispatch(&mut app).expect("configure");
     }
 
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
     for (k, (surface, _, _)) in surfaces.iter().enumerate() {
         let (w, h) = app.windows[k].size;
-        let path =
-            std::path::Path::new(&dir).join(format!("rdsktp-testapp-{}-{k}", std::process::id()));
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .expect("shm file");
-        std::fs::remove_file(&path).ok();
-        file.set_len(u64::from(w) * u64::from(h) * 4)
-            .expect("shm size");
-        // Non-black background (contract: first image non-black), light gradient.
-        let mut bg = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h {
-            for x in 0..w {
-                bg.extend_from_slice(&[
-                    (60 + (x * 40 / w)) as u8,
-                    (80 + (y * 40 / h)) as u8,
-                    110,
-                    255,
-                ]);
-            }
-        }
-        (&file).write_all(&bg).expect("fond");
-        let pool = shm.create_pool(file.as_fd(), (w * h * 4) as i32, &qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            w as i32,
-            h as i32,
-            (w * 4) as i32,
-            wl_shm::Format::Xrgb8888,
-            &qh,
-            (),
-        );
-        let canvas = Canvas {
-            file,
-            width: w,
-            surface: surface.clone(),
-            buffer,
-            heartbeat_on: false,
-        };
-        canvas.fill_block(MARKER_POS, [0, 0, 0]);
-        canvas.fill_block(HEARTBEAT_POS, HEARTBEAT_OFF);
-        canvas.fill_block(IDENTITY_POS, PALETTE[k % PALETTE.len()]);
-        canvas.surface.attach(Some(&canvas.buffer), 0, 0);
-        canvas.surface.damage_buffer(0, 0, w as i32, h as i32);
-        canvas.surface.commit();
+        let canvas = make_canvas(&shm, &qh, surface, w, h, k);
         app.canvases.push(Arc::new(Mutex::new(canvas)));
     }
 
@@ -399,6 +420,14 @@ fn main() {
 
     loop {
         queue.blocking_dispatch(&mut app).expect("dispatch");
+        // The compositor changed the size of a window (output resized): new buffer at that size.
+        for (k, (surface, _, _)) in surfaces.iter().enumerate() {
+            let (w, h) = app.windows[k].size;
+            let mut canvas = app.canvases[k].lock().expect("canvas");
+            if (canvas.width, canvas.height) != (w, h) {
+                *canvas = make_canvas(&shm, &qh, surface, w, h, k);
+            }
+        }
         let _ = conn.flush();
     }
 }

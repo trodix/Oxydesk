@@ -3,7 +3,8 @@
 mod synthetic;
 
 pub use synthetic::{
-    SyntheticDesktop, SyntheticSource, BLOCK, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE,
+    SyntheticDesktop, SyntheticSource, BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS,
+    PALETTE,
 };
 
 #[cfg(feature = "kwin")]

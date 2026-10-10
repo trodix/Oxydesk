@@ -36,6 +36,9 @@ pub struct AgentLink {
     clipboard: Mutex<Option<String>>,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
+    /// Answer of the agent to the last `Resize` (None while pending).
+    resize_reply: Mutex<Option<bool>>,
+    resize_cv: Condvar,
     dead: AtomicBool,
     waker: Mutex<Option<Arc<rdsktp_core::wake::Wake>>>,
 }
@@ -66,6 +69,8 @@ impl AgentLink {
             clipboard: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
+            resize_reply: Mutex::new(None),
+            resize_cv: Condvar::new(),
             dead: AtomicBool::new(false),
             waker: Mutex::new(None),
         });
@@ -85,6 +90,7 @@ impl AgentLink {
                 }
                 l.dead.store(true, Ordering::Relaxed);
                 l.audio_cv.notify_all();
+                l.resize_cv.notify_all();
                 l.wake();
             })
             .map_err(|e| e.to_string())?;
@@ -147,6 +153,10 @@ impl AgentLink {
                 }
             }
             FromAgent::Fatal(m) => tracing::error!("agent: {m}"),
+            FromAgent::Resized { ok } => {
+                *self.resize_reply.lock().expect("resize mutex") = Some(ok);
+                self.resize_cv.notify_all();
+            }
         }
     }
 
@@ -190,6 +200,29 @@ impl AgentLink {
             mb.wait_key = true;
         }
         self.send(&ToAgent::RequestKeyframe { output: output.0 });
+    }
+
+    /// Asks the agent to resize its desktop and waits for its answer. The pending frames (old size) are dropped.
+    pub fn resize(&self, width: u32, height: u32, timeout: Duration) -> bool {
+        *self.resize_reply.lock().expect("resize mutex") = None;
+        if !self.send(&ToAgent::Resize { width, height }) {
+            return false;
+        }
+        let guard = self.resize_reply.lock().expect("resize mutex");
+        let (guard, _) = self
+            .resize_cv
+            .wait_timeout_while(guard, timeout, |r| r.is_none() && !self.is_dead())
+            .expect("resize mutex");
+        let ok = guard.unwrap_or(false);
+        drop(guard);
+        if ok {
+            for slot in &self.video {
+                let mut mb = slot.lock().expect("mailbox mutex");
+                mb.queue.clear();
+                mb.wait_key = true;
+            }
+        }
+        ok
     }
 
     pub fn take_clipboard(&self) -> Option<String> {
@@ -259,6 +292,41 @@ mod tests {
         )
         .unwrap();
         (AgentLink::connect(server, 1).unwrap(), agent)
+    }
+
+    /// Agent answering `Resize` requests with `ok`.
+    fn answering(mut agent: UnixStream, ok: bool) {
+        std::thread::spawn(move || {
+            while let Ok(Some(msg)) = read_msg::<_, ToAgent>(&mut agent) {
+                if matches!(msg, ToAgent::Resize { .. }) {
+                    write_msg(&mut agent, &FromAgent::Resized { ok }).unwrap();
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn resize_waits_for_the_agent_and_drops_old_frames() {
+        let (link, mut agent) = pair();
+        write_msg(&mut agent, &video(true, 1)).unwrap();
+        wait_for(|| link.video[0].lock().unwrap().queue.front().map(|_| ()));
+        answering(agent, true);
+        assert!(link.resize(1024, 576, Duration::from_secs(5)));
+        assert!(
+            link.take_frame(OutputId(0)).is_none(),
+            "old size frames are dropped"
+        );
+    }
+
+    #[test]
+    fn resize_refused_by_the_agent_or_silent_agent_fails() {
+        let (link, agent) = pair();
+        answering(agent, false);
+        assert!(!link.resize(1024, 576, Duration::from_secs(5)));
+        let (link, _silent) = pair();
+        let t = Instant::now();
+        assert!(!link.resize(1024, 576, Duration::from_millis(200)));
+        assert!(t.elapsed() < Duration::from_secs(2));
     }
 
     fn video(keyframe: bool, tag: u8) -> FromAgent {

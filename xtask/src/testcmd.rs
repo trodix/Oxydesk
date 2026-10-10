@@ -15,12 +15,13 @@ pub const HELP: &str = "cargo xtask test [options]
                    .deb, deploy it in the VM, run our test client against it; for the other sessions use
                    `cargo xtask vm-test --session kwin|login`)
   --client         then the CLIENT integration test, with the stock Windows RDP client (mstsc engine) in a QEMU
-                   Windows 11 VM against a local test server (slow: connect, frames, clipboard, audio, resize request)
+                   Windows 11 VM against a local test server (slow: connect, frames, clipboard, audio, dynamic resize)
   --integration    both --server and --client
   --skip-unit      do not run the unit tests (needs one of the above)
   --out <dir>      client test logs folder (default artifacts/win-test)
   --help           this help
-env: WIN_RDP_PORT (test server port reachable from the Windows VM, default 3391); RDP_TEST_PASSWORD (any value in test mode)
+env: WIN_RDP_PORT (test server port reachable from the Windows VM, default 3391); WIN_SESSION=kwin (--client: the
+  server runs a real KWin session on this host with the test application instead of the synthetic desktop); RDP_TEST_PASSWORD (any value in test mode)
 prerequisites: /dev/kvm and the VM tools; --server: `bash vm/vm.sh create` once; --client: `bash vm/win11.sh install` once
 (the ISO is downloaded into iso/ when missing). A missing prerequisite is an error listing what is missing.
 Each integration test runs even if the other failed. exit code: 0 all pass, 1 failure or missing prerequisite, 2 arguments";
@@ -168,6 +169,14 @@ struct Server(Child);
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // SIGINT first: the server then stops its own KWin session (children of a killed process would leak).
+        let _ = Command::new("kill")
+            .args(["-INT", &self.0.id().to_string()])
+            .status();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && matches!(self.0.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -220,8 +229,25 @@ fn client(o: &TestOpts) -> Result<(), String> {
         windows_prerequisites(on_path, kvm_usable(), Path::new(BASE_DISK).is_file()),
     )?;
     fs::create_dir_all(o.out.join("state")).map_err(|e| e.to_string())?;
+    // WIN_SESSION=kwin: the server runs a real KWin session on this host (feature `kwin`) with the test
+    // application, instead of the synthetic desktop.
+    let kwin = std::env::var("WIN_SESSION").is_ok_and(|v| v == "kwin");
     println!("== build (server and client)");
-    if !cargo(&["build", "-q", "-p", "rdsktp"])
+    let server_build: &[&str] = if kwin {
+        &[
+            "build",
+            "-q",
+            "-p",
+            "rdsktp",
+            "-p",
+            "rdsktp-testapp",
+            "--features",
+            "rdsktp/kwin",
+        ]
+    } else {
+        &["build", "-q", "-p", "rdsktp"]
+    };
+    if !cargo(server_build)
         || !cargo(&[
             "build",
             "-q",
@@ -234,8 +260,22 @@ fn client(o: &TestOpts) -> Result<(), String> {
         return Err("build failed".into());
     }
     let log = fs::File::create(o.out.join("server.log")).map_err(|e| e.to_string())?;
-    let server = Command::new("target/debug/rdsktp")
-        .args(["--test-mode", "--width", "1280", "--height", "720"])
+    let mut server = Command::new("target/debug/rdsktp");
+    if kwin {
+        let app = fs::canonicalize("target/debug/rdsktp-testapp").map_err(|e| e.to_string())?;
+        server.args([
+            "--session",
+            "kwin",
+            "--kwin-socket",
+            "rdsktp-wintest",
+            "--session-app",
+            &format!("{} --tone", app.display()),
+        ]);
+    } else {
+        server.arg("--test-mode");
+    }
+    let server = server
+        .args(["--width", "1280", "--height", "720"])
         .arg("--listen")
         .arg(format!("0.0.0.0:{}", o.port))
         .arg("--state-dir")

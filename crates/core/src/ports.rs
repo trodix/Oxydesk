@@ -10,6 +10,10 @@ pub trait CaptureSource: Send {
     /// The consumer may sleep on `wake` instead of polling: the source notifies it on every new
     /// frame. No effect by default (polled sources only).
     fn set_waker(&mut self, _wake: std::sync::Arc<crate::wake::Wake>) {}
+    /// Resizes the (single) captured desktop. Frames after the call have the new size.
+    fn resize(&mut self, _width: u32, _height: u32) -> Result<(), CaptureError> {
+        Err(CaptureError::ResizeUnsupported)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

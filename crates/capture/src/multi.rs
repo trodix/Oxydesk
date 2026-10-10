@@ -24,6 +24,13 @@ impl CaptureSource for MultiCapture {
         }
     }
 
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        match self.sources.as_mut_slice() {
+            [single] => single.resize(width, height),
+            _ => Err(CaptureError::ResizeUnsupported),
+        }
+    }
+
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
         match self.sources.get_mut(output.0 as usize) {
             Some(source) => source.recv_latest(output),

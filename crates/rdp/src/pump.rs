@@ -26,6 +26,15 @@ pub struct Shared {
     /// Capture and encoders of a new session, stored by the composition root (fixed mode) or by
     /// the credential validator (login mode); the pump adopts them on the next tick.
     pub ports: Mutex<Option<PumpPorts>>,
+    /// Desktop size requested by the client (Display Control), applied by the pump on its next tick.
+    pub resize: Mutex<Option<(u32, u32)>>,
+    /// Current desktop size, announced to the clients at connection; kept up to date by the pump.
+    pub desktop: Mutex<Option<(u32, u32)>>,
+    /// Display updates of the current connection (deactivation-reactivation on resize).
+    pub display: Mutex<Option<UnboundedSender<ironrdp_server::DisplayUpdate>>>,
+    /// Number of client loops started (`RdpServerDisplay::updates` calls): a resize is complete,
+    /// client side, when this counter moves past the value observed when it was requested.
+    pub client_loops: std::sync::atomic::AtomicU64,
 }
 
 pub struct PumpPorts {
@@ -72,7 +81,13 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let period = Duration::from_secs_f32(1.0 / p.fps);
             let started = Instant::now();
             let mut next = Instant::now();
-            let (desktop_w, desktop_h) = p.layout.desktop_size();
+            let mut layout = p.layout.clone();
+            *shared.desktop.lock().expect("desktop mutex") = Some(layout.desktop_size());
+            // The next surfaces must be announced with ResetGraphics even for a single output.
+            let mut reset_graphics = false;
+            // Client loop to wait for before announcing the new size through EGFX (reactivation in progress).
+            let mut reactivation: Option<u64> = None;
+            let mut stale_logged: Option<(u32, u32)> = None;
             let mut capture: Option<Box<dyn CaptureSource>> = None;
             let mut outputs: Vec<OutputState> = Vec::new();
             // Current connection and one EGFX surface per output (empty until created).
@@ -117,11 +132,56 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             })
                             .collect();
                         current = None;
+                        // A new session starts at the configured size.
+                        layout = p.layout.clone();
+                        reset_graphics = false;
+                        *shared.resize.lock().expect("resize mutex") = None;
+                        *shared.desktop.lock().expect("desktop mutex") =
+                            Some(layout.desktop_size());
                     }
+                }
+                let requested = shared.resize.lock().expect("resize mutex").take();
+                if let (Some((w, h)), Some(src)) = (requested, capture.as_mut()) {
+                    if layout.outputs.len() == 1 && layout.desktop_size() != (w, h) {
+                        match src.resize(w, h) {
+                            Ok(()) => {
+                                tracing::info!(w, h, "desktop resized");
+                                layout = Layout::side_by_side(1, w, h);
+                                *shared.desktop.lock().expect("desktop mutex") = Some((w, h));
+                                reset_graphics = true;
+                                // The client must renegotiate the desktop size (deactivation-reactivation)
+                                // before the new EGFX surfaces.
+                                if let Some(tx) =
+                                    shared.display.lock().expect("display mutex").as_ref()
+                                {
+                                    reactivation = Some(shared.client_loops.load(Ordering::SeqCst));
+                                    let _ = tx.send(ironrdp_server::DisplayUpdate::Resize(
+                                        ironrdp_server::DesktopSize {
+                                            width: w as u16,
+                                            height: h as u16,
+                                        },
+                                    ));
+                                }
+                                if let Some((_, surfaces)) = current.as_mut() {
+                                    surfaces.clear();
+                                }
+                                for o in &mut outputs {
+                                    o.last = None; // old size: never re-encoded
+                                }
+                            }
+                            Err(e) => tracing::warn!("resize {w}x{h} ignored: {e}"),
+                        }
+                    }
+                }
+                if reactivation.is_some_and(|n| shared.client_loops.load(Ordering::SeqCst) > n) {
+                    reactivation = None;
                 }
                 let Some(capture_src) = capture.as_mut() else {
                     continue;
                 };
+                if reactivation.is_some() {
+                    continue; // the client is renegotiating the desktop size
+                }
                 let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
                     continue;
                 };
@@ -139,15 +199,17 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     }
                     if surfaces.is_empty() {
                         // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
-                        if p.layout.outputs.len() > 1 {
+                        if layout.outputs.len() > 1 || reset_graphics {
+                            let (desktop_w, desktop_h) = layout.desktop_size();
                             g.resize_with_monitors(
                                 desktop_w as u16,
                                 desktop_h as u16,
-                                monitors(&p.layout),
+                                monitors(&layout),
                             );
+                            reset_graphics = false;
                         }
                         let mut created = Vec::new();
-                        for o in &p.layout.outputs {
+                        for o in &layout.outputs {
                             let Some(id) = g.create_surface(o.width as u16, o.height as u16) else {
                                 continue 'pump;
                             };
@@ -168,6 +230,23 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 let mut lost = false;
                 for (i, out) in outputs.iter_mut().enumerate() {
                     match capture_src.recv_latest(OutputId(i as u32)) {
+                        // Frame of the previous size (resize in progress): ignored.
+                        Ok(Some(f))
+                            if (f.width, f.height)
+                                != (layout.outputs[i].width, layout.outputs[i].height) =>
+                        {
+                            if stale_logged != Some((f.width, f.height)) {
+                                tracing::debug!(
+                                    "frame {}x{} ignored (expected {}x{})",
+                                    f.width,
+                                    f.height,
+                                    layout.outputs[i].width,
+                                    layout.outputs[i].height
+                                );
+                                stale_logged = Some((f.width, f.height));
+                            }
+                            continue;
+                        }
                         Ok(Some(f)) => out.last = Some(f),
                         Ok(None) if repeat && out.last.is_some() => {}
                         Ok(None) => continue,
@@ -193,7 +272,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         // An already encoded inter frame is not re-sent: the "repeat" restarts from a keyframe from the agent.
                         out.last = None;
                     }
-                    let info = &p.layout.outputs[i];
+                    let info = &layout.outputs[i];
                     let (messages, channel) = {
                         let mut g = handle.lock().expect("gfx handle mutex");
                         let region =

@@ -136,6 +136,8 @@ pub struct KwinCapture {
     stop: Arc<AtomicBool>,
     dead: Arc<Mutex<Option<String>>>,
     worker: Option<JoinHandle<()>>,
+    socket: Option<String>,
+    output: usize,
 }
 
 impl KwinCapture {
@@ -178,6 +180,8 @@ impl KwinCapture {
                 stop,
                 dead,
                 worker: Some(worker),
+                socket: socket.map(str::to_owned),
+                output,
             }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
             Err(_) => Err(CaptureError::Unavailable(
@@ -192,6 +196,35 @@ impl CaptureSource for KwinCapture {
         *self.waker.lock().expect("waker") = Some(wake);
     }
 
+    /// The virtual output gets a custom mode of the requested size (`kscreen-doctor`, libkscreen); the
+    /// PipeWire stream then renegotiates its format and delivers frames of the new size. Custom modes
+    /// need a recent KWin (measured: absent from Plasma 6.3, present in 6.7); `kscreen-doctor` reports
+    /// failures on its output with a zero exit status, so the result is checked on the output geometry.
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        let name = format!("Virtual-{}", self.output);
+        // Adding an existing mode fails harmlessly; selecting the mode is what decides.
+        let _ = self.kscreen_doctor(&[&format!(
+            "output.{name}.addCustomMode.{width}.{height}.60000.reduced"
+        )]);
+        self.kscreen_doctor(&[&format!("output.{name}.mode.{width}x{height}@60")])?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let listing = self.kscreen_doctor(&["-o"])?;
+            let size = parse_output_size(&listing, &name);
+            if size == Some((width, height)) {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(CaptureError::Unavailable(format!(
+                    "KWin cannot set {width}x{height} on {name} (now {size:?}): custom modes need Plasma 6.4+"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.mailbox.lock().expect("mailbox").take(); // old-size frame
+        Ok(())
+    }
+
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
         if let Some(frame) = self.mailbox.lock().expect("mailbox").take() {
             return Ok(Some(frame));
@@ -201,6 +234,56 @@ impl CaptureSource for KwinCapture {
             None => Ok(None),
         }
     }
+}
+
+impl KwinCapture {
+    /// Runs `kscreen-doctor` against the captured session; returns its standard output (colors removed).
+    fn kscreen_doctor(&self, args: &[&str]) -> Result<String, CaptureError> {
+        let mut cmd = std::process::Command::new("kscreen-doctor");
+        if let Some(socket) = &self.socket {
+            cmd.env("WAYLAND_DISPLAY", socket);
+        }
+        let out = cmd
+            .args(args)
+            .output()
+            .map_err(|e| CaptureError::Unavailable(format!("kscreen-doctor: {e}")))?;
+        if !out.status.success() {
+            return Err(CaptureError::Unavailable(format!(
+                "kscreen-doctor: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(strip_ansi(&String::from_utf8_lossy(&out.stdout)))
+    }
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Size read from the `Geometry: X,Y WxH` line of output `name` in a `kscreen-doctor -o` listing.
+fn parse_output_size(listing: &str, name: &str) -> Option<(u32, u32)> {
+    let block = listing
+        .split("Output:")
+        .find(|b| b.split_whitespace().nth(1) == Some(name))?;
+    let line = block
+        .lines()
+        .find(|l| l.trim_start().starts_with("Geometry:"))?;
+    let (w, h) = line.split_whitespace().last()?.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
 }
 
 impl Drop for KwinCapture {
@@ -550,4 +633,21 @@ fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelForm
         }
     }
     let _ = std::fs::write(path, out);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_output_size_from_kscreen_doctor_listing() {
+        let listing = "Output: 1 Virtual-0 4611fd0e\n\tenabled\n\tModes:  1:1920x1080@60*!\n\tGeometry: 0,0 1024x576\n\tScale: 1\nOutput: 2 Virtual-1 abc\n\tGeometry: 1024,0 1920x1080\n";
+        assert_eq!(parse_output_size(listing, "Virtual-0"), Some((1024, 576)));
+        assert_eq!(parse_output_size(listing, "Virtual-1"), Some((1920, 1080)));
+        assert_eq!(parse_output_size(listing, "Virtual-2"), None);
+        assert_eq!(
+            strip_ansi("\u{1b}[01;33mGeometry: \u{1b}[0;0m0,0 1x2"),
+            "Geometry: 0,0 1x2"
+        );
+    }
 }

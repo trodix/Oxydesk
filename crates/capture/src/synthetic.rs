@@ -20,6 +20,8 @@ pub const PALETTE: [[u8; 3]; 8] = [
     [255, 128, 0],
     [128, 0, 255],
 ];
+/// Block in the bottom-right corner: shows the actual desktop size on the client side.
+pub const CORNER_COLOR: [u8; 3] = [255, 0, 255];
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
 const HEARTBEAT_OFF: [u8; 3] = [48, 48, 48];
 
@@ -54,6 +56,21 @@ impl SyntheticSource {
     pub fn with_noise(mut self, noise: bool) -> Self {
         self.noise = noise;
         self
+    }
+
+    /// Changes the rendered size (even dimensions, large enough for the contract blocks).
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        if !width.is_multiple_of(2)
+            || !height.is_multiple_of(2)
+            || width < 2 * BLOCK + 32
+            || height < BLOCK
+        {
+            return Err(CaptureError::Unavailable(format!(
+                "unsupported size {width}x{height}"
+            )));
+        }
+        (self.width, self.height) = (width, height);
+        Ok(())
     }
 
     /// Press of key `index` (0..8): the marker takes the corresponding color.
@@ -95,6 +112,12 @@ impl SyntheticSource {
             HEARTBEAT_OFF
         };
         fill(&mut px, w, HEARTBEAT_POS, beat);
+        fill(
+            &mut px,
+            w,
+            (self.width - BLOCK, self.height - BLOCK),
+            CORNER_COLOR,
+        );
         Frame {
             output: OutputId(0),
             width: self.width,
@@ -118,6 +141,9 @@ fn fill(px: &mut [u8], w: usize, pos: (u32, u32), c: [u8; 3]) {
 impl CaptureSource for SyntheticSource {
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
         Ok(Some(self.render()))
+    }
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        SyntheticSource::resize(self, width, height)
     }
 }
 
@@ -151,6 +177,9 @@ impl SyntheticDesktop {
 impl CaptureSource for SyntheticDesktop {
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
         Ok(Some(self.state().source.render()))
+    }
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        self.state().source.resize(width, height)
     }
 }
 
@@ -188,6 +217,18 @@ mod tests {
         let FrameData::Shm(d) = &f.data else { panic!() };
         let i = (y * f.width as usize + x) * 4;
         [d[i], d[i + 1], d[i + 2]]
+    }
+
+    #[test]
+    fn resize_changes_frame_size_and_rejects_bad_sizes() {
+        let mut s = SyntheticSource::new(256, 128);
+        s.resize(512, 200).unwrap();
+        let f = s.render();
+        assert_eq!((f.width, f.height, f.stride), (512, 200, 2048));
+        assert!(s.resize(511, 200).is_err());
+        assert!(s.resize(40, 200).is_err());
+        assert_eq!(s.render().width, 512, "a refused resize changes nothing");
+        assert_eq!(pixel(&f, 512 - 4, 200 - 4), CORNER_COLOR);
     }
 
     #[test]

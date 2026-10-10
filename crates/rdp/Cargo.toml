@@ -15,6 +15,7 @@ ironrdp-cliprdr = "=0.7.0"
 ironrdp-rdpsnd = "0.9"
 ironrdp-core = "0.2"
 ironrdp-pdu = "0.9"
+ironrdp-displaycontrol = "=0.8.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 async-trait = "0.1"
 anyhow = "1"

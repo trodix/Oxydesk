@@ -180,8 +180,15 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Result<Vec<_>, _>>()?;
             let capture = rdsktp_capture::MultiCapture::new(sources);
             let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
-            let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
-            (Box::new(capture), Box::new(input), Box::new(clipboard))
+            let clipboard: Box<dyn rdsktp_core::ports::ClipboardBackend> =
+                match rdsktp_clipboard::WaylandClipboard::connect(Some(&socket)) {
+                    Ok(c) => Box::new(c),
+                    Err(e) => {
+                        tracing::warn!("clipboard sharing disabled: {e}");
+                        Box::new(rdsktp_clipboard::UnavailableClipboard)
+                    }
+                };
+            (Box::new(capture), Box::new(input), clipboard)
         }
         #[cfg(not(feature = "kwin"))]
         anyhow::bail!("binary built without the `kwin` feature");

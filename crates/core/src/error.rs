@@ -6,6 +6,8 @@ pub enum CaptureError {
     Unavailable(String),
     #[error("capture stream closed")]
     Closed,
+    #[error("resize not supported by this capture source")]
+    ResizeUnsupported,
 }
 
 #[derive(Debug, Error)]

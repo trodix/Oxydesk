@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_displaycontrol::pdu::{DisplayControlMonitorLayout, MonitorLayoutEntry};
 use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitySet};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_server::{
@@ -247,24 +248,56 @@ impl RdpServerInputHandler for Input {
     }
 }
 
-struct Display(DesktopSize);
-struct NoUpdates;
+/// Desktop size announced to the client: the current one (it changes with Display Control), otherwise the configured one.
+struct Display {
+    initial: DesktopSize,
+    shared: Arc<Shared>,
+}
+/// Everything is drawn through EGFX: the only display updates are the resizes requested by the pump.
+struct Resizes(tokio::sync::mpsc::UnboundedReceiver<DisplayUpdate>);
 
 #[async_trait::async_trait]
-impl RdpServerDisplayUpdates for NoUpdates {
+impl RdpServerDisplayUpdates for Resizes {
     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
-        // Everything goes through EGFX: no classic bitmap update.
-        std::future::pending().await
+        match self.0.recv().await {
+            Some(update) => Ok(Some(update)),
+            None => std::future::pending().await,
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl RdpServerDisplay for Display {
     async fn size(&mut self) -> DesktopSize {
-        self.0
+        match *self.shared.desktop.lock().expect("desktop mutex") {
+            Some((width, height)) => DesktopSize {
+                width: width as u16,
+                height: height as u16,
+            },
+            None => self.initial,
+        }
     }
     async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
-        Ok(Box::new(NoUpdates))
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        *self.shared.display.lock().expect("display mutex") = Some(tx);
+        self.shared.client_loops.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(Resizes(rx)))
+    }
+    /// The client asks for a new size: handed to the pump, which resizes the capture and announces it through EGFX.
+    fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+        let Some(monitor) = layout
+            .monitors()
+            .iter()
+            .find(|m| m.is_primary())
+            .or_else(|| layout.monitors().first())
+        else {
+            return;
+        };
+        let (w, h) = monitor.dimensions();
+        let (w, h) = MonitorLayoutEntry::adjust_display_size(w, h);
+        tracing::debug!(w, h, "display control: resize requested");
+        *self.shared.resize.lock().expect("resize mutex") = Some((w, h & !1));
+        self.shared.wake.notify();
     }
 }
 
@@ -316,10 +349,13 @@ async fn serve(
     let send = clip_factory.send_fn();
     let mut server = builder
         .with_input_handler(Input(slot.input.clone()))
-        .with_display_handler(Display(DesktopSize {
-            width: desktop.0 as u16,
-            height: desktop.1 as u16,
-        }))
+        .with_display_handler(Display {
+            initial: DesktopSize {
+                width: desktop.0 as u16,
+                height: desktop.1 as u16,
+            },
+            shared: shared.clone(),
+        })
         .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
         .with_sound_factory(audio_enabled.then(|| {
