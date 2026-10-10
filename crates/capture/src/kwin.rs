@@ -37,8 +37,10 @@ mod proto {
 use proto::zkde_screencast_stream_unstable_v1::{self as stream_ev, ZkdeScreencastStreamUnstableV1};
 use proto::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
-/// `zkde_screencast_unstable_v1.pointer` : le curseur est dessiné dans l'image (RDP n'envoie pas de forme).
-const POINTER_EMBEDDED: u32 = 2;
+/// `zkde_screencast_unstable_v1.pointer` : curseur absent de l'image. Le client affiche son curseur
+/// local (sans latence) ; l'incruster le dupliquait avec une traînée. La forme du curseur (mode
+/// metadata + pointer PDU RDP) reste à faire.
+const POINTER_HIDDEN: u32 = 1;
 
 #[derive(Default)]
 struct Wl {
@@ -164,7 +166,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
         .clone()
         .ok_or("zkde_screencast_unstable_v1 non annoncé : exécutable non autorisé par KWin (ADR 004)")?;
     let wl_output = wl.outputs.get(output).ok_or_else(|| format!("sortie {output} introuvable ({} sortie(s))", wl.outputs.len()))?.clone();
-    let _stream = screencast.stream_output(&wl_output, POINTER_EMBEDDED, &qh, ());
+    let _stream = screencast.stream_output(&wl_output, POINTER_HIDDEN, &qh, ());
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while wl.node.is_none() && wl.failed.is_none() {
         if std::time::Instant::now() > deadline {
