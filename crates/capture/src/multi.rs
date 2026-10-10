@@ -1,12 +1,12 @@
-//! Agrège une source de capture par sortie derrière le port `CaptureSource`.
+//! Aggregates one capture source per output behind the `CaptureSource` port.
 
 use rdsktp_core::error::CaptureError;
 use rdsktp_core::frame::Frame;
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::CaptureSource;
 
-/// `recv_latest(OutputId(i))` interroge la i-ème source. Les sources sont indépendantes (un flux,
-/// une connexion, une boîte aux lettres chacune) : un écran lent n'en retarde pas un autre.
+/// `recv_latest(OutputId(i))` queries the i-th source. The sources are independent (one stream,
+/// one connection, one mailbox each): a slow screen does not delay another.
 pub struct MultiCapture {
     sources: Vec<Box<dyn CaptureSource>>,
 }
@@ -27,7 +27,7 @@ impl CaptureSource for MultiCapture {
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
         match self.sources.get_mut(output.0 as usize) {
             Some(source) => source.recv_latest(output),
-            None => Err(CaptureError::Unavailable(format!("sortie {} inconnue", output.0))),
+            None => Err(CaptureError::Unavailable(format!("unknown output {}", output.0))),
         }
     }
 }

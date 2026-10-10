@@ -1,31 +1,31 @@
-//! Protocole entre le serveur RDP non privilégié (`rdsktp`) et l'agent de session qui tourne sous
-//! l'utilisateur connecté (`rdsktp-agent`), sur une socket Unix.
+//! Protocol between the unprivileged RDP server (`rdsktp`) and the session agent running as
+//! the logged-in user (`rdsktp-agent`), over a Unix socket.
 //!
-//! Trame : `[tag: u8][longueur: u32 big-endian][charge utile]`. Format binaire écrit à la main
-//! (pas de dépendance de sérialisation) ; tout champ est borné pour qu'un pair défaillant ne puisse
-//! pas provoquer d'allocation démesurée.
+//! Frame: `[tag: u8][length: u32 big-endian][payload]`. Hand-written binary format
+//! (no serialization dependency); every field is bounded so that a faulty peer cannot
+//! trigger a huge allocation.
 
 use std::io::{Read, Write};
 
 use thiserror::Error;
 
-/// Taille maximale d'une charge utile (une frame H.264 1080p fait quelques centaines de Kio).
+/// Maximum payload size (a 1080p H.264 frame is a few hundred KiB).
 pub const MAX_PAYLOAD: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ProtoError {
     #[error("E/S : {0}")]
     Io(#[from] std::io::Error),
-    #[error("message invalide : {0}")]
+    #[error("invalid message: {0}")]
     Invalid(&'static str),
 }
 
-/// Messages du serveur vers l'agent.
+/// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
     Key { scancode: u16, pressed: bool },
     PointerMove { x: i32, y: i32 },
-    /// 0 gauche, 1 droit, 2 milieu, 3 précédent, 4 suivant.
+    /// 0 left, 1 right, 2 middle, 3 back, 4 forward.
     PointerButton { button: u8, pressed: bool },
     Wheel { dx: i32, dy: i32 },
     RequestKeyframe { output: u32 },
@@ -34,7 +34,7 @@ pub enum ToAgent {
     AudioClose,
 }
 
-/// Messages de l'agent vers le serveur.
+/// Messages from the agent to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FromAgent {
     Hello { outputs: u32, width: u32, height: u32 },
@@ -69,7 +69,7 @@ struct In<'a>(&'a [u8]);
 impl<'a> In<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], ProtoError> {
         if self.0.len() < n {
-            return Err(ProtoError::Invalid("charge utile trop courte"));
+            return Err(ProtoError::Invalid("payload too short"));
         }
         let (head, tail) = self.0.split_at(n);
         self.0 = tail;
@@ -82,26 +82,26 @@ impl<'a> In<'a> {
         Ok(self.u8()? != 0)
     }
     fn u16(&mut self) -> Result<u16, ProtoError> {
-        Ok(u16::from_be_bytes(self.take(2)?.try_into().expect("2 octets")))
+        Ok(u16::from_be_bytes(self.take(2)?.try_into().expect("2 bytes")))
     }
     fn u32(&mut self) -> Result<u32, ProtoError> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4 octets")))
+        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")))
     }
     fn i32(&mut self) -> Result<i32, ProtoError> {
-        Ok(i32::from_be_bytes(self.take(4)?.try_into().expect("4 octets")))
+        Ok(i32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")))
     }
     fn rest(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.0).to_vec()
     }
     fn string(&mut self) -> Result<String, ProtoError> {
-        String::from_utf8(self.rest()).map_err(|_| ProtoError::Invalid("texte non UTF-8"))
+        String::from_utf8(self.rest()).map_err(|_| ProtoError::Invalid("text is not UTF-8"))
     }
     fn end(&self) -> Result<(), ProtoError> {
-        if self.0.is_empty() { Ok(()) } else { Err(ProtoError::Invalid("octets en trop")) }
+        if self.0.is_empty() { Ok(()) } else { Err(ProtoError::Invalid("extra bytes")) }
     }
 }
 
-/// Message sérialisable en trame.
+/// Message serializable into a frame.
 pub trait Message: Sized {
     fn encode(&self) -> (u8, Vec<u8>);
     fn decode(tag: u8, payload: &[u8]) -> Result<Self, ProtoError>;
@@ -160,7 +160,7 @@ impl Message for ToAgent {
             6 => Self::ClipboardSet(i.string()?),
             7 => Self::AudioOpen { sample_rate: i.u32()?, channels: i.u16()? },
             8 => Self::AudioClose,
-            _ => return Err(ProtoError::Invalid("tag inconnu")),
+            _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
         Ok(msg)
@@ -213,17 +213,17 @@ impl Message for FromAgent {
             3 => Self::ClipboardText(i.string()?),
             4 => Self::Audio(i.rest()),
             5 => Self::Fatal(i.string()?),
-            _ => return Err(ProtoError::Invalid("tag inconnu")),
+            _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         Ok(msg)
     }
 }
 
-/// Écrit une trame (un seul `write_all`, le flux n'est pas entrelacé si l'appelant le verrouille).
+/// Writes a frame (a single `write_all`, the stream is not interleaved if the caller holds the lock).
 pub fn write_msg<W: Write, M: Message>(w: &mut W, msg: &M) -> Result<(), ProtoError> {
     let (tag, payload) = msg.encode();
     if payload.len() > MAX_PAYLOAD {
-        return Err(ProtoError::Invalid("charge utile trop grande"));
+        return Err(ProtoError::Invalid("payload too large"));
     }
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(tag);
@@ -234,7 +234,7 @@ pub fn write_msg<W: Write, M: Message>(w: &mut W, msg: &M) -> Result<(), ProtoEr
     Ok(())
 }
 
-/// Lit une trame ; `Ok(None)` si le pair a fermé proprement entre deux trames.
+/// Reads a frame; `Ok(None)` if the peer closed cleanly between two frames.
 pub fn read_msg<R: Read, M: Message>(r: &mut R) -> Result<Option<M>, ProtoError> {
     let mut head = [0u8; 5];
     match r.read_exact(&mut head) {
@@ -244,7 +244,7 @@ pub fn read_msg<R: Read, M: Message>(r: &mut R) -> Result<Option<M>, ProtoError>
     }
     let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
     if len > MAX_PAYLOAD {
-        return Err(ProtoError::Invalid("charge utile trop grande"));
+        return Err(ProtoError::Invalid("payload too large"));
     }
     let mut payload = vec![0u8; len];
     r.read_exact(&mut payload)?;
@@ -287,16 +287,16 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        // tag inconnu
+        // unknown tag
         let mut b = vec![99, 0, 0, 0, 0];
         assert!(read_msg::<_, ToAgent>(&mut b.as_slice()).is_err());
-        // longueur démesurée : refusée sans allocation
+        // oversized length: rejected without allocation
         b = vec![1, 0xFF, 0xFF, 0xFF, 0xFF];
         assert!(read_msg::<_, ToAgent>(&mut b.as_slice()).is_err());
-        // charge trop courte et octets en trop
+        // payload too short and extra bytes
         assert!(ToAgent::decode(1, &[0]).is_err());
         assert!(ToAgent::decode(8, &[0]).is_err());
-        // texte non UTF-8
+        // text is not UTF-8
         assert!(ToAgent::decode(6, &[0xFF, 0xFE]).is_err());
     }
 }

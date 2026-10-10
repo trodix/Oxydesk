@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Capture KWin : zkde_screencast (Wayland) + flux PipeWire (voir ADR 004).
+# KWin capture: zkde_screencast (Wayland) + PipeWire stream (see ADR 004).
 kwin = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner", "dep:pipewire"]
 
 [dependencies]

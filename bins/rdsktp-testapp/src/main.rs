@@ -1,6 +1,6 @@
-//! Application Wayland de test (M3). Applique le contrat de `rdp-test-client` dans un vrai KWin :
-//! marqueur 32 px en (0,0) changé par les touches 1..8, heartbeat 32 px en (32,0) qui alterne ~10 Hz.
-//! Les touches arrivent en codes evdev (KEY_1 = 2 … KEY_8 = 9), identiques aux scancodes RDP du contrat.
+//! Wayland test application (M3). Applies the `rdp-test-client` contract inside a real KWin:
+//! 32 px marker at (0,0) changed by keys 1..8, 32 px heartbeat at (32,0) alternating at ~10 Hz.
+//! Keys arrive as evdev codes (KEY_1 = 2 … KEY_8 = 9), identical to the RDP scancodes of the contract.
 
 use std::fs::File;
 use std::io::Write as _;
@@ -16,7 +16,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
 const HEARTBEAT_OFF: [u8; 3] = [48, 48, 48];
-/// Bloc d'identité de l'écran (M5) : couleur `PALETTE[k]` en (64, 0) sur la sortie k (de gauche à droite).
+/// Screen identity block (M5): color `PALETTE[k]` at (64, 0) on output k (left to right).
 const IDENTITY_POS: (u32, u32) = (2 * BLOCK, 0);
 
 struct Canvas {
@@ -49,9 +49,9 @@ struct App {
     shm: Option<wl_shm::WlShm>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
     seat: Option<wl_seat::WlSeat>,
-    /// Sorties `wl_output` avec leur abscisse logique (ordre gauche→droite après tri).
+    /// `wl_output` outputs with their logical abscissa (left→right order after sorting).
     outputs: Vec<(wl_output::WlOutput, i32)>,
-    /// Une fenêtre plein écran par sortie, indexée comme `outputs`.
+    /// One fullscreen window per output, indexed like `outputs`.
     windows: Vec<Window>,
     canvases: Vec<Arc<Mutex<Canvas>>>,
 }
@@ -148,13 +148,13 @@ fn play_tone() {
     use rdsktp_core::ports::{AudioParams, AudioProvider};
     use std::process::{Command, Stdio};
     let params = AudioParams { sample_rate: 48_000, channels: 2 };
-    let mut source = rdsktp_audio::ToneProvider.open(params).expect("tonalité");
+    let mut source = rdsktp_audio::ToneProvider.open(params).expect("tone");
     let mut player = Command::new("paplay")
         .args(["--raw", "--rate=48000", "--channels=2", "--format=s16le", "--latency-msec=20", "-d", "rdsktp"])
         .stdin(Stdio::piped())
         .spawn()
-        .expect("paplay (paquet pulseaudio-utils)");
-    let mut stdin = player.stdin.take().expect("stdin paplay");
+        .expect("paplay (pulseaudio-utils package)");
+    let mut stdin = player.stdin.take().expect("paplay stdin");
     let mut buf = vec![0u8; params.bytes_for_ms(20)];
     while source.read_exact(&mut buf).is_ok() {
         if stdin.write_all(&buf).is_err() {
@@ -164,7 +164,7 @@ fn play_tone() {
 }
 
 fn main() {
-    let (mut width, mut height) = (1920u32, 1080u32); // taille indicative avant le premier configure
+    let (mut width, mut height) = (1920u32, 1080u32); // indicative size before the first configure
     let echo = std::env::args().any(|a| a == "--clipboard-echo");
     let args: Vec<String> = std::env::args().filter(|a| a != "--clipboard-echo" && a != "--tone").collect();
     if args.len() == 3 {
@@ -172,15 +172,15 @@ fn main() {
         height = args[2].parse().expect("hauteur");
     }
     if std::env::args().any(|a| a == "--tone") {
-        // Oracle audio : joue la tonalité de test dans le puits PipeWire de la session (voir ADR 007).
+        // Audio oracle: plays the test tone into the session's PipeWire sink (see ADR 007).
         std::thread::spawn(play_tone);
     }
     if echo {
-        // Oracle déterministe du presse-papiers : recopie toute sélection texte reçue, comme le
-        // ferait une application. Instance MIME distincte de celle de rdsktp (pas de boucle).
+        // Deterministic clipboard oracle: copies back any received text selection, as an
+        // application would. MIME instance distinct from rdsktp's (no loop).
         std::thread::spawn(|| {
             use rdsktp_core::ports::ClipboardBackend;
-            let mut cb = rdsktp_clipboard::WaylandClipboard::connect(None).expect("presse-papiers Wayland");
+            let mut cb = rdsktp_clipboard::WaylandClipboard::connect(None).expect("Wayland clipboard");
             loop {
                 if let Ok(Some(text)) = cb.poll_text() {
                     let _ = cb.set_text(&text);
@@ -189,17 +189,17 @@ fn main() {
             }
         });
     }
-    let conn = Connection::connect_to_env().expect("connexion Wayland (WAYLAND_DISPLAY)");
+    let conn = Connection::connect_to_env().expect("Wayland connection (WAYLAND_DISPLAY)");
     let mut queue = conn.new_event_queue::<App>();
     let qh = queue.handle();
     let _reg = conn.display().get_registry(&qh, ());
     let mut app = App::default();
     queue.roundtrip(&mut app).expect("registre");
-    queue.roundtrip(&mut app).expect("géométrie des sorties"); // événements Geometry
-    // Indices logiques : de gauche à droite.
+    queue.roundtrip(&mut app).expect("output geometry"); // Geometry events
+    // Logical indices: left to right.
     let mut order: Vec<usize> = (0..app.outputs.len()).collect();
     order.sort_by_key(|&i| (app.outputs[i].1, i));
-    assert!(!order.is_empty(), "aucune sortie wl_output");
+    assert!(!order.is_empty(), "no wl_output output");
 
     let compositor = app.compositor.clone().expect("wl_compositor");
     let shm = app.shm.clone().expect("wl_shm");
@@ -224,10 +224,10 @@ fn main() {
     for (k, (surface, _, _)) in surfaces.iter().enumerate() {
         let (w, h) = app.windows[k].size;
         let path = std::path::Path::new(&dir).join(format!("rdsktp-testapp-{}-{k}", std::process::id()));
-        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).expect("fichier shm");
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).expect("shm file");
         std::fs::remove_file(&path).ok();
-        file.set_len(u64::from(w) * u64::from(h) * 4).expect("taille shm");
-        // Fond non noir (contrat : première image non noire), dégradé léger.
+        file.set_len(u64::from(w) * u64::from(h) * 4).expect("shm size");
+        // Non-black background (contract: first image non-black), light gradient.
         let mut bg = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
             for x in 0..w {
@@ -247,7 +247,7 @@ fn main() {
         app.canvases.push(Arc::new(Mutex::new(canvas)));
     }
 
-    // Heartbeat : alterne ~10 Hz depuis un thread (les requêtes Wayland sont thread-safe).
+    // Heartbeat: alternates ~10 Hz from a thread (Wayland requests are thread-safe).
     let canvases = app.canvases.clone();
     let hb_conn = conn.clone();
     std::thread::spawn(move || loop {

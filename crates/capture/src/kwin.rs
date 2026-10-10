@@ -1,8 +1,8 @@
-//! Capture d'une sortie KWin : `zkde_screencast_unstable_v1` (Wayland) → flux PipeWire (SHM).
+//! Capture of a KWin output: `zkde_screencast_unstable_v1` (Wayland) → PipeWire stream (SHM).
 //!
-//! Le processus doit être autorisé par KWin (ADR 004). Un thread dédié possède la connexion Wayland (qui doit
-//! rester ouverte tant que le flux vit) et la boucle PipeWire ; il dépose la dernière frame dans une boîte aux
-//! lettres à un seul élément (drop, pas de file).
+//! The process must be authorized by KWin (ADR 004). A dedicated thread owns the Wayland connection (which must
+//! stay open as long as the stream lives) and the PipeWire loop; it stores the latest frame in a single-slot
+//! mailbox (drop, no queue).
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -37,16 +37,16 @@ mod proto {
 use proto::zkde_screencast_stream_unstable_v1::{self as stream_ev, ZkdeScreencastStreamUnstableV1};
 use proto::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
-/// `zkde_screencast_unstable_v1.pointer` : curseur absent de l'image. Le client affiche son curseur
-/// local (sans latence) ; l'incruster le dupliquait avec une traînée. La forme du curseur (mode
-/// metadata + pointer PDU RDP) reste à faire.
+/// `zkde_screencast_unstable_v1.pointer`: cursor absent from the image. The client displays its
+/// local (no latency); embedding it duplicated it with a trail. The cursor shape (metadata
+/// mode + RDP pointer PDU) remains to be done.
 const POINTER_HIDDEN: u32 = 1;
 
 #[derive(Default)]
 struct Wl {
     screencast: Option<ZkdeScreencastUnstableV1>,
     outputs: Vec<wl_output::WlOutput>,
-    /// Position (x, y) de chaque sortie, dans l'ordre d'annonce du registre.
+    /// Position (x, y) of each output, in registry announcement order.
     positions: Vec<(i32, i32)>,
     node: Option<u32>,
     failed: Option<String>,
@@ -82,7 +82,7 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
         match ev {
             stream_ev::Event::Created { node } => state.node = Some(node),
             stream_ev::Event::Failed { error } => state.failed = Some(error),
-            stream_ev::Event::Closed => state.failed = Some("flux fermé par KWin".into()),
+            stream_ev::Event::Closed => state.failed = Some("stream closed by KWin".into()),
         }
     }
 }
@@ -99,8 +99,8 @@ pub struct KwinCapture {
 }
 
 impl KwinCapture {
-    /// `socket` : nom du socket Wayland (relatif à `XDG_RUNTIME_DIR`) ou `None` pour l'environnement.
-    /// `output` : index de la sortie `wl_output` à capturer.
+    /// `socket`: Wayland socket name (relative to `XDG_RUNTIME_DIR`) or `None` for the environment.
+    /// `output`: index of the `wl_output` to capture.
     pub fn start(socket: Option<&str>, output: usize) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
@@ -123,7 +123,7 @@ impl KwinCapture {
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(Self { mailbox, waker, stop, dead, worker: Some(worker) }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
-            Err(_) => Err(CaptureError::Unavailable("KWin n'a pas fourni de flux dans le délai".into())),
+            Err(_) => Err(CaptureError::Unavailable("KWin did not provide a stream in time".into())),
         }
     }
 }
@@ -157,13 +157,13 @@ fn connect(socket: Option<&str>) -> Result<Connection, CaptureError> {
     let err = |m: String| CaptureError::Unavailable(m);
     match socket {
         Some(name) => {
-            let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR absent".into()))?;
-            let stream = UnixStream::connect(Path::new(&dir).join(name)).map_err(|e| err(format!("socket Wayland {name} : {e}")))?;
+            let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
+            let stream = UnixStream::connect(Path::new(&dir).join(name)).map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
             Connection::from_socket(stream)
         }
         None => Connection::connect_to_env(),
     }
-    .map_err(|e| err(format!("connexion Wayland : {e}")))
+    .map_err(|e| err(format!("Wayland connection: {e}")))
 }
 
 struct PwData {
@@ -173,42 +173,42 @@ struct PwData {
 }
 
 fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
-    // 1. Wayland : demander le flux et obtenir le nœud PipeWire.
+    // 1. Wayland: request the stream and obtain the PipeWire node.
     let mut queue = conn.new_event_queue::<Wl>();
     let qh = queue.handle();
     let _registry = conn.display().get_registry(&qh, ());
     let mut wl = Wl::default();
-    queue.roundtrip(&mut wl).map_err(|e| format!("registre Wayland : {e}"))?;
+    queue.roundtrip(&mut wl).map_err(|e| format!("Wayland registry: {e}"))?;
     let screencast = wl
         .screencast
         .clone()
-        .ok_or("zkde_screencast_unstable_v1 non annoncé : exécutable non autorisé par KWin (ADR 004)")?;
-    // Les événements `geometry` arrivent après la liaison : un second aller-retour les rapatrie.
-    queue.roundtrip(&mut wl).map_err(|e| format!("géométrie des sorties : {e}"))?;
-    // L'index logique d'une sortie est son rang de gauche à droite puis de haut en bas, pas l'ordre du registre.
+        .ok_or("zkde_screencast_unstable_v1 not announced: executable not authorized by KWin (ADR 004)")?;
+    // `geometry` events arrive after binding: a second roundtrip fetches them.
+    queue.roundtrip(&mut wl).map_err(|e| format!("output geometry: {e}"))?;
+    // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
     let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
     order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
-    let registry_index = *order.get(output).ok_or_else(|| format!("sortie {output} introuvable ({} sortie(s))", wl.outputs.len()))?;
+    let registry_index = *order.get(output).ok_or_else(|| format!("output {output} not found ({} output(s))", wl.outputs.len()))?;
     let wl_output = wl.outputs[registry_index].clone();
     let _stream = screencast.stream_output(&wl_output, POINTER_HIDDEN, &qh, ());
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while wl.node.is_none() && wl.failed.is_none() {
         if std::time::Instant::now() > deadline {
-            return Err("délai dépassé en attendant le nœud PipeWire".into());
+            return Err("timed out waiting for the PipeWire node".into());
         }
-        queue.roundtrip(&mut wl).map_err(|e| format!("Wayland : {e}"))?;
+        queue.roundtrip(&mut wl).map_err(|e| format!("Wayland: {e}"))?;
         std::thread::sleep(Duration::from_millis(20));
     }
     if let Some(e) = wl.failed.take() {
-        return Err(format!("KWin a refusé le flux : {e}"));
+        return Err(format!("KWin refused the stream: {e}"));
     }
     let node = wl.node.expect("node");
 
-    // 2. PipeWire : consommer le flux (SHM mappé).
+    // 2. PipeWire: consume the stream (mapped SHM).
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| format!("pipewire mainloop : {e}"))?;
     let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| format!("pipewire context : {e}"))?;
-    let core = context.connect_rc(None).map_err(|e| format!("connexion PipeWire : {e}"))?;
+    let core = context.connect_rc(None).map_err(|e| format!("PipeWire connection: {e}"))?;
     let stream = pw::stream::StreamBox::new(
         &core,
         "rdsktp-capture",
@@ -218,7 +218,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
             *pw::keys::MEDIA_ROLE => "Screen",
         },
     )
-    .map_err(|e| format!("flux PipeWire : {e}"))?;
+    .map_err(|e| format!("PipeWire stream: {e}"))?;
 
     let ready_ok = ready.clone();
     let announced = std::cell::Cell::new(false);
@@ -249,7 +249,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
                 VideoFormat::RGBx | VideoFormat::RGBA => PixelFormat::Rgba8,
                 _ => return,
             };
-            // Tampon vide = mise à jour du curseur seule : on garde la dernière image.
+            // Empty buffer = cursor-only update: keep the last image.
             if size == 0 || stride <= 0 || sz.width == 0 || sz.height == 0 {
                 return;
             }
@@ -276,7 +276,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
             }
         })
         .register()
-        .map_err(|e| format!("listener PipeWire : {e}"))?;
+        .map_err(|e| format!("PipeWire listener: {e}"))?;
 
     let formats = [VideoFormat::BGRx, VideoFormat::BGRA, VideoFormat::RGBx, VideoFormat::RGBA];
     let obj = spa::pod::object!(
@@ -318,7 +318,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
         .map_err(|e| format!("pod : {e:?}"))?
         .0
         .into_inner();
-    let mut params = [Pod::from_bytes(&bytes).ok_or("pod invalide")?];
+    let mut params = [Pod::from_bytes(&bytes).ok_or("invalid pod")?];
     stream
         .connect(
             spa::utils::Direction::Input,
@@ -326,9 +326,9 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Ar
             pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
-        .map_err(|e| format!("connexion au nœud {node} : {e}"))?;
+        .map_err(|e| format!("connecting to node {node}: {e}"))?;
 
-    // Arrêt coopératif : un timer vérifie l'indicateur toutes les 100 ms.
+    // Cooperative stop: a timer checks the flag every 100 ms.
     let ml = mainloop.clone();
     let timer = mainloop.loop_().add_timer(move |_| {
         if stop.load(Ordering::Relaxed) {
@@ -345,7 +345,7 @@ fn tracing_log(args: std::fmt::Arguments<'_>) {
     eprintln!("{args}");
 }
 
-/// Diagnostic : `RDSKTP_DUMP_FRAME=/chemin/img.ppm` écrit la 20e image reçue (PPM) puis se tait.
+/// Diagnostic: `RDSKTP_DUMP_FRAME=/path/img.ppm` writes the 20th received image (PPM) then goes quiet.
 fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelFormat) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNT: AtomicU32 = AtomicU32::new(0);

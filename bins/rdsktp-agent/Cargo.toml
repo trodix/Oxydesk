@@ -1,6 +1,6 @@
 [package]
 name = "rdsktp-agent"
-description = "Agent de session RustyDesktop : tourne sous l'utilisateur connecté (KWin, capture, encodage, entrées)"
+description = "RustyDesktop session agent: runs as the logged-in user (KWin, capture, encoding, input)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

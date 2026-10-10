@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Fenêtre plein écran déterministe (marqueur + heartbeat) pour tester la capture et les entrées sous un vrai KWin."
+description = "Deterministic fullscreen window (marker + heartbeat) to test capture and input under a real KWin."
 
 [dependencies]
 rdsktp-capture.workspace = true

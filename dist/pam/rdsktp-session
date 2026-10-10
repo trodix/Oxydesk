@@ -1,4 +1,4 @@
-# Session de l'agent rdsktp-agent@<user>.service (l'authentification a déjà eu lieu dans rdsktp-authd).
+# Session of the rdsktp-agent@<user>.service agent (authentication already took place in rdsktp-authd).
 auth     required pam_permit.so
 account  include  common-account
 session  include  common-session

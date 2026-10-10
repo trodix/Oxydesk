@@ -24,22 +24,22 @@ use crate::sound::SoundFactory;
 
 pub struct ServerConfig {
     pub addr: SocketAddr,
-    /// Disposition des écrans ; le bureau RDP est leur rectangle englobant.
+    /// Screen layout; the RDP desktop is their bounding rectangle.
     pub layout: Layout,
     pub fps: f32,
     pub tls_cert: PathBuf,
     pub tls_key: PathBuf,
-    /// NLA/CredSSP avec identifiants préchargés ; sinon TLS seul.
+    /// NLA/CredSSP with preloaded credentials; otherwise TLS only.
     pub nla: Option<(String, String)>,
 }
 
-/// Adaptateurs sortants d'un bureau, fournis par le composition root (mode fixe) ou par un `SessionBroker`.
+/// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
 pub type Ports = DesktopPorts;
 
 type Slot<T> = Arc<Mutex<Option<T>>>;
 
-/// Emplacements des ports de la session courante, remplis à l'installation d'une session (au démarrage
-/// en mode fixe, après un login réussi en mode broker) et lus par les gestionnaires IronRDP.
+/// Port slots of the current session, filled when a session is installed (at startup
+/// in fixed mode, after a successful login in broker mode) and read by the IronRDP handlers.
 #[derive(Clone)]
 struct SessionSlot {
     shared: Arc<Shared>,
@@ -54,8 +54,8 @@ impl SessionSlot {
     }
 
     fn install(&self, ports: Ports) {
-        // `shared.gfx` n'est pas touché : le canal EGFX de la connexion en cours peut déjà exister (il est créé
-        // avant la validation des identifiants). La pompe repart de zéro à chaque nouvelle session.
+        // `shared.gfx` is left untouched: the EGFX channel of the current connection may already exist (it is created
+        // before credential validation). The pump restarts from scratch on every new session.
         *self.input.lock().expect("input mutex") = Some(ports.input);
         *self.clipboard.lock().expect("clipboard mutex") = Some(ports.clipboard);
         *self.audio.lock().expect("audio mutex") = ports.audio;
@@ -63,17 +63,17 @@ impl SessionSlot {
     }
 }
 
-/// Fournisseur audio qui délègue à la session courante.
+/// Audio provider delegating to the current session.
 struct SlotAudio(Slot<Arc<dyn AudioProvider>>);
 
 impl AudioProvider for SlotAudio {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
         let provider = self.0.lock().expect("audio mutex").clone();
-        provider.ok_or_else(|| AudioError::Backend("pas de session audio".into()))?.open(params)
+        provider.ok_or_else(|| AudioError::Backend("no audio session".into()))?.open(params)
     }
 }
 
-/// Valide les identifiants reçus (mode TLS) en ouvrant la session de l'utilisateur via le broker.
+/// Validates the received credentials (TLS mode) by opening the user's session through the broker.
 struct BrokerValidator {
     broker: Arc<dyn SessionBroker>,
     slot: SessionSlot,
@@ -94,11 +94,11 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
                 Ok(CredentialDecision::Accept)
             }
             Err(LoginError::Denied) => {
-                tracing::warn!(user = %credentials.username, "connexion refusée");
+                tracing::warn!(user = %credentials.username, "connection refused");
                 Ok(CredentialDecision::Reject)
             }
             Err(LoginError::Backend(e)) => {
-                tracing::error!("login : {e}");
+                tracing::error!("login: {e}");
                 Err(ironrdp_server::CredentialValidationError::new(std::io::Error::other(e)))
             }
         }
@@ -112,7 +112,7 @@ impl GraphicsPipelineHandler for GfxHandler {
         tracing::debug!("egfx caps client: {pdu:?}");
     }
     fn on_ready(&mut self, negotiated: &CapabilitySet) {
-        tracing::info!("egfx prêt: {negotiated:?}");
+        tracing::info!("egfx ready: {negotiated:?}");
     }
 }
 
@@ -166,7 +166,7 @@ impl CliprdrBackendFactory for ClipFactory {
         let on_text = Arc::new(move |text: String| {
             if let Some(backend) = clipboard.lock().expect("clipboard mutex").as_mut() {
                 if let Err(e) = backend.set_text(&text) {
-                    tracing::warn!("presse-papiers: {e}");
+                    tracing::warn!("clipboard: {e}");
                 }
             }
         });
@@ -183,7 +183,7 @@ impl CliprdrServerFactory for ClipFactory {}
 struct Input(Slot<Box<dyn InputSink>>);
 
 impl Input {
-    /// Applique `f` au port d'entrée de la session courante (ignoré tant qu'aucune session n'est ouverte).
+    /// Applies `f` to the input port of the current session (ignored while no session is open).
     fn with<R>(&self, f: impl FnOnce(&mut dyn InputSink) -> R) -> Option<R> {
         self.0.lock().expect("input mutex").as_mut().map(|i| f(i.as_mut()))
     }
@@ -198,7 +198,7 @@ impl RdpServerInputHandler for Input {
         };
         let scancode = u16::from(code) | if extended { 0xE000 } else { 0 };
         if let Some(Err(e)) = self.with(|i| i.key(scancode, pressed)) {
-            tracing::warn!("entrée: {e}");
+            tracing::warn!("input: {e}");
         }
     }
     fn mouse(&mut self, event: MouseEvent) {
@@ -220,7 +220,7 @@ impl RdpServerInputHandler for Input {
             MouseEvent::RelMove { .. } => Ok(()),
         });
         if let Some(Err(e)) = r {
-            tracing::warn!("entrée: {e}");
+            tracing::warn!("input: {e}");
         }
     }
 }
@@ -231,7 +231,7 @@ struct NoUpdates;
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoUpdates {
     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
-        // Tout passe par EGFX : aucune mise à jour bitmap classique.
+        // Everything goes through EGFX: no classic bitmap update.
         std::future::pending().await
     }
 }
@@ -246,26 +246,26 @@ impl RdpServerDisplay for Display {
     }
 }
 
-/// Lance le serveur RDP avec un bureau fixe (mode test, autologin) jusqu'à son arrêt.
+/// Runs the RDP server with a fixed desktop (test mode, autologin) until it stops.
 pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
     serve(config, Some(ports), None).await
 }
 
-/// Lance le serveur RDP en mode login : chaque connexion est authentifiée (mode TLS, identifiants du
-/// ClientInfoPdu) et ouvre sa session via le `SessionBroker`. Incompatible avec NLA (voir ADR 008).
+/// Runs the RDP server in login mode: each connection is authenticated (TLS mode, credentials from the
+/// ClientInfoPdu) and opens its session through the `SessionBroker`. Incompatible with NLA (see ADR 008).
 pub async fn run_with_broker(config: ServerConfig, broker: Arc<dyn SessionBroker>) -> anyhow::Result<()> {
-    anyhow::ensure!(config.nla.is_none(), "le mode login est incompatible avec NLA");
+    anyhow::ensure!(config.nla.is_none(), "login mode is incompatible with NLA");
     serve(config, None, Some(broker)).await
 }
 
 async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<dyn SessionBroker>>) -> anyhow::Result<()> {
-    // ring ET aws-lc-rs sont dans l'arbre de dépendances : choisir explicitement (déjà installé = ok).
+    // ring AND aws-lc-rs are in the dependency tree: choose explicitly (already installed = ok).
     let _ = rustls::crypto::ring::default_provider().install_default();
     let shared = Arc::new(Shared::default());
     let local: LocalText = Arc::new(Mutex::new(None));
     let slot = SessionSlot::new(shared.clone());
     let clipboard = slot.clipboard.clone();
-    // Le canal audio est annoncé dès que le serveur peut en offrir un : toujours en mode login, selon le port sinon.
+    // The audio channel is announced as soon as the server can offer one: always in login mode, otherwise depending on the port.
     let audio_enabled = broker.is_some() || initial.as_ref().is_some_and(|p| p.audio.is_some());
     if let Some(ports) = initial {
         slot.install(ports);
@@ -315,7 +315,7 @@ async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<
             event: std::env::var("RDSKTP_PUMP").is_ok_and(|v| v == "tick").not(),
         },
     );
-    // Texte local -> distant : on interroge le port, on annonce la copie différée.
+    // Local -> remote text: poll the port, announce the delayed copy.
     let poller_shared = shared.clone();
     let poller = std::thread::Builder::new()
         .name("clipboard-poll".into())
@@ -329,12 +329,12 @@ async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<
                 match text {
                     Ok(Some(t)) => announce(&send, &local, t),
                     Ok(None) => {}
-                    Err(e) => tracing::warn!("presse-papiers: {e}"),
+                    Err(e) => tracing::warn!("clipboard: {e}"),
                 }
             }
         })?;
 
-    tracing::info!(addr = %config.addr, "écoute RDP");
+    tracing::info!(addr = %config.addr, "RDP listening");
     let result = server.run().await;
     shared.stop.store(true, Ordering::Relaxed);
     let _ = pump.join();

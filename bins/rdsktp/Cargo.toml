@@ -1,6 +1,6 @@
 [package]
 name = "rdsktp"
-description = "Serveur RDP headless pour KDE Plasma (RustyDesktop)"
+description = "Headless RDP server for KDE Plasma (RustyDesktop)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Session KWin réelle : capture PipeWire + entrées fake_input (nécessite libpipewire-dev et libclang).
+# Real KWin session: PipeWire capture + fake_input input (requires libpipewire-dev and libclang).
 kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
 
 [dependencies]
@@ -32,7 +32,7 @@ features = ["kwin"]
 name = "rdsktp"
 maintainer = "Sébastien Vallet <sebastien.vallet89@gmail.com>"
 copyright = "RustyDesktop contributors"
-extended-description = "Serveur RDP headless pour KDE Plasma (Wayland)."
+extended-description = "Headless RDP server for KDE Plasma (Wayland)."
 section = "net"
 priority = "optional"
 depends = "$auto, libopenh264-8"

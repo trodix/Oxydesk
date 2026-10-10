@@ -32,34 +32,34 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     let (mut host, mut port, mut user) = ("127.0.0.1".to_string(), 3389u16, "test".to_string());
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
-        let mut val = |name: &str| it.next().ok_or(format!("{name} attend une valeur"));
+        let mut val = |name: &str| it.next().ok_or(format!("{name} expects a value"));
         match a.as_str() {
             "--mock" => mock = true,
             "--no-nla" => no_nla = true,
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
-            "--port" => port = val(&a)?.parse().map_err(|_| "--port invalide")?,
+            "--port" => port = val(&a)?.parse().map_err(|_| "--port invalid")?,
             "--user" => user = val(&a)?,
-            "--width" => cfg.width = val(&a)?.parse().map_err(|_| "--width invalide")?,
-            "--outputs" => cfg.outputs = val(&a)?.parse().map_err(|_| "--outputs invalide")?,
-            "--height" => cfg.height = val(&a)?.parse().map_err(|_| "--height invalide")?,
+            "--width" => cfg.width = val(&a)?.parse().map_err(|_| "--width invalid")?,
+            "--outputs" => cfg.outputs = val(&a)?.parse().map_err(|_| "--outputs invalid")?,
+            "--height" => cfg.height = val(&a)?.parse().map_err(|_| "--height invalid")?,
             "--key-samples" => {
-                cfg.key_samples = val(&a)?.parse().map_err(|_| "--key-samples invalide")?
+                cfg.key_samples = val(&a)?.parse().map_err(|_| "--key-samples invalid")?
             }
             "--max-key-latency-ms" => {
                 cfg.max_key_latency_ms = val(&a)?
                     .parse()
-                    .map_err(|_| "--max-key-latency-ms invalide")?
+                    .map_err(|_| "--max-key-latency-ms invalid")?
             }
             "--timeout" => {
                 cfg.timeout =
-                    Duration::from_secs(val(&a)?.parse().map_err(|_| "--timeout invalide")?)
+                    Duration::from_secs(val(&a)?.parse().map_err(|_| "--timeout invalid")?)
             }
-            other => return Err(format!("argument inconnu : {other}")),
+            other => return Err(format!("unknown argument: {other}")),
         }
     }
     Ok(Args {
-        out: out.ok_or("--out est obligatoire")?,
+        out: out.ok_or("--out is required")?,
         host,
         port,
         user,
@@ -110,7 +110,7 @@ fn main() -> ExitCode {
     let written =
         std::fs::create_dir_all(&args.out).and_then(|_| std::fs::write(&path, report.to_json()));
     if let Err(e) = written {
-        eprintln!("écriture de {} impossible : {e}", path.display());
+        eprintln!("cannot write {}: {e}", path.display());
         return ExitCode::from(3);
     }
     ExitCode::SUCCESS

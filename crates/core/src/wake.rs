@@ -1,5 +1,5 @@
-//! Réveil d'un consommateur par un producteur (frame disponible), pour remplacer une cadence fixe par un
-//! fonctionnement piloté par les événements sans perdre de notification.
+//! Wake-up of a consumer by a producer (frame available), to replace a fixed rate with
+//! event-driven operation without losing notifications.
 
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -16,12 +16,12 @@ impl Wake {
         self.cv.notify_all();
     }
 
-    /// Génération courante : à lire *avant* de sonder les sources, puis à passer à `wait`.
+    /// Current generation: read *before* polling the sources, then pass to `wait`.
     pub fn generation(&self) -> u64 {
         *self.generation.lock().expect("wake mutex")
     }
 
-    /// Bloque jusqu'à une notification postérieure à `seen` (retour immédiat s'il y en a déjà eu) ou `timeout`.
+    /// Blocks until a notification newer than `seen` (returns immediately if there already was one) or `timeout`.
     pub fn wait(&self, seen: u64, timeout: Duration) {
         let g = self.generation.lock().expect("wake mutex");
         if *g != seen {

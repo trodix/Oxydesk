@@ -1,7 +1,7 @@
-//! `rdsktp-agent` : tourne sous l'identité de l'utilisateur connecté (unité `rdsktp-agent@<user>.service`).
-//! Possède la session KWin, la capture, l'encodage H.264, les entrées, le presse-papiers et l'audio, et les
-//! expose à `rdsktp` par le protocole `rdsktp-agent-proto` sur un socket Unix. Une seule connexion à la fois :
-//! la plus récente remplace la précédente (reconnexion), la session de bureau survit aux déconnexions.
+//! `rdsktp-agent`: runs as the logged-in user (unit `rdsktp-agent@<user>.service`).
+//! Owns the KWin session, capture, H.264 encoding, input, clipboard and audio, and
+//! exposes them to `rdsktp` through the `rdsktp-agent-proto` protocol on a Unix socket. One connection at a time:
+//! the most recent one replaces the previous one (reconnection); the desktop session survives disconnections.
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -27,10 +27,10 @@ struct Desktop {
     width: u32,
     height: u32,
     fps: f32,
-    /// Réveil par la capture (`event`) ou cadence fixe de `poll_ms` (ou 1/fps si absent).
+    /// Wake-up by the capture (`event`) or fixed rate of `poll_ms` (or 1/fps when absent).
     event: bool,
     poll_ms: Option<f32>,
-    /// Délai minimal entre deux tours d'encodage (plafonne le débit en mode `event`).
+    /// Minimum delay between two encoding rounds (caps the rate in `event` mode).
     min_interval_ms: f32,
     _session: Mutex<Box<dyn std::any::Any + Send>>,
 }
@@ -40,7 +40,7 @@ fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
 }
 
 fn runtime_dir() -> PathBuf {
-    // `%U` n'est pas utilisable dans l'unité : on dérive le répertoire de l'uid effectif.
+    // `%U` cannot be used in the unit: derive the directory from the effective uid.
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })))
@@ -51,14 +51,14 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     let width: u32 = arg(args, "--width").unwrap_or(1920);
     let height: u32 = arg(args, "--height").unwrap_or(1080);
     let outputs: u32 = arg(args, "--outputs").unwrap_or(1);
-    anyhow::ensure!((1..=16).contains(&outputs), "--outputs doit être entre 1 et 16");
+    anyhow::ensure!((1..=16).contains(&outputs), "--outputs must be between 1 and 16");
     let fps: f32 = arg(args, "--fps").unwrap_or(30.0);
     let audio_mode: String = arg(args, "--audio").unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
     let audio: Option<Arc<dyn AudioProvider>> = match audio_mode.as_str() {
         "off" => None,
         "tone" => Some(Arc::new(rdsktp_audio::ToneProvider)),
         "pulse" => Some(Arc::new(rdsktp_audio::PulseCapture)),
-        other => anyhow::bail!("--audio inconnu : {other}"),
+        other => anyhow::bail!("unknown --audio: {other}"),
     };
     let make = |capture: Box<dyn CaptureSource>, input: Box<dyn InputSink>, clipboard: Box<dyn ClipboardBackend>, keep: Box<dyn std::any::Any + Send>| Desktop {
         capture: Mutex::new(capture),
@@ -76,7 +76,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     };
     match session.as_str() {
         "synthetic" => {
-            anyhow::ensure!(outputs == 1, "--outputs > 1 nécessite --session kwin");
+            anyhow::ensure!(outputs == 1, "--outputs > 1 requires --session kwin");
             let d = rdsktp_capture::SyntheticDesktop::new(width, height);
             Ok(make(Box::new(d.clone()), Box::new(d.clone()), Box::new(d), Box::new(())))
         }
@@ -86,7 +86,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 use rdsktp_core::ports::SessionProvider;
                 if audio.is_some() {
                     if let Err(e) = rdsktp_audio::PulseCapture::ensure_sink() {
-                        tracing::warn!("audio indisponible : {e}");
+                        tracing::warn!("audio unavailable: {e}");
                     }
                 }
                 let socket: String = arg(args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
@@ -102,7 +102,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                     outputs,
                     programs,
                 });
-                kwin.start().map_err(|e| anyhow::anyhow!("session KWin : {e}"))?;
+                kwin.start().map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
                 let sources = (0..outputs as usize)
                     .map(|i| rdsktp_capture::KwinCapture::start(Some(&socket), i).map(|c| Box::new(c) as Box<dyn CaptureSource>))
                     .collect::<Result<Vec<_>, _>>()?;
@@ -112,9 +112,9 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 Ok(make(Box::new(capture), Box::new(input), Box::new(clipboard), Box::new(kwin)))
             }
             #[cfg(not(feature = "kwin"))]
-            anyhow::bail!("binaire compilé sans la feature `kwin`");
+            anyhow::bail!("binary built without the `kwin` feature");
         }
-        other => anyhow::bail!("--session inconnu : {other}"),
+        other => anyhow::bail!("unknown --session: {other}"),
     }
 }
 
@@ -136,7 +136,7 @@ fn button(b: u8) -> Option<PointerButton> {
     })
 }
 
-/// Capture -> encodage -> envoi, à cadence fixe. Une image clé est produite à la connexion et sur demande.
+/// Capture -> encode -> send, at a fixed rate. A keyframe is produced on connection and on request.
 fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<Vec<AtomicBool>>) {
     let fps = d.fps;
     let mut encoders: Vec<Box<dyn FrameEncoder>> = Vec::new();
@@ -144,7 +144,7 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         match OpenH264Encoder::new(&OpenH264Config { fps, ..Default::default() }) {
             Ok(e) => encoders.push(Box::new(e)),
             Err(e) => {
-                send(&w, &FromAgent::Fatal(format!("encodeur : {e}")));
+                send(&w, &FromAgent::Fatal(format!("encoder: {e}")));
                 stop.store(true, Ordering::Relaxed);
                 return;
             }
@@ -180,27 +180,27 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             let fresh = match d.capture.lock().expect("capture mutex").recv_latest(OutputId(i as u32)) {
                 Ok(f) => f,
                 Err(e) => {
-                    send(&w, &FromAgent::Fatal(format!("capture : {e}")));
+                    send(&w, &FromAgent::Fatal(format!("capture: {e}")));
                     stop.store(true, Ordering::Relaxed);
                     return;
                 }
             };
             match fresh {
                 Some(f) => last[i] = Some(f),
-                // Bureau statique : on ré-encode la dernière image seulement si une clé est demandée.
+                // Static desktop: re-encode the last frame only if a keyframe is requested.
                 None if wanted_key => {}
                 None => continue,
             }
             let Some(frame) = last[i].as_ref() else {
                 if wanted_key {
-                    keyframes[i].store(true, Ordering::Relaxed); // rien à encoder encore : on réessaie
+                    keyframes[i].store(true, Ordering::Relaxed); // nothing to encode yet: retry
                 }
                 continue;
             };
             let encoded = match encoders[i].encode(frame) {
                 Ok(e) => e,
                 Err(e) => {
-                    send(&w, &FromAgent::Fatal(format!("encodage : {e}")));
+                    send(&w, &FromAgent::Fatal(format!("encoding: {e}")));
                     stop.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -222,7 +222,7 @@ fn audio_loop(provider: Arc<dyn AudioProvider>, params: AudioParams, w: Writer, 
     let mut source = match provider.open(params) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("audio : {e}");
+            tracing::warn!("audio: {e}");
             return;
         }
     };
@@ -238,7 +238,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     let writer: Writer = match stream.try_clone() {
         Ok(s) => Arc::new(Mutex::new(s)),
         Err(e) => {
-            tracing::error!("socket : {e}");
+            tracing::error!("socket: {e}");
             return;
         }
     };
@@ -264,12 +264,12 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                         }
                     }
                     Ok(None) => {}
-                    Err(e) => tracing::warn!("presse-papiers : {e}"),
+                    Err(e) => tracing::warn!("clipboard: {e}"),
                 }
             }
         })
     });
-    // Audio : un flux à la fois, arrêté par un drapeau propre à chaque ouverture.
+    // Audio: one stream at a time, stopped by a flag specific to each open.
     let mut audio_stop: Option<Arc<AtomicBool>> = None;
     let mut reader = stream;
     loop {
@@ -277,7 +277,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             Ok(Some(m)) => m,
             Ok(None) => break,
             Err(e) => {
-                tracing::warn!("protocole : {e}");
+                tracing::warn!("protocol: {e}");
                 break;
             }
         };
@@ -303,7 +303,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::ClipboardSet(text) => {
                 if let Err(e) = d.clipboard.lock().expect("clipboard mutex").set_text(&text) {
-                    tracing::warn!("presse-papiers : {e}");
+                    tracing::warn!("clipboard: {e}");
                 }
             }
             ToAgent::AudioOpen { sample_rate, channels } => {
@@ -315,7 +315,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     audio_stop = Some(flag.clone());
                     let w = writer.clone();
                     let params = AudioParams { sample_rate, channels };
-                    // Arrêt si la connexion tombe (`stop`) ou si ce flux est fermé (`flag`).
+                    // Stop if the connection drops (`stop`) or if this stream is closed (`flag`).
                     let global = stop.clone();
                     let both = Arc::new(AtomicBool::new(false));
                     let both2 = both.clone();
@@ -352,10 +352,10 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = runtime_dir();
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
-        // SAFETY: appelé au démarrage, avant la création de tout autre thread.
+        // SAFETY: called at startup, before any other thread is created.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
     }
-    // Le gestionnaire utilisateur de systemd (bus de session) démarre en parallèle de la session logind.
+    // The systemd user manager (session bus) starts in parallel with the logind session.
     let bus = runtime.join("bus");
     let deadline = Instant::now() + Duration::from_secs(30);
     while arg::<String>(&args, "--session").as_deref().unwrap_or("kwin") == "kwin" && !bus.exists() && Instant::now() < deadline {
@@ -365,10 +365,10 @@ fn main() -> anyhow::Result<()> {
     let socket: PathBuf = arg(&args, "--socket").unwrap_or_else(|| runtime.join("rdsktp-agent.sock"));
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)?;
-    // Seul l'utilisateur (propriétaire) et root peuvent s'y connecter ; authd (root) transmet le descripteur.
+    // Only the user (owner) and root can connect; authd (root) passes the descriptor.
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
-    tracing::info!(socket = %socket.display(), "agent prêt");
-    // Connexion courante : la nouvelle remplace l'ancienne.
+    tracing::info!(socket = %socket.display(), "agent ready");
+    // Current connection: the new one replaces the old one.
     let mut current: Option<(UnixStream, std::thread::JoinHandle<()>)> = None;
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
@@ -378,7 +378,7 @@ fn main() -> anyhow::Result<()> {
         }
         let Ok(handle_stream) = stream.try_clone() else { continue };
         let d = desktop.clone();
-        tracing::info!("client connecté");
+        tracing::info!("client connected");
         current = Some((handle_stream, std::thread::spawn(move || serve(d, stream))));
     }
     Ok(())

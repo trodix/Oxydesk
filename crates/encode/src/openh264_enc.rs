@@ -12,11 +12,11 @@ use rdsktp_core::ports::{EncodedFrame, FrameEncoder};
 
 #[derive(Debug, Clone)]
 pub struct OpenH264Config {
-    /// Chemin de libopenh264 ; sinon `RDSKTP_OPENH264_LIB`, sinon emplacements usuels.
+    /// Path of libopenh264; otherwise `RDSKTP_OPENH264_LIB`, otherwise the usual locations.
     pub library: Option<PathBuf>,
     pub bitrate_bps: u32,
     pub fps: f32,
-    /// Période d'IDR en frames (0 = automatique).
+    /// IDR period in frames (0 = automatic).
     pub idr_period: u32,
 }
 
@@ -49,10 +49,10 @@ fn locate(cfg: &OpenH264Config) -> Result<PathBuf, EncodeError> {
         .iter()
         .map(PathBuf::from)
         .find(|p| p.exists())
-        .ok_or_else(|| EncodeError::Backend("libopenh264 introuvable (installer openh264 / libopenh264-8 ou définir RDSKTP_OPENH264_LIB)".into()))
+        .ok_or_else(|| EncodeError::Backend("libopenh264 not found (install openh264 / libopenh264-8 or set RDSKTP_OPENH264_LIB)".into()))
 }
 
-/// Encodeur H.264 logiciel, flux Annex-B, sans B-frames, faible latence.
+/// Software H.264 encoder, Annex-B stream, no B-frames, low latency.
 pub struct OpenH264Encoder {
     inner: Encoder,
     scratch: Vec<u8>,
@@ -61,10 +61,10 @@ pub struct OpenH264Encoder {
 impl OpenH264Encoder {
     pub fn new(cfg: &OpenH264Config) -> Result<Self, EncodeError> {
         let path = locate(cfg)?;
-        // SAFETY: le chemin est choisi par l'administrateur / les emplacements système ; la
-        // vérification de hash du crate refuserait les builds de distribution (Fedora/Debian).
+        // SAFETY: the path is chosen by the administrator / system locations; the
+        // crate's hash check would reject distribution builds (Fedora/Debian).
         let api = unsafe { OpenH264API::from_blob_path_unchecked(&path) }
-            .map_err(|e| EncodeError::Backend(format!("chargement de {} : {e}", path.display())))?;
+            .map_err(|e| EncodeError::Backend(format!("loading {}: {e}", path.display())))?;
         let period = if cfg.idr_period == 0 {
             IntraFramePeriod::auto()
         } else {
@@ -96,7 +96,7 @@ impl FrameEncoder for OpenH264Encoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
         let FrameData::Shm(data) = &frame.data else {
             return Err(EncodeError::Unsupported(
-                "DmaBuf non géré par le backend logiciel".into(),
+                "DmaBuf not supported by the software backend".into(),
             ));
         };
         let (w, h) = (frame.width as usize, frame.height as usize);
@@ -104,10 +104,10 @@ impl FrameEncoder for OpenH264Encoder {
         let rgba = if compact {
             RgbaSliceU8::new(data, (w, h))
         } else {
-            // BGRA et/ou stride non compact (PipeWire) : normalisation vers RGBA compact.
+            // BGRA and/or non-compact stride (PipeWire): normalization to compact RGBA.
             let stride = frame.stride as usize;
             if data.len() < stride * h || stride < w * 4 {
-                return Err(EncodeError::Unsupported("buffer trop court pour stride/hauteur".into()));
+                return Err(EncodeError::Unsupported("buffer too short for stride/height".into()));
             }
             self.scratch.clear();
             self.scratch.reserve(w * h * 4);
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn bgra_with_padded_stride_encodes() {
         let Ok(mut enc) = OpenH264Encoder::new(&OpenH264Config::default()) else {
-            eprintln!("libopenh264 absente : test ignoré");
+            eprintln!("libopenh264 missing: test skipped");
             return;
         };
         let (w, h, stride) = (64u32, 64u32, 64 * 4 + 32);

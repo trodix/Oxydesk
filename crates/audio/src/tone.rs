@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 use rdsktp_core::error::AudioError;
 use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource};
 
-/// Fréquence de la tonalité de test ; le client de test la détecte (Goertzel).
+/// Frequency of the test tone; the test client detects it (Goertzel).
 pub const TONE_HZ: f32 = 440.0;
 const AMPLITUDE: f32 = 0.5;
 
-/// Sinus continu cadencé en temps réel, comme le ferait une carte son.
+/// Continuous sine paced in real time, as a sound card would do.
 pub struct ToneProvider;
 
 impl AudioProvider for ToneProvider {
@@ -18,7 +18,7 @@ impl AudioProvider for ToneProvider {
 
 struct ToneSource {
     params: AudioParams,
-    /// Trames déjà produites (la phase se déduit de ce compteur : pas de dérive).
+    /// Frames already produced (the phase is derived from this counter: no drift).
     produced: u64,
     started: Instant,
 }
@@ -35,7 +35,7 @@ impl AudioSource for ToneSource {
             }
             self.produced += 1;
         }
-        // Cadence temps réel : on ne livre pas les données avant leur instant de capture.
+        // Real-time pacing: data is not delivered before its capture instant.
         let due = self.started + Duration::from_secs_f64(self.produced as f64 / rate);
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
@@ -55,8 +55,8 @@ mod tests {
         let t0 = Instant::now();
         let mut buf = vec![0u8; p.bytes_for_ms(100)];
         src.read_exact(&mut buf).unwrap();
-        assert!(t0.elapsed() >= Duration::from_millis(95), "doit être cadencé");
-        // les deux canaux sont identiques et le signal n'est pas nul
+        assert!(t0.elapsed() >= Duration::from_millis(95), "must be paced");
+        // both channels are identical and the signal is not zero
         assert!(buf.chunks_exact(4).all(|f| f[..2] == f[2..]));
         assert!(buf.chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]).abs() > 10_000));
     }

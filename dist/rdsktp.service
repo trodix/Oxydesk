@@ -1,9 +1,9 @@
 [Unit]
-Description=RustyDesktop (rdsktp) - serveur RDP
+Description=RustyDesktop (rdsktp) - RDP server
 After=network.target
 
 [Service]
-# M2 : mode test uniquement (capture synthétique). La session réelle arrive en M3.
+# M2: test mode only (synthetic capture). The real session arrives in M3.
 ExecStart=/usr/bin/rdsktp --test-mode --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
 DynamicUser=yes
 StateDirectory=rdsktp

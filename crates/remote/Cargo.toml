@@ -1,6 +1,6 @@
 [package]
 name = "rdsktp-remote"
-description = "Adaptateur : bureau distant servi par un agent de session (authd + rdsktp-agent)"
+description = "Adapter: remote desktop served by a session agent (authd + rdsktp-agent)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

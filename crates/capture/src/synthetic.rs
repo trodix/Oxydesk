@@ -5,7 +5,7 @@ use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink};
 
-// Contrat avec bins/rdp-test-client (src/contract.rs) : garder les deux synchronisés.
+// Contract with bins/rdp-test-client (src/contract.rs): keep both in sync.
 pub const BLOCK: u32 = 32;
 pub const MARKER_POS: (u32, u32) = (0, 0);
 pub const HEARTBEAT_POS: (u32, u32) = (32, 0);
@@ -23,8 +23,8 @@ pub const PALETTE: [[u8; 3]; 8] = [
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
 const HEARTBEAT_OFF: [u8; 3] = [48, 48, 48];
 
-/// Source de frames synthétique : fond animé (bruit de mouvement pour charger l'encodeur),
-/// bloc marqueur et bloc heartbeat conformes au contrat du client de test.
+/// Synthetic frame source: animated background (motion noise to load the encoder),
+/// marker block and heartbeat block compliant with the test client contract.
 pub struct SyntheticSource {
     width: u32,
     height: u32,
@@ -50,13 +50,13 @@ impl SyntheticSource {
         }
     }
 
-    /// Pire cas pour l'encodeur : bruit pseudo-aléatoire sur tout le fond (change à chaque frame).
+    /// Worst case for the encoder: pseudo-random noise over the whole background (changes every frame).
     pub fn with_noise(mut self, noise: bool) -> Self {
         self.noise = noise;
         self
     }
 
-    /// Appui sur la touche `index` (0..8) : le marqueur prend la couleur correspondante.
+    /// Press of key `index` (0..8): the marker takes the corresponding color.
     pub fn set_marker(&mut self, index: usize) {
         self.marker = Some(index % PALETTE.len());
     }
@@ -69,7 +69,7 @@ impl SyntheticSource {
         for y in 0..h {
             let row = &mut px[y * w * 4..(y + 1) * w * 4];
             for x in 0..w {
-                // Motif diagonal qui défile : contenu changeant sur tout l'écran.
+                // Scrolling diagonal pattern: content changing over the whole screen.
                 let v = (((x + t * 4) ^ (y + t * 2)) & 0xff) as u8;
                 row[x * 4] = v / 2 + 40;
                 row[x * 4 + 1] = (v ^ 0x55) / 2 + 40;
@@ -121,8 +121,8 @@ impl CaptureSource for SyntheticSource {
     }
 }
 
-/// Doublure de test complète d'un bureau : capture + entrées + presse-papiers « écho ».
-/// Les clones partagent le même état (contrat du serveur de test, voir le client de test).
+/// Complete test double of a desktop: capture + input + "echo" clipboard.
+/// Clones share the same state (test server contract, see the test client).
 #[derive(Clone)]
 pub struct SyntheticDesktop {
     inner: Arc<Mutex<DesktopState>>,
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(pixel(&s.render(), 5, 5), [0, 0, 0]);
         s.set_marker(2);
         assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2]);
-        assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2], "la couleur persiste");
+        assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2], "the color persists");
     }
 
     #[test]

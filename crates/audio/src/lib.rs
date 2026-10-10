@@ -1,4 +1,4 @@
-//! Adaptateurs `AudioProvider` : tonalité synthétique (tests) et capture PipeWire/PulseAudio (voir ADR 007).
+//! `AudioProvider` adapters: synthetic tone (tests) and PipeWire/PulseAudio capture (see ADR 007).
 
 mod pulse;
 mod tone;

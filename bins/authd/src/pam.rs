@@ -1,4 +1,4 @@
-//! Authentification PAM par `dlopen` de `libpam.so.0` (pas d'en-têtes ni de crate `pam` requis).
+//! PAM authentication through `dlopen` of `libpam.so.0` (no headers or `pam` crate required).
 
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
@@ -29,7 +29,7 @@ struct PamConv {
     appdata_ptr: *mut c_void,
 }
 
-/// Réponse unique (mot de passe ou nom) à toute invite PAM.
+/// Single answer (password or name) to any PAM prompt.
 unsafe extern "C" fn conversation(
     n: c_int,
     msgs: *mut *const PamMessage,
@@ -67,21 +67,21 @@ pub enum PamOutcome {
 
 impl Pam {
     pub fn load(service: &str) -> anyhow::Result<Self> {
-        // SAFETY: chargement d'une bibliothèque système standard.
+        // SAFETY: loading a standard system library.
         let lib = unsafe { libloading::Library::new("libpam.so.0") }?;
         Ok(Self { lib, service: CString::new(service)? })
     }
 
-    /// Authentifie et vérifie le compte (`pam_authenticate` + `pam_acct_mgmt`). Aucune session PAM n'est ouverte ici :
-    /// c'est systemd (`PAMName=` de l'unité de l'agent) qui ouvre la session logind.
+    /// Authenticates and checks the account (`pam_authenticate` + `pam_acct_mgmt`). No PAM session is opened here:
+    /// systemd (`PAMName=` of the agent unit) opens the logind session.
     pub fn authenticate(&self, username: &str, password: &str) -> anyhow::Result<PamOutcome> {
         let (Ok(user), Ok(pass)) = (CString::new(username), CString::new(password)) else {
-            return Ok(PamOutcome::Denied); // octet NUL : jamais valide
+            return Ok(PamOutcome::Denied); // NUL byte: never valid
         };
         type Start = unsafe extern "C" fn(*const c_char, *const c_char, *const PamConv, *mut *mut c_void) -> c_int;
         type Auth = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
         type End = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
-        // SAFETY: signatures conformes à <security/pam_appl.h> ; `conv` et `pass` vivent jusqu'à `pam_end`.
+        // SAFETY: signatures match <security/pam_appl.h>; `conv` and `pass` live until `pam_end`.
         unsafe {
             let start: libloading::Symbol<Start> = self.lib.get(b"pam_start\0")?;
             let authenticate: libloading::Symbol<Auth> = self.lib.get(b"pam_authenticate\0")?;
@@ -91,7 +91,7 @@ impl Pam {
             let mut handle: *mut c_void = ptr::null_mut();
             let rc = start(self.service.as_ptr(), user.as_ptr(), &conv, &mut handle);
             if rc != PAM_SUCCESS {
-                anyhow::bail!("pam_start a échoué ({rc})");
+                anyhow::bail!("pam_start failed ({rc})");
             }
             let mut rc = authenticate(handle, PAM_DISALLOW_NULL_AUTHTOK);
             if rc == PAM_SUCCESS {

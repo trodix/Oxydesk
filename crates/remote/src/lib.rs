@@ -1,7 +1,7 @@
-//! Adaptateur du port `SessionBroker` : authentification et session de l'utilisateur déléguées à
-//! `rdsktp-authd` (PAM, root) et à `rdsktp-agent` (sous l'identité de l'utilisateur), ce processus
-//! n'ayant aucun privilège. Les ports de bureau (`CaptureSource`, `InputSink`, …) sont des mandataires
-//! vers l'agent ; la vidéo arrive déjà encodée.
+//! Adapter of the `SessionBroker` port: authentication and user session delegated to
+//! `rdsktp-authd` (PAM, root) and `rdsktp-agent` (as the user), this process
+//! having no privilege. The desktop ports (`CaptureSource`, `InputSink`, …) are proxies
+//! to the agent; video arrives already encoded.
 
 mod link;
 mod ports;
@@ -18,7 +18,7 @@ pub use link::AgentLink;
 
 pub struct RemoteBroker {
     authd_socket: PathBuf,
-    /// Nombre de sorties attendu (disposition fixée par la configuration du serveur).
+    /// Expected number of outputs (layout fixed by the server configuration).
     outputs: u32,
 }
 
@@ -31,8 +31,8 @@ impl RemoteBroker {
 impl SessionBroker for RemoteBroker {
     fn login(&self, username: &str, password: &str) -> Result<DesktopPorts, LoginError> {
         let backend = |e: &dyn std::fmt::Display| LoginError::Backend(e.to_string());
-        let mut authd = UnixStream::connect(&self.authd_socket).map_err(|e| backend(&format!("authd injoignable : {e}")))?;
-        // Le démarrage de KWin peut prendre du temps ; authd borne lui-même l'attente.
+        let mut authd = UnixStream::connect(&self.authd_socket).map_err(|e| backend(&format!("authd unreachable: {e}")))?;
+        // KWin startup may take time; authd bounds the wait itself.
         authd.set_read_timeout(Some(Duration::from_secs(90))).map_err(|e| backend(&e))?;
         send_request(&mut authd, &Request::Login { username: username.into(), password: password.into() }).map_err(|e| backend(&e))?;
         let (resp, fd) = recv_response(&mut authd).map_err(|e| backend(&e))?;
@@ -40,8 +40,8 @@ impl SessionBroker for RemoteBroker {
             Response::Denied => Err(LoginError::Denied),
             Response::Error { message } => Err(LoginError::Backend(message)),
             Response::Granted { uid } => {
-                let fd = fd.ok_or_else(|| LoginError::Backend("authd n'a pas transmis de descripteur".into()))?;
-                tracing::info!(user = username, uid, "session accordée par authd");
+                let fd = fd.ok_or_else(|| LoginError::Backend("authd did not pass a descriptor".into()))?;
+                tracing::info!(user = username, uid, "session granted by authd");
                 let link = AgentLink::connect(UnixStream::from(fd), self.outputs).map_err(LoginError::Backend)?;
                 Ok(ports::desktop_ports(link, self.outputs))
             }

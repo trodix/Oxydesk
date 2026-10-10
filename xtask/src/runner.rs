@@ -40,7 +40,7 @@ fn run_step(
             .spawn()
     });
     match spawned {
-        Err(e) => res.note = Some(format!("lancement impossible : {e}")),
+        Err(e) => res.note = Some(format!("cannot launch: {e}")),
         Ok(mut child) => loop {
             match child.try_wait() {
                 Ok(Some(st)) => {
@@ -56,7 +56,7 @@ fn run_step(
                     let _ = child.kill();
                     let _ = child.wait();
                     res.status = Status::Timeout;
-                    res.note = Some(format!("timeout après {}s", timeout.as_secs()));
+                    res.note = Some(format!("timeout after {}s", timeout.as_secs()));
                     break;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(100)),
@@ -100,7 +100,7 @@ fn git(args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Échappe pour insertion dans une commande bash.
+/// Escapes for insertion into a bash command.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -113,13 +113,13 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         .unwrap_or(0);
     let dir = o.out.join(format!("run-{unix}"));
     if let Err(e) = fs::create_dir_all(dir.join("steps")) {
-        eprintln!("création de {} impossible : {e}", dir.display());
+        eprintln!("cannot create {}: {e}", dir.display());
         return ExitCode::from(1);
     }
     let abs_dir = fs::canonicalize(&dir).unwrap_or(dir.clone());
     let min = |m: u64| Duration::from_secs(m * 60);
 
-    // Étapes normales : (nom, commande, timeout, ignorée ?)
+    // Normal steps: (name, command, timeout, ignored?)
     let deb = o
         .deb
         .clone()
@@ -129,11 +129,11 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         None => format!("bash {VM} deploy"),
     };
     if o.outputs > 1 && !o.kwin {
-        eprintln!("--outputs > 1 nécessite --session kwin");
+        eprintln!("--outputs > 1 requires --session kwin");
         return ExitCode::from(2);
     }
     if o.login && std::env::var("RDP_TEST_PASSWORD").map_or(true, |p| p.is_empty()) {
-        eprintln!("--session login exige RDP_TEST_PASSWORD (mot de passe du compte de test de la VM)");
+        eprintln!("--session login requires RDP_TEST_PASSWORD (password of the VM test account)");
         return ExitCode::from(2);
     }
     let mut client_cmd = o
@@ -147,7 +147,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     if o.login {
         client_cmd.push_str(" --no-nla --user dev");
     }
-    // Témoin négatif du login : un mauvais mot de passe doit être refusé (aucune image reçue : le check `first_frame` échoue ; le handshake RDP, lui, aboutit avant la validation).
+    // Login negative control: a wrong password must be refused (no image received: the `first_frame` check fails; the RDP handshake itself succeeds before validation).
     let deny_cmd = o.login.then(|| {
         let deny_dir = abs_dir.join("deny");
         let base = o
@@ -186,7 +186,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
             "deny-control",
             deny_cmd.clone().unwrap_or_default(),
             min(3),
-            deny_cmd.is_none().then_some("hors mode login"),
+            deny_cmd.is_none().then_some("not in login mode"),
         ),
         (
             "client",
@@ -204,7 +204,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         if let Some(why) = skip {
             steps.push(skipped(name, why));
         } else if broken {
-            steps.push(skipped(name, "étape précédente en échec"));
+            steps.push(skipped(name, "previous step failed"));
         } else {
             let r = run_step(name, idx, &dir, &cmd, t, false);
             broken = r.status != Status::Passed;
@@ -212,7 +212,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
             steps.push(r);
         }
     }
-    // Collecte et arrêt : toujours exécutés.
+    // Collection and shutdown: always run.
     let mut always = vec![
         (
             "journal-rdsktp",
@@ -259,7 +259,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     let text = serde_json::to_string_pretty(&report).expect("report serializable");
     let path = dir.join("report.json");
     if fs::write(&path, &text).is_err() || fs::write(o.out.join("latest.json"), &text).is_err() {
-        eprintln!("écriture du rapport impossible");
+        eprintln!("cannot write the report");
         return ExitCode::from(1);
     }
     println!(

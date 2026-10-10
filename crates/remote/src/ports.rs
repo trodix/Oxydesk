@@ -1,4 +1,4 @@
-//! Mandataires des ports de bureau vers l'agent.
+//! Proxies of the desktop ports to the agent.
 
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ impl CaptureSource for RemoteCapture {
     }
 }
 
-/// « Encodeur » des images déjà encodées par l'agent : extrait les octets H.264 de la frame.
+/// "Encoder" of the frames already encoded by the agent: extracts the H.264 bytes from the frame.
 struct PassthroughEncoder {
     link: Arc<AgentLink>,
     output: OutputId,
@@ -46,7 +46,7 @@ impl FrameEncoder for PassthroughEncoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
         match &frame.data {
             FrameData::Encoded { keyframe, data } => Ok(EncodedFrame { output: Some(self.output), keyframe: *keyframe, data: data.clone() }),
-            _ => Err(EncodeError::Unsupported("image non encodée reçue de l'agent".into())),
+            _ => Err(EncodeError::Unsupported("frame not encoded received from the agent".into())),
         }
     }
 
@@ -62,7 +62,7 @@ impl RemoteInput {
         if self.0.send(&msg) {
             Ok(())
         } else {
-            Err(InputError::Backend("agent injoignable".into()))
+            Err(InputError::Backend("agent unreachable".into()))
         }
     }
 }
@@ -96,7 +96,7 @@ impl ClipboardBackend for RemoteClipboard {
         if self.0.send(&ToAgent::ClipboardSet(text.to_owned())) {
             Ok(())
         } else {
-            Err(ClipboardError::Backend("agent injoignable".into()))
+            Err(ClipboardError::Backend("agent unreachable".into()))
         }
     }
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {

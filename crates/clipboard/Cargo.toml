@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Presse-papiers texte via zwlr_data_control_manager_v1 (exposé par KWin aux clients non privilégiés).
+# Text clipboard through zwlr_data_control_manager_v1 (exposed by KWin to unprivileged clients).
 wayland = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
 
 [dependencies]

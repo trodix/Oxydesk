@@ -1,20 +1,20 @@
 use std::path::PathBuf;
 
 pub const HELP: &str = "cargo xtask vm-test [options]
-  --no-build            ne pas construire le .deb
-  --no-reset            ne pas repartir d'un overlay neuf
-  --keep                ne pas éteindre la VM à la fin
-  --deb <fichier>       .deb à déployer (défaut : le plus récent de target/debian/)
-  --build-cmd <cmd>     commande de build (env XTASK_BUILD_CMD, défaut : testapp release + cargo deb -p rdsktp)
-  --client-cmd <cmd>    commande client, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
-  --outputs N                 nombre d'écrans (avec --session kwin ; défaut 1)
-  --session <synthetic|kwin|login>  source du bureau côté serveur (défaut synthetic ; kwin = vrai KWin virtuel ;
-                              login = login distant PAM + agent, exige RDP_TEST_PASSWORD)
-  --timeout <s>         timeout de l'étape client (défaut 600)
-  --out <dir>           dossier des artefacts (défaut artifacts/vm-test)
-  --help                cette aide
-env : VM_RDP_PORT (défaut 3390)
-code de sortie : 0 tout passe, 1 échec, 2 arguments";
+  --no-build            do not build the .deb
+  --no-reset            do not start from a fresh overlay
+  --keep                do not shut the VM down at the end
+  --deb <file>          .deb to deploy (default: the most recent in target/debian/)
+  --build-cmd <cmd>     build command (env XTASK_BUILD_CMD, default: testapp release + cargo deb -p rdsktp)
+  --client-cmd <cmd>    client command, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
+  --outputs N                 number of screens (with --session kwin; default 1)
+  --session <synthetic|kwin|login>  desktop source on the server side (default synthetic; kwin = real virtual KWin;
+                                                          login = remote PAM login + agent, requires RDP_TEST_PASSWORD)
+  --timeout <s>         client step timeout (default 600)
+  --out <dir>           artifacts folder (default artifacts/vm-test)
+  --help                this help
+env: VM_RDP_PORT (default 3390)
+exit code: 0 all pass, 1 failure, 2 arguments";
 
 pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp -p rdsktp-authd && cargo build --release -p rdsktp-agent --features kwin && cargo deb -p rdsktp";
 pub const DEFAULT_CLIENT_CMD: &str =
@@ -26,9 +26,9 @@ pub struct Opts {
     pub no_reset: bool,
     pub keep: bool,
     pub kwin: bool,
-    /// Login distant (authd + agent par utilisateur) ; implique `kwin`.
+    /// Remote login (authd + per-user agent); implies `kwin`.
     pub login: bool,
-    /// Nombre d'écrans (session kwin uniquement).
+    /// Number of screens (kwin session only).
     pub outputs: u32,
     pub deb: Option<String>,
     pub build_cmd: String,
@@ -60,13 +60,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         rdp_port: match env("VM_RDP_PORT") {
             Some(p) => p
                 .parse()
-                .map_err(|_| format!("VM_RDP_PORT invalide : {p}"))?,
+                .map_err(|_| format!("invalid VM_RDP_PORT: {p}"))?,
             None => 3390,
         },
     };
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
-        let mut val = |n: &str| it.next().ok_or(format!("{n} attend une valeur"));
+        let mut val = |n: &str| it.next().ok_or(format!("{n} expects a value"));
         match a.as_str() {
             "--help" | "-h" => return Ok(Parsed::Help),
             "--no-build" => o.no_build = true,
@@ -80,7 +80,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                         true
                     }
                     "synthetic" => false,
-                    other => return Err(format!("--session inconnu : {other}")),
+                    other => return Err(format!("unknown --session: {other}")),
                 }
             }
             "--outputs" => {
@@ -88,7 +88,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .parse()
                     .ok()
                     .filter(|n| (1..=16).contains(n))
-                    .ok_or("--outputs invalide (1 à 16)")?
+                    .ok_or("--outputs invalid (1 to 16)")?
             }
             "--deb" => o.deb = Some(val("--deb")?),
             "--build-cmd" => o.build_cmd = val("--build-cmd")?,
@@ -96,10 +96,10 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             "--timeout" => {
                 o.client_timeout_s = val("--timeout")?
                     .parse()
-                    .map_err(|_| "--timeout invalide")?
+                    .map_err(|_| "--timeout invalid")?
             }
             "--out" => o.out = PathBuf::from(val("--out")?),
-            other => return Err(format!("argument inconnu : {other}")),
+            other => return Err(format!("unknown argument: {other}")),
         }
     }
     Ok(Parsed::Run(o))

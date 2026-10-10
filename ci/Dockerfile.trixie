@@ -1,4 +1,4 @@
-# Image de CI / build : compile contre la glibc de Debian 13 (le binaire tourne aussi sur Fedora).
+# CI / build image: builds against Debian 13's glibc (the binary also runs on Fedora).
 FROM debian:trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libx264-dev libpam0g-dev \

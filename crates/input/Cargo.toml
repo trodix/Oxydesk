@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Injection via org_kde_kwin_fake_input (client Wayland autorisé par un .desktop, voir ADR 004).
+# Injection through org_kde_kwin_fake_input (Wayland client authorized by a .desktop, see ADR 004).
 kwin = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
 
 [dependencies]

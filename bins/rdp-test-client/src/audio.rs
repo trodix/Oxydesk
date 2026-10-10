@@ -1,12 +1,12 @@
-//! Oracle audio déterministe : détection d'une tonalité par l'algorithme de Goertzel.
+//! Deterministic audio oracle: tone detection with the Goertzel algorithm.
 
-/// Fréquence de la tonalité émise par les serveurs de test (`rdsktp-audio::TONE_HZ`).
+/// Frequency of the tone emitted by the test servers (`rdsktp-audio::TONE_HZ`).
 pub const TONE_HZ: f64 = 440.0;
 
-/// Paquet PCM 16 bits little-endian entrelacé reçu par RDPSND.
+/// 16-bit little-endian interleaved PCM packet received through RDPSND.
 #[derive(Debug, Clone)]
 pub struct AudioChunk {
-    /// Instant de réception par le client (et non de consommation).
+    /// Instant of reception by the client (not of consumption).
     pub arrived: std::time::Instant,
     pub sample_rate: u32,
     pub channels: u16,
@@ -14,14 +14,14 @@ pub struct AudioChunk {
 }
 
 impl AudioChunk {
-    /// Premier canal, normalisé dans [-1, 1].
+    /// First channel, normalized to [-1, 1].
     pub fn left(&self) -> Vec<f64> {
         let step = usize::from(self.channels.max(1)) * 2;
         self.pcm.chunks_exact(step).map(|f| f64::from(i16::from_le_bytes([f[0], f[1]])) / 32768.0).collect()
     }
 }
 
-/// Part de l'énergie du signal portée par `freq` : 1.0 pour un sinus pur, ≈ 0 pour du bruit ou du silence.
+/// Share of the signal energy carried by `freq`: 1.0 for a pure sine, ≈ 0 for noise or silence.
 pub fn tone_ratio(samples: &[f64], rate: u32, freq: f64) -> f64 {
     let n = samples.len() as f64;
     let energy: f64 = samples.iter().map(|x| x * x).sum();

@@ -1,4 +1,4 @@
-/// Percentile par rang le plus proche (nearest-rank). `sorted` doit être trié croissant.
+/// Nearest-rank percentile. `sorted` must be sorted in ascending order.
 pub fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
     if sorted.is_empty() {
         return None;

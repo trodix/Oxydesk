@@ -1,4 +1,4 @@
-//! Adaptateurs du port `ClipboardBackend`.
+//! `ClipboardBackend` port adapters.
 
 #[cfg(feature = "wayland")]
 mod wayland;

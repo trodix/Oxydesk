@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Bureau complet décodé, RGBA 8 bits.
+/// Full decoded desktop, 8-bit RGBA.
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub width: u32,
@@ -9,7 +9,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Moyenne RGB d'un bloc carré de `size` pixels en (x, y).
+    /// RGB average of a square block of `size` pixels at (x, y).
     pub fn block_mean(&self, x: u32, y: u32, size: u32) -> Option<[u8; 3]> {
         if x + size > self.width || y + size > self.height {
             return None;
@@ -28,39 +28,39 @@ impl Frame {
     }
 }
 
-/// Session RDP bloquante (mock ou backend IronRDP).
+/// Blocking RDP session (mock or IronRDP backend).
 pub trait Session {
-    /// Se connecte et retourne la taille de bureau négociée.
+    /// Connects and returns the negotiated desktop size.
     fn connect(&mut self) -> Result<(u32, u32), String>;
     fn next_frame(&mut self, timeout: Duration) -> Result<Frame, String>;
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String>;
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String>;
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String>;
-    /// Prochain paquet audio (`None` si rien avant le délai).
+    /// Next audio packet (`None` if nothing before the timeout).
     fn next_audio(&mut self, _timeout: Duration) -> Result<Option<crate::audio::AudioChunk>, String> {
-        Err("audio non supporté par ce backend".into())
+        Err("audio not supported by this backend".into())
     }
     fn close(&mut self);
 }
 
-/// Backend IronRDP : à écrire en M2. Échoue toujours, jamais de faux succès.
+/// IronRDP backend: to be written in M2. Always fails, never a false success.
 pub struct UnimplementedSession;
 
 impl Session for UnimplementedSession {
     fn connect(&mut self) -> Result<(u32, u32), String> {
-        Err("backend IronRDP non implémenté (prévu en M2) ; utiliser --mock pour le mock".into())
+        Err("IronRDP backend not implemented (planned for M2); use --mock for the mock".into())
     }
     fn next_frame(&mut self, _: Duration) -> Result<Frame, String> {
-        Err("non connecté".into())
+        Err("not connected".into())
     }
     fn send_key(&mut self, _: u16, _: bool) -> Result<(), String> {
-        Err("non connecté".into())
+        Err("not connected".into())
     }
     fn set_clipboard_text(&mut self, _: &str) -> Result<(), String> {
-        Err("non connecté".into())
+        Err("not connected".into())
     }
     fn next_clipboard_text(&mut self, _: Duration) -> Result<Option<String>, String> {
-        Err("non connecté".into())
+        Err("not connected".into())
     }
     fn close(&mut self) {}
 }

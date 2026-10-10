@@ -1,4 +1,4 @@
-//! Backend CLIPRDR « texte Unicode seulement », utilisable côté serveur et côté client de test.
+//! "Unicode text only" CLIPRDR backend, usable on the server side and on the test client side.
 
 use std::sync::{Arc, Mutex};
 
@@ -11,7 +11,7 @@ use ironrdp_cliprdr::pdu::{
 pub type SendFn = Arc<dyn Fn(ClipboardMessage) + Send + Sync>;
 pub type OnText = Arc<dyn Fn(String) + Send + Sync>;
 
-/// Texte local partagé : ce que l'on propose à l'autre extrémité.
+/// Shared local text: what we offer to the other end.
 pub type LocalText = Arc<Mutex<Option<String>>>;
 
 pub struct TextClipboard {
@@ -29,7 +29,7 @@ impl std::fmt::Debug for TextClipboard {
 ironrdp_core::impl_as_any!(TextClipboard);
 
 impl TextClipboard {
-    /// `send` : émet un message CLIPRDR vers la connexion ; `on_text` : texte reçu de l'autre extrémité.
+    /// `send`: emits a CLIPRDR message to the connection; `on_text`: text received from the other end.
     pub fn new(send: SendFn, local: LocalText, on_text: OnText) -> Self {
         Self {
             send,
@@ -43,7 +43,7 @@ impl TextClipboard {
     }
 }
 
-/// Annonce un nouveau texte local à l'autre extrémité (copie différée).
+/// Announces a new local text to the other end (delayed copy).
 pub fn announce(send: &SendFn, local: &LocalText, text: String) {
     *local.lock().expect("clipboard mutex") = Some(text);
     send(ClipboardMessage::SendInitiateCopy(vec![
@@ -51,17 +51,17 @@ pub fn announce(send: &SendFn, local: &LocalText, text: String) {
     ]));
 }
 
-/// Fins de ligne locales (LF) -> CF_UNICODETEXT (CRLF), sans doubler les CRLF déjà présents.
+/// Local line endings (LF) -> CF_UNICODETEXT (CRLF), without doubling the CRLFs already present.
 pub fn to_crlf(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
-/// CF_UNICODETEXT (CRLF) -> fins de ligne locales (LF).
+/// CF_UNICODETEXT (CRLF) -> local line endings (LF).
 pub fn from_crlf(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
-/// Décode un CF_UNICODETEXT (UTF-16LE terminé par NUL), fins de ligne en LF.
+/// Decodes a CF_UNICODETEXT (NUL-terminated UTF-16LE), line endings as LF.
 pub fn decode_unicode_text(data: &[u8]) -> String {
     let units: Vec<u16> = data
         .as_chunks::<2>()

@@ -1,14 +1,14 @@
-//! Ports sortants (hexagonale). Les adaptateurs vivent dans d'autres crates.
+//! Outgoing ports (hexagonal). Adapters live in other crates.
 
 use crate::error::*;
 use crate::frame::Frame;
 use crate::layout::{Layout, OutputId};
 
-/// Source de frames. `recv_latest` ne retourne que la plus récente (drop, pas de file).
+/// Frame source. `recv_latest` only returns the most recent one (drop, no queue).
 pub trait CaptureSource: Send {
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError>;
-    /// Le consommateur peut s'endormir sur `wake` au lieu de sonder : la source le notifie à chaque nouvelle
-    /// frame. Sans effet par défaut (sources sondées uniquement).
+    /// The consumer may sleep on `wake` instead of polling: the source notifies it on every new
+    /// frame. No effect by default (polled sources only).
     fn set_waker(&mut self, _wake: std::sync::Arc<crate::wake::Wake>) {}
 }
 
@@ -21,7 +21,7 @@ pub struct EncodedFrame {
 
 pub trait FrameEncoder: Send {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError>;
-    /// Le prochain `encode` doit produire une image clé autonome (nouveau client).
+    /// The next `encode` must produce a standalone keyframe (new client).
     fn request_keyframe(&mut self) {}
 }
 
@@ -35,14 +35,14 @@ pub enum PointerButton {
 }
 
 pub trait InputSink: Send {
-    /// `scancode` : scancode RDP (set 1), préfixe 0xE000 pour les touches étendues.
+    /// `scancode`: RDP scancode (set 1), prefix 0xE000 for extended keys.
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError>;
-    /// Position absolue dans l'espace virtuel du bureau.
+    /// Absolute position in the desktop virtual space.
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError>;
     fn pointer_button(&mut self, _button: PointerButton, _pressed: bool) -> Result<(), InputError> {
         Ok(())
     }
-    /// Molette en unités RDP (120 = un cran), `dy` > 0 = vers le haut.
+    /// Wheel in RDP units (120 = one notch), `dy` > 0 = upward.
     fn wheel(&mut self, _dx: i32, _dy: i32) -> Result<(), InputError> {
         Ok(())
     }
@@ -53,7 +53,7 @@ pub trait ClipboardBackend: Send {
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError>;
 }
 
-/// Format PCM 16 bits little-endian entrelacé demandé à une source audio.
+/// 16-bit little-endian interleaved PCM format requested from an audio source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioParams {
     pub sample_rate: u32,
@@ -61,40 +61,40 @@ pub struct AudioParams {
 }
 
 impl AudioParams {
-    /// Octets par trame (un échantillon par canal).
+    /// Bytes per frame (one sample per channel).
     pub fn frame_bytes(&self) -> usize {
         usize::from(self.channels) * 2
     }
 
-    /// Octets correspondant à `ms` millisecondes.
+    /// Bytes corresponding to `ms` milliseconds.
     pub fn bytes_for_ms(&self, ms: u32) -> usize {
         (self.sample_rate as usize * ms as usize / 1000) * self.frame_bytes()
     }
 }
 
-/// Flux audio PCM en cours de capture.
+/// PCM audio stream being captured.
 pub trait AudioSource: Send {
-    /// Bloque jusqu'à avoir rempli `buf` (multiple de `frame_bytes`) ; erreur si le flux est fermé.
+    /// Blocks until `buf` is filled (multiple of `frame_bytes`); error if the stream is closed.
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), AudioError>;
 }
 
-/// Ouvre des flux audio au format négocié avec le client.
+/// Opens audio streams in the format negotiated with the client.
 pub trait AudioProvider: Send + Sync {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError>;
 }
 
-/// Ports d'un bureau distant ouvert pour un utilisateur.
+/// Ports of a remote desktop opened for a user.
 pub struct DesktopPorts {
     pub capture: Box<dyn CaptureSource>,
-    /// Un encodeur par sortie, dans l'ordre de la disposition.
+    /// One encoder per output, in layout order.
     pub encoders: Vec<Box<dyn FrameEncoder>>,
     pub input: Box<dyn InputSink>,
     pub clipboard: Box<dyn ClipboardBackend>,
     pub audio: Option<std::sync::Arc<dyn AudioProvider>>,
 }
 
-/// Authentifie un utilisateur et ouvre (ou rejoint) sa session de bureau.
-/// Bloquant : à appeler hors du runtime asynchrone.
+/// Authenticates a user and opens (or joins) their desktop session.
+/// Blocking: to be called outside the async runtime.
 pub trait SessionBroker: Send + Sync {
     fn login(&self, username: &str, password: &str) -> Result<DesktopPorts, LoginError>;
 }
@@ -105,7 +105,7 @@ pub trait OutputManager: Send {
 }
 
 pub trait SessionProvider: Send {
-    /// Démarre (ou rejoint) la session graphique ; échoue clairement si l'environnement est incompatible.
+    /// Starts (or joins) the graphical session; fails clearly if the environment is incompatible.
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self);
 }

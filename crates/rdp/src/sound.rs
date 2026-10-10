@@ -1,5 +1,5 @@
-//! Audio sortant : RDPSND en PCM 16 bits. Une source (`AudioProvider`) est ouverte au format négocié
-//! quand le client est prêt ; un thread la lit par paquets de 20 ms et les pousse vers le client.
+//! Outgoing audio: RDPSND in 16-bit PCM. A source (`AudioProvider`) is opened in the negotiated format
+//! when the client is ready; a thread reads it in 20 ms packets and pushes them to the client.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::pump::Shared;
 
-/// Durée d'un paquet : assez court pour la latence, assez long pour limiter la charge de la boucle d'événements.
+/// Packet duration: short enough for latency, long enough to limit the event loop load.
 const PACKET_MS: u32 = 20;
 
 fn pcm(rate: u32) -> AudioFormat {
@@ -76,7 +76,7 @@ impl RdpsndServerHandler for SoundHandler {
         let f = format.format();
         let params = AudioParams { sample_rate: f.n_samples_per_sec, channels: f.n_channels };
         let mut source = self.provider.open(params).map_err(|e| Box::new(e) as Box<dyn RdpsndError>)?;
-        tracing::info!(rate = params.sample_rate, channels = params.channels, "audio : flux démarré");
+        tracing::info!(rate = params.sample_rate, channels = params.channels, "audio: stream started");
         let run = Arc::new(AtomicBool::new(true));
         self.running = Some(run.clone());
         let shared = self.shared.clone();
@@ -87,7 +87,7 @@ impl RdpsndServerHandler for SoundHandler {
                 let mut buf = vec![0u8; params.bytes_for_ms(PACKET_MS)];
                 while run.load(Ordering::Relaxed) && !shared.stop.load(Ordering::Relaxed) {
                     if let Err(e) = source.read_exact(&mut buf) {
-                        tracing::warn!("audio : {e}");
+                        tracing::warn!("audio: {e}");
                         break;
                     }
                     let ts = started.elapsed().as_millis() as u32;

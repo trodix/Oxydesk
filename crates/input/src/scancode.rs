@@ -1,6 +1,6 @@
-//! Conversion scancode RDP (set 1, préfixe 0xE000 = étendu) → code evdev (linux/input-event-codes.h).
+//! RDP scancode (set 1, prefix 0xE000 = extended) → evdev code (linux/input-event-codes.h) conversion.
 
-/// Retourne le code evdev, ou `None` pour une touche non gérée.
+/// Returns the evdev code, or `None` for an unsupported key.
 pub fn rdp_to_evdev(scancode: u16) -> Option<u16> {
     let code = scancode & 0xFF;
     if scancode & 0xE000 == 0xE000 {
@@ -26,7 +26,7 @@ pub fn rdp_to_evdev(scancode: u16) -> Option<u16> {
             _ => None,
         };
     }
-    // Pour 0x01..=0x58 le set 1 coïncide avec evdev (ESC=1 … F12=88).
+    // For 0x01..=0x58 set 1 coincides with evdev (ESC=1 … F12=88).
     (1..=0x58).contains(&code).then_some(code)
 }
 

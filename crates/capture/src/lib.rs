@@ -1,4 +1,4 @@
-//! Adaptateurs `CaptureSource`. Pour l'instant : source synthétique (mode test).
+//! `CaptureSource` adapters. For now: synthetic source (test mode).
 
 mod synthetic;
 

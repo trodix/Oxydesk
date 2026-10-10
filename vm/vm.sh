@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# VM de test jetable (QEMU/KVM, Debian 13). Voir docs/ et le brief §11.1.
-# Usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status> [args]
+# Disposable test VM (QEMU/KVM, Debian 13). See docs/ and brief §11.1.
+# Usage: bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status> [args]
 #
-# ATTENTION : les overlays qcow2 référencent leur backing file par chemin ABSOLU.
-# Déplacer le dossier vm/ (ou le dépôt) casse les overlays : relancer `create`.
+# WARNING: the qcow2 overlays reference their backing file by ABSOLUTE path.
+# Moving the vm/ folder (or the repository) breaks the overlays: re-run `create`.
 set -euo pipefail
 
 VM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,8 +36,8 @@ CONSOLE="$STATE/console.log"
 die() { echo "vm.sh: $*" >&2; exit 1; }
 log() { echo "vm.sh: $*" >&2; }
 
-need() { # need <commande> <paquet Fedora>
-  command -v "$1" >/dev/null 2>&1 || die "outil manquant : $1 (Fedora : sudo dnf install $2)"
+need() { # need <command> <Fedora package>
+  command -v "$1" >/dev/null 2>&1 || die "missing tool: $1 (Fedora: sudo dnf install $2)"
 }
 
 check_tools() {
@@ -49,12 +49,12 @@ check_tools() {
   need ssh-keygen openssh
   need sha512sum coreutils
   if ! command -v cloud-localds >/dev/null && ! command -v genisoimage >/dev/null && ! command -v xorriso >/dev/null; then
-    die "aucun outil ISO (cloud-localds, genisoimage ou xorriso) ; Fedora : sudo dnf install xorriso"
+    die "no ISO tool (cloud-localds, genisoimage or xorriso); Fedora: sudo dnf install xorriso"
   fi
 }
 
 check_kvm() {
-  [[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm inaccessible (KVM obligatoire) : vérifier le groupe kvm / la virtualisation"
+  [[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm not accessible (KVM required): check the kvm group / virtualization"
 }
 
 ssh_opts() {
@@ -75,7 +75,7 @@ make_seed() {
   local pub; pub="$(cat "$KEY.pub")"
   sed -e "s|@VM_USER@|$VM_USER|g" -e "s|@SSH_PUBKEY@|$pub|g" \
     "$VM_DIR/cloud-init/user-data.tmpl" > "$STATE/seed/user-data"
-  # instance-id fixe : cloud-init ne rejoue pas, le seed reste attaché à tous les boots.
+  # fixed instance-id: cloud-init does not replay, the seed stays attached on all boots.
   printf 'instance-id: rdsktp-vm-test\nlocal-hostname: rdsktp-test\n' > "$STATE/seed/meta-data"
   rm -f "$SEED"
   if command -v cloud-localds >/dev/null; then
@@ -92,13 +92,13 @@ new_overlay() { # new_overlay <overlay> <backing>
   qemu-img create -q -f qcow2 -b "$2" -F qcow2 "$1" >/dev/null
 }
 
-start_qemu() { # start_qemu <disque>
+start_qemu() { # start_qemu <disk>
   check_kvm
-  is_running && die "la VM tourne déjà (pid $(cat "$PIDFILE"))"
+  is_running && die "the VM is already running (pid $(cat "$PIDFILE"))"
   : > "$CONSOLE"
   local -a VGA_ARGS
   case "$VM_VGA" in
-    virtio-gl) VGA_ARGS=(-device virtio-vga-gl -display egl-headless) ;; # virgl : rendu 3D via le GPU de l'hôte
+    virtio-gl) VGA_ARGS=(-device virtio-vga-gl -display egl-headless) ;; # virgl: 3D rendering through the host GPU
     *) VGA_ARGS=(-vga "$VM_VGA" -display none) ;;
   esac
   qemu-system-x86_64 \
@@ -115,8 +115,8 @@ start_qemu() { # start_qemu <disque>
 wait_ssh() {
   local deadline=$((SECONDS + VM_BOOT_TIMEOUT))
   until vm_ssh true 2>/dev/null; do
-    is_running || die "QEMU est mort pendant le boot (voir $CONSOLE)"
-    ((SECONDS < deadline)) || die "SSH injoignable après ${VM_BOOT_TIMEOUT}s (voir $CONSOLE)"
+    is_running || die "QEMU died during boot (see $CONSOLE)"
+    ((SECONDS < deadline)) || die "SSH unreachable after ${VM_BOOT_TIMEOUT}s (see $CONSOLE)"
     sleep 3
   done
 }
@@ -129,7 +129,7 @@ cmd_down() {
     kill -0 "$pid" 2>/dev/null || { rm -f "$PIDFILE"; return 0; }
     sleep 1
   done
-  log "arrêt propre impossible, kill de $pid"
+  log "clean shutdown impossible, killing $pid"
   kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true
   rm -f "$PIDFILE"
 }
@@ -139,33 +139,33 @@ cmd_create() {
   check_kvm
   mkdir -p "$STATE"
   if [[ ! -f "$BASE" ]]; then
-    log "téléchargement de $IMAGE_FILE"
+    log "downloading $IMAGE_FILE"
     curl -fL --retry 3 -o "$BASE.part" "$IMAGE_BASE_URL/$IMAGE_FILE"
     local want got
     want="$(curl -fsSL "$IMAGE_BASE_URL/SHA512SUMS" | awk -v f="$IMAGE_FILE" '$2==f {print $1}')"
-    [[ -n "$want" ]] || die "SHA512 introuvable pour $IMAGE_FILE"
+    [[ -n "$want" ]] || die "SHA512 not found for $IMAGE_FILE"
     got="$(sha512sum "$BASE.part" | awk '{print $1}')"
-    [[ "$want" == "$got" ]] || { rm -f "$BASE.part"; die "SHA512 incorrect pour $IMAGE_FILE"; }
+    [[ "$want" == "$got" ]] || { rm -f "$BASE.part"; die "wrong SHA512 for $IMAGE_FILE"; }
     mv "$BASE.part" "$BASE"; chmod a-w "$BASE"
   fi
   make_seed
   local tmp="$STATE/provisioning.qcow2"
   new_overlay "$tmp" "$BASE"
   qemu-img resize -q "$tmp" "$VM_DISK"
-  log "premier boot : provisioning (plusieurs minutes)"
+  log "first boot: provisioning (several minutes)"
   start_qemu "$tmp"
   wait_ssh
-  vm_ssh 'sudo cloud-init status --wait' >/dev/null || log "cloud-init a signalé une erreur (marqueur vérifié ensuite)"
-  vm_ssh 'test -f /var/lib/rdsktp-provisioned' || { vm_ssh 'sudo tail -n 40 /var/log/provision-rdsktp.log' || true; die "provisioning incomplet (marqueur absent)"; }
+  vm_ssh 'sudo cloud-init status --wait' >/dev/null || log "cloud-init reported an error (marker checked afterwards)"
+  vm_ssh 'test -f /var/lib/rdsktp-provisioned' || { vm_ssh 'sudo tail -n 40 /var/log/provision-rdsktp.log' || true; die "incomplete provisioning (marker missing)"; }
   cmd_down
   chmod u+w "$PROVISIONED" 2>/dev/null || true
   mv "$tmp" "$PROVISIONED"; chmod a-w "$PROVISIONED"
   cmd_reset
-  log "create terminé"
+  log "create done"
 }
 
 cmd_reset() {
-  [[ -f "$PROVISIONED" ]] || die "image provisionnée absente : lancer 'create' d'abord"
+  [[ -f "$PROVISIONED" ]] || die "provisioned image missing: run 'create' first"
   is_running && cmd_down
   new_overlay "$RUN" "$PROVISIONED"
 }
@@ -176,7 +176,7 @@ cmd_up() {
   [[ -f "$SEED" ]] || make_seed
   start_qemu "$RUN"
   wait_ssh
-  log "VM prête (ssh :$VM_SSH_PORT, rdp :$VM_RDP_PORT)"
+  log "VM ready (ssh :$VM_SSH_PORT, rdp :$VM_RDP_PORT)"
 }
 
 cmd_ssh() { vm_ssh "$@"; }
@@ -186,15 +186,15 @@ cmd_deploy() {
   if [[ -z "$deb" ]]; then
     deb="$(ls -t "$VM_DIR"/../target/debian/*.deb 2>/dev/null | head -n1 || true)"
   fi
-  [[ -n "$deb" && -f "$deb" ]] || die "aucun .deb à déployer (passer un fichier ou lancer cargo deb)"
-  log "déploiement de $deb"
+  [[ -n "$deb" && -f "$deb" ]] || die "no .deb to deploy (pass a file or run cargo deb)"
+  log "deploying $deb"
   # shellcheck disable=SC2046
   scp $(ssh_opts | sed 's/-p /-P /') "$deb" "$VM_USER@127.0.0.1:/tmp/deploy.deb"
   vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb'
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
-# Configure le service rdsktp pour une session KWin réelle (autologin de $VM_USER) : drop-in systemd + restart.
+# Configures the rdsktp service for a real KWin session (autologin of $VM_USER): systemd drop-in + restart.
 cmd_kwin_config() {
   local uid_run="/run/user/$(vm_ssh 'id -u')"
   vm_ssh 'sudo mkdir -p /etc/systemd/system/rdsktp.service.d && sudo tee /etc/systemd/system/rdsktp.service.d/kwin.conf >/dev/null' <<EOF
@@ -213,10 +213,10 @@ EOF
   vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
 }
 
-# Mode login distant : rdsktp (utilisateur rdsktp, --login) + rdsktp-authd (root) + rdsktp-agent@dev.
-# Le mot de passe du compte de test vient de RDP_TEST_PASSWORD et transite par l'entrée standard (jamais par argv).
+# Remote login mode: rdsktp (user rdsktp, --login) + rdsktp-authd (root) + rdsktp-agent@dev.
+# The test account password comes from RDP_TEST_PASSWORD and goes through standard input (never argv).
 cmd_login_config() {
-  [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD requis"
+  [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
   printf '%s:%s\n' "$VM_USER" "$RDP_TEST_PASSWORD" | vm_ssh 'sudo chpasswd'
   vm_ssh 'sudo mkdir -p /etc/rdsktp /etc/systemd/system/rdsktp.service.d && sudo rm -f /etc/systemd/system/rdsktp.service.d/kwin.conf'
   vm_ssh 'sudo tee /etc/rdsktp/agent.conf >/dev/null' <<CONF
@@ -239,16 +239,16 @@ CONF
 
 cmd_logs() {
   case "${1:-console}" in
-    console) [[ -f "$CONSOLE" ]] && cat "$CONSOLE" || die "pas de console ($CONSOLE)" ;;
+    console) [[ -f "$CONSOLE" ]] && cat "$CONSOLE" || die "no console ($CONSOLE)" ;;
     journal) vm_ssh "sudo journalctl --no-pager ${2:+-u $2}" ;;
-    *) die "usage : logs [console|journal [unité]]" ;;
+    *) die "usage: logs [console|journal [unit]]" ;;
   esac
 }
 
 cmd_status() {
   if is_running; then echo "VM: running (pid $(cat "$PIDFILE"))"; else echo "VM: stopped"; fi
   for f in "$BASE" "$PROVISIONED" "$RUN" "$SEED" "$KEY"; do
-    [[ -e "$f" ]] && echo "ok      $f" || echo "absent  $f"
+    [[ -e "$f" ]] && echo "ok      $f" || echo "missing $f"
   done
 }
 
@@ -265,7 +265,7 @@ main() {
     login-config) cmd_login_config ;;
     logs) cmd_logs "$@" ;;
     status) cmd_status ;;
-    *) die "usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status>" ;;
+    *) die "usage: bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status>" ;;
   esac
 }
 main "$@"

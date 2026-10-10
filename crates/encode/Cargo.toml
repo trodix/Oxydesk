@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
-# H.264 via libopenh264 chargée à l'exécution (aucune compilation C++ requise).
+# H.264 through libopenh264 loaded at runtime (no C++ build required).
 openh264 = ["dep:openh264"]
 
 [dependencies]

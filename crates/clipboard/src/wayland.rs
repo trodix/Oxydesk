@@ -1,8 +1,8 @@
-//! Presse-papiers texte via `zwlr_data_control_manager_v1`.
+//! Text clipboard through `zwlr_data_control_manager_v1`.
 //!
-//! Un thread dédié dispatche les événements Wayland ; `poll_text` / `set_text` ne bloquent pas.
-//! Notre propre sélection est reconnue grâce à un type MIME privé propre à l'instance, jamais
-//! par comparaison de texte : une autre application qui recopie le même texte reste un vrai changement.
+//! A dedicated thread dispatches Wayland events; `poll_text` / `set_text` do not block.
+//! Our own selection is recognized thanks to a private MIME type specific to the instance, never
+//! by text comparison: another application copying the same text remains a real change.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -29,9 +29,9 @@ use proto::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use proto::zwlr_data_control_offer_v1::{self as offer_ev, ZwlrDataControlOfferV1};
 use proto::zwlr_data_control_source_v1::{self as source_ev, ZwlrDataControlSourceV1};
 
-/// Types MIME texte, du plus au moins préféré (réception) ; on les offre tous (émission).
+/// Text MIME types, from most to least preferred (receiving); all are offered (sending).
 const TEXT_MIMES: &[&str] = &["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"];
-/// Plafond de lecture d'une sélection distante.
+/// Read cap for a remote selection.
 const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Default)]
@@ -39,7 +39,7 @@ struct Shared {
     incoming: Mutex<Option<String>>,
 }
 
-/// MIME proposés par une offre (rempli par les événements `offer`).
+/// MIME types offered by an offer (filled by the `offer` events).
 #[derive(Default)]
 struct OfferMimes(Mutex<Vec<String>>);
 
@@ -90,7 +90,7 @@ impl Dispatch<ZwlrDataControlOfferV1, OfferMimes> for State {
     }
 }
 
-/// Texte servi par une source ; une source = un `set_text`.
+/// Text served by a source; one source = one `set_text`.
 struct SourceText(String);
 
 impl Dispatch<ZwlrDataControlSourceV1, SourceText> for State {
@@ -98,7 +98,7 @@ impl Dispatch<ZwlrDataControlSourceV1, SourceText> for State {
         match event {
             source_ev::Event::Send { fd, .. } => {
                 let text = data.0.clone();
-                // Thread dédié : un lecteur lent ne doit pas bloquer la boucle Wayland.
+                // Dedicated thread: a slow reader must not block the Wayland loop.
                 std::thread::spawn(move || {
                     let mut file = std::fs::File::from(fd);
                     let _ = file.write_all(text.as_bytes());
@@ -113,7 +113,7 @@ impl State {
     fn on_selection(&mut self, offer: ZwlrDataControlOfferV1) {
         let mimes = offer.data::<OfferMimes>().map(|m| m.0.lock().expect("mimes").clone()).unwrap_or_default();
         if mimes.contains(&self.instance_mime) {
-            offer.destroy(); // notre propre sélection
+            offer.destroy(); // our own selection
             return;
         }
         let Some(mime) = TEXT_MIMES.iter().find(|w| mimes.iter().any(|m| m == **w)) else {
@@ -126,7 +126,7 @@ impl State {
         };
         offer.receive((*mime).to_string(), OwnedFd::from(writer).as_fd());
         offer.destroy();
-        // Le descripteur d'écriture est fermé (drop) après l'envoi : le lecteur verra la fin du flux.
+        // The write descriptor is closed (drop) after sending: the reader will see the end of the stream.
         let _ = self.conn.flush();
         let shared = self.shared.clone();
         std::thread::spawn(move || {
@@ -148,19 +148,19 @@ pub struct WaylandClipboard {
 }
 
 impl WaylandClipboard {
-    /// Se connecte au socket Wayland `socket` (nom relatif à `XDG_RUNTIME_DIR`) ou à l'environnement.
+    /// Connects to the Wayland socket `socket` (name relative to `XDG_RUNTIME_DIR`) or to the environment.
     pub fn connect(socket: Option<&str>) -> Result<Self, ClipboardError> {
         let err = |m: String| ClipboardError::Backend(m);
         let conn = match socket {
             Some(name) => {
-                let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR absent".into()))?;
+                let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| err("XDG_RUNTIME_DIR missing".into()))?;
                 let stream = std::os::unix::net::UnixStream::connect(std::path::Path::new(&dir).join(name))
-                    .map_err(|e| err(format!("socket Wayland {name} : {e}")))?;
+                    .map_err(|e| err(format!("Wayland socket {name}: {e}")))?;
                 Connection::from_socket(stream)
             }
             None => Connection::connect_to_env(),
         }
-        .map_err(|e| err(format!("connexion Wayland : {e}")))?;
+        .map_err(|e| err(format!("Wayland connection: {e}")))?;
 
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let instance_mime = format!("application/x-rdsktp-instance-{}-{nonce:x}", std::process::id());
@@ -169,16 +169,16 @@ impl WaylandClipboard {
         let qh = queue.handle();
         let _registry = conn.display().get_registry(&qh, ());
         let mut state = State { shared: shared.clone(), instance_mime: instance_mime.clone(), manager: None, seat: None, conn: conn.clone() };
-        queue.roundtrip(&mut state).map_err(|e| err(format!("registre Wayland : {e}")))?;
-        let manager = state.manager.clone().ok_or_else(|| err("zwlr_data_control_manager_v1 non annoncé par le compositeur".into()))?;
-        let seat = state.seat.clone().ok_or_else(|| err("wl_seat absent".into()))?;
+        queue.roundtrip(&mut state).map_err(|e| err(format!("Wayland registry: {e}")))?;
+        let manager = state.manager.clone().ok_or_else(|| err("zwlr_data_control_manager_v1 not announced by the compositor".into()))?;
+        let seat = state.seat.clone().ok_or_else(|| err("wl_seat missing".into()))?;
         let device = manager.get_data_device(&seat, &qh, ());
         queue.roundtrip(&mut state).map_err(|e| err(format!("data device : {e}")))?;
 
         std::thread::Builder::new()
             .name("clipboard-wayland".into())
             .spawn(move || {
-                // Le thread vit autant que le processus : la connexion se ferme avec lui.
+                // The thread lives as long as the process: the connection closes with it.
                 while queue.blocking_dispatch(&mut state).is_ok() {}
             })
             .map_err(|e| err(e.to_string()))?;

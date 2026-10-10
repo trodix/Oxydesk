@@ -38,7 +38,7 @@ pub enum AudioError {
 
 #[derive(Debug, Error)]
 pub enum LoginError {
-    /// Identifiants refusés (mauvais mot de passe, compte inconnu ou interdit) : volontairement sans détail.
+    /// Credentials refused (wrong password, unknown or forbidden account): deliberately without detail.
     #[error("login denied")]
     Denied,
     #[error("login backend failure: {0}")]

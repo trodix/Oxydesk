@@ -6,12 +6,12 @@ pub enum PixelFormat {
     Bgra8,
 }
 
-/// Données d'une frame : mémoire partagée ou DMA-BUF (chemin GPU futur).
+/// Frame data: shared memory or DMA-BUF (future GPU path).
 #[derive(Debug)]
 pub enum FrameData {
     Shm(Vec<u8>),
     DmaBuf(i32),
-    /// Déjà encodé en H.264 Annex-B par l'agent de session (voir `PassthroughEncoder`).
+    /// Already encoded as H.264 Annex-B by the session agent (see `PassthroughEncoder`).
     Encoded { keyframe: bool, data: Vec<u8> },
 }
 

@@ -1,5 +1,5 @@
-//! Liaison avec l'agent : un thread lecteur dispatche les messages vers des boîtes aux lettres
-//! « dernier gagne » ; les écritures sont sérialisées par un verrou.
+//! Link with the agent: a reader thread dispatches messages to "latest wins" mailboxes;
+//! writes are serialized by a lock.
 
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
@@ -11,17 +11,17 @@ use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
 
-/// Images en attente par sortie. Les images H.264 sont inter-dépendantes : on ne peut pas n'en garder
-/// que la dernière, on les livre toutes dans l'ordre tant que la file reste courte.
+/// Pending frames per output. H.264 frames are inter-dependent: one cannot keep only
+/// the last one, they are all delivered in order as long as the queue stays short.
 #[derive(Default)]
 struct Mailbox {
     queue: VecDeque<Frame>,
-    /// Trou dans le flux inter-images : tout est ignoré jusqu'à la prochaine image clé.
+    /// Gap in the inter-frame stream: everything is ignored until the next keyframe.
     wait_key: bool,
 }
 
-/// Au-delà, le consommateur est trop lent (contre-pression EGFX) : on abandonne la file et on repart d'une clé
-/// plutôt que d'accumuler de la latence.
+/// Beyond this, the consumer is too slow (EGFX back-pressure): drop the queue and restart from a keyframe
+/// rather than accumulating latency.
 const MAX_QUEUE: usize = 4;
 
 #[derive(Default)]
@@ -41,17 +41,17 @@ pub struct AgentLink {
 }
 
 impl AgentLink {
-    /// Attend le `Hello` de l'agent et démarre le thread lecteur.
+    /// Waits for the agent's `Hello` and starts the reader thread.
     pub fn connect(stream: UnixStream, expected_outputs: u32) -> Result<Arc<Self>, String> {
         stream.set_read_timeout(Some(Duration::from_secs(60))).map_err(|e| e.to_string())?;
         let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
         match read_msg::<_, FromAgent>(&mut reader).map_err(|e| e.to_string())? {
             Some(FromAgent::Hello { outputs, .. }) if outputs == expected_outputs => {}
             Some(FromAgent::Hello { outputs, .. }) => {
-                return Err(format!("l'agent expose {outputs} sortie(s), {expected_outputs} attendue(s)"));
+                return Err(format!("the agent exposes {outputs} output(s), {expected_outputs} expected"));
             }
-            Some(FromAgent::Fatal(m)) => return Err(format!("agent : {m}")),
-            _ => return Err("l'agent n'a pas envoyé Hello".into()),
+            Some(FromAgent::Fatal(m)) => return Err(format!("agent: {m}")),
+            _ => return Err("the agent did not send Hello".into()),
         }
         reader.set_read_timeout(None).map_err(|e| e.to_string())?;
         let link = Arc::new(Self {
@@ -72,7 +72,7 @@ impl AgentLink {
                         Ok(Some(m)) => l.dispatch(m),
                         Ok(None) => break,
                         Err(e) => {
-                            tracing::warn!("agent : {e}");
+                            tracing::warn!("agent: {e}");
                             break;
                         }
                     }
@@ -100,12 +100,12 @@ impl AgentLink {
                     data: FrameData::Encoded { keyframe, data },
                 };
                 if keyframe {
-                    // Une clé rend les images en attente inutiles.
+                    // A keyframe makes the pending frames useless.
                     mb.queue.clear();
                     mb.queue.push_back(frame);
                     mb.wait_key = false;
                 } else if mb.wait_key {
-                    // Image inter inutilisable : la référence manque.
+                    // Unusable inter frame: the reference is missing.
                 } else if mb.queue.len() >= MAX_QUEUE {
                     mb.queue.clear();
                     mb.wait_key = true;
@@ -123,14 +123,14 @@ impl AgentLink {
                 let mut q = self.audio.lock().expect("audio mutex");
                 if q.open {
                     q.bytes.extend(bytes);
-                    // Borne (~1 s à 48 kHz stéréo 16 bits) : on jette le plus ancien plutôt que d'accumuler de la latence.
+                    // Bound (~1 s at 48 kHz 16-bit stereo): drop the oldest rather than accumulate latency.
                     while q.bytes.len() > 192_000 {
                         q.bytes.drain(..19_200);
                     }
                     self.audio_cv.notify_all();
                 }
             }
-            FromAgent::Fatal(m) => tracing::error!("agent : {m}"),
+            FromAgent::Fatal(m) => tracing::error!("agent: {m}"),
         }
     }
 
@@ -161,7 +161,7 @@ impl AgentLink {
         self.video.get(output.0 as usize)?.lock().expect("mailbox mutex").queue.pop_front()
     }
 
-    /// Le prochain `take_frame` ne renverra qu'une image clé, demandée à l'agent.
+    /// The next `take_frame` will only return a keyframe, requested from the agent.
     pub fn request_keyframe(&self, output: OutputId) {
         if let Some(slot) = self.video.get(output.0 as usize) {
             let mut mb = slot.lock().expect("mailbox mutex");
@@ -189,7 +189,7 @@ impl AgentLink {
         self.send(&ToAgent::AudioClose);
     }
 
-    /// Bloque jusqu'à `buf.len()` octets ; `false` si le flux est fermé ou la liaison coupée.
+    /// Blocks until `buf.len()` bytes; `false` if the stream is closed or the link is cut.
     pub fn read_audio(&self, buf: &mut [u8]) -> bool {
         let mut q = self.audio.lock().expect("audio mutex");
         while q.bytes.len() < buf.len() {
@@ -199,7 +199,7 @@ impl AgentLink {
             q = self.audio_cv.wait_timeout(q, Duration::from_millis(200)).expect("audio mutex").0;
         }
         for b in buf.iter_mut() {
-            *b = q.bytes.pop_front().expect("longueur vérifiée");
+            *b = q.bytes.pop_front().expect("length checked");
         }
         true
     }
@@ -207,7 +207,7 @@ impl AgentLink {
 
 impl Drop for AgentLink {
     fn drop(&mut self) {
-        // Ferme la connexion : l'agent le voit comme une déconnexion et arrête ses threads.
+        // Closes the connection: the agent sees it as a disconnection and stops its threads.
         if let Ok(w) = self.writer.lock() {
             let _ = w.shutdown(std::net::Shutdown::Both);
         }
@@ -235,7 +235,7 @@ mod tests {
             if let Some(v) = f() {
                 return v;
             }
-            assert!(t.elapsed() < Duration::from_secs(5), "délai dépassé");
+            assert!(t.elapsed() < Duration::from_secs(5), "timed out");
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -243,7 +243,7 @@ mod tests {
     fn tag(f: Frame) -> (bool, u8) {
         match f.data {
             FrameData::Encoded { keyframe, data } => (keyframe, data[0]),
-            _ => panic!("image non encodée"),
+            _ => panic!("frame not encoded"),
         }
     }
 
@@ -273,15 +273,15 @@ mod tests {
         let (link, mut agent) = pair();
         write_msg(&mut agent, &video(true, 1)).unwrap();
         for t in 2..=(MAX_QUEUE as u8 + 2) {
-            write_msg(&mut agent, &video(false, t)).unwrap(); // jamais consommées
+            write_msg(&mut agent, &video(false, t)).unwrap(); // never consumed
         }
         agent.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let req: ToAgent = read_msg(&mut agent).unwrap().unwrap();
         assert_eq!(req, ToAgent::RequestKeyframe { output: 0 });
-        write_msg(&mut agent, &video(false, 90)).unwrap(); // toujours en attente de clé : ignorée
+        write_msg(&mut agent, &video(false, 90)).unwrap(); // still waiting for a keyframe: ignored
         write_msg(&mut agent, &video(true, 91)).unwrap();
         let got = wait_for(|| link.take_frame(OutputId(0)).map(tag));
-        assert_eq!(got, (true, 91), "seule la clé de resynchronisation doit sortir");
+        assert_eq!(got, (true, 91), "only the resync keyframe must come out");
         assert!(link.take_frame(OutputId(0)).is_none());
     }
 

@@ -1,5 +1,5 @@
-//! Pompe de frames : capture -> encodage -> EGFX, à cadence fixe. Une frame à la fois,
-//! abandon (pas de file) si le client n'acquitte pas assez vite (backpressure EGFX).
+//! Frame pump: capture -> encode -> EGFX, at a fixed rate. One frame at a time,
+//! dropped (no queue) if the client does not acknowledge fast enough (EGFX backpressure).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,33 +15,33 @@ use rdsktp_core::ports::{CaptureSource, FrameEncoder};
 use rdsktp_core::FrameData;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// État partagé entre les fabriques IronRDP (créées par connexion) et les threads de travail.
+/// State shared between the IronRDP factories (created per connection) and the worker threads.
 #[derive(Default)]
 pub struct Shared {
     pub sender: Mutex<Option<UnboundedSender<ServerEvent>>>,
     pub gfx: Mutex<Option<GfxServerHandle>>,
     pub stop: AtomicBool,
-    /// Notifié par la capture à chaque nouvelle frame (mode `event`).
+    /// Notified by the capture on every new frame (`event` mode).
     pub wake: Arc<rdsktp_core::wake::Wake>,
-    /// Capture et encodeurs d'une nouvelle session, déposés par le composition root (mode fixe) ou par
-    /// le validateur d'identifiants (mode login) ; la pompe les adopte au tick suivant.
+    /// Capture and encoders of a new session, stored by the composition root (fixed mode) or by
+    /// the credential validator (login mode); the pump adopts them on the next tick.
     pub ports: Mutex<Option<PumpPorts>>,
 }
 
 pub struct PumpPorts {
     pub capture: Box<dyn CaptureSource>,
-    /// Un encodeur par sortie, dans l'ordre de la disposition.
+    /// One encoder per output, in layout order.
     pub encoders: Vec<Box<dyn FrameEncoder>>,
 }
 
 pub struct PumpParams {
     pub layout: Layout,
     pub fps: f32,
-    /// `true` : la pompe est réveillée par la capture au lieu d'une cadence fixe (`fps` devient un délai maximal d'attente).
+    /// `true`: the pump is woken by the capture instead of a fixed rate (`fps` becomes a maximum wait delay).
     pub event: bool,
 }
 
-/// Une sortie = un encodeur + sa dernière frame (ré-encodée pour un nouveau client si le bureau est statique).
+/// One output = one encoder + its last frame (re-encoded for a new client if the desktop is static).
 struct OutputState {
     encoder: Box<dyn FrameEncoder>,
     last: Option<rdsktp_core::Frame>,
@@ -74,7 +74,7 @@ pub fn spawn(
             let (desktop_w, desktop_h) = p.layout.desktop_size();
             let mut capture: Option<Box<dyn CaptureSource>> = None;
             let mut outputs: Vec<OutputState> = Vec::new();
-            // Connexion courante et une surface EGFX par sortie (vide tant que non créées).
+            // Current connection and one EGFX surface per output (empty until created).
             let mut current: Option<(GfxServerHandle, Vec<u16>)> = None;
             let (mut sent, mut dropped) = (0u64, 0u64);
             let mut repeat = false;
@@ -92,13 +92,13 @@ pub fn spawn(
                     if let Some(wait) = next.checked_duration_since(Instant::now()) {
                         std::thread::sleep(wait);
                     } else {
-                        next = Instant::now(); // en retard : on ne rattrape pas.
+                        next = Instant::now(); // late: do not catch up.
                     }
                 }
                 let sent_before = sent;
                 if let Some(new) = shared.ports.lock().expect("ports mutex").take() {
                     if new.encoders.len() != p.layout.outputs.len() {
-                        tracing::error!("session ignorée : {} encodeur(s) pour {} sortie(s)", new.encoders.len(), p.layout.outputs.len());
+                        tracing::error!("session ignored: {} encoder(s) for {} output(s)", new.encoders.len(), p.layout.outputs.len());
                     } else {
                         let mut c = new.capture;
                         c.set_waker(shared.wake.clone());
@@ -112,7 +112,7 @@ pub fn spawn(
                     continue;
                 };
                 if !current.as_ref().is_some_and(|(h, _)| Arc::ptr_eq(h, &handle)) {
-                    current = Some((handle.clone(), Vec::new())); // nouvelle connexion
+                    current = Some((handle.clone(), Vec::new())); // new connection
                 }
                 let (handle, surfaces) = current.as_mut().expect("set above");
                 {
@@ -121,7 +121,7 @@ pub fn spawn(
                         continue;
                     }
                     if surfaces.is_empty() {
-                        // Plusieurs écrans : ResetGraphics annonce la liste des moniteurs avant les surfaces.
+                        // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
                         if p.layout.outputs.len() > 1 {
                             g.resize_with_monitors(desktop_w as u16, desktop_h as u16, monitors(&p.layout));
                         }
@@ -161,13 +161,13 @@ pub fn spawn(
                     let encoded = match out.encoder.encode(frame) {
                         Ok(e) => e,
                         Err(e) => {
-                            tracing::error!("encodage: {e}");
+                            tracing::error!("encoding: {e}");
                             lost = true;
                             break;
                         }
                     };
                     if pre_encoded {
-                        // Une image inter déjà encodée ne se renvoie pas : le « repeat » repart d'une clé de l'agent.
+                        // An already encoded inter frame is not re-sent: the "repeat" restarts from a keyframe from the agent.
                         out.last = None;
                     }
                     let info = &p.layout.outputs[i];
@@ -189,18 +189,18 @@ pub fn spawn(
                                     let _ = tx.send(ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages: svc }));
                                 }
                             }
-                            Err(e) => tracing::error!("encodage DVC: {e}"),
+                            Err(e) => tracing::error!("DVC encoding: {e}"),
                         }
                     }
                 }
                 if lost {
-                    // Session perdue (agent mort, flux fermé) : on attend la suivante au lieu d'arrêter la pompe.
+                    // Session lost (agent dead, stream closed): wait for the next one instead of stopping the pump.
                     capture = None;
                     outputs.clear();
                     current = None;
                     continue;
                 }
-                drain = sent > sent_before; // des images peuvent encore attendre : pas de sommeil
+                drain = sent > sent_before; // frames may still be waiting: no sleep
                 repeat = false;
                 if report.elapsed() >= Duration::from_secs(10) {
                     tracing::info!(sent, dropped, "frame-pump");

@@ -1,6 +1,6 @@
-//! Serveur RDP RustyDesktop. Composition root : choisit les adaptateurs et les injecte dans `rdsktp-rdp`.
-//! Modes : `--test-mode` (bureau synthétique, contrat du client de test) ou `--session kwin`
-//! (session KWin virtuelle réelle, feature `kwin`, autologin pour l'utilisateur courant).
+//! RustyDesktop RDP server. Composition root: chooses the adapters and injects them into `rdsktp-rdp`.
+//! Modes: `--test-mode` (synthetic desktop, test client contract) or `--session kwin`
+//! (real virtual KWin session, `kwin` feature, autologin for the current user).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -10,12 +10,12 @@ use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
 use rdsktp_core::layout::Layout;
 use rdsktp_rdp::{Ports, ServerConfig};
 
-const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--audio tone|pulse|off] [--width W] [--height H] [--fps F] [--nla-user U]\n\
-  --test-mode   bureau synthétique\n\
-  --login       login distant : PAM via rdsktp-authd, une session par utilisateur (TLS, sans NLA)\n\
-  --session kwin  démarre kwin_wayland --virtual (+ programmes --session-app) et le capture\n\
-  --state-dir   certificat TLS auto-signé généré s'il est absent (défaut : /var/lib/rdsktp)\n\
-  --nla-user    active NLA ; mot de passe via la variable RDSKTP_PASSWORD uniquement";
+const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] | --session kwin [--kwin-socket NAME] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT]
+  --test-mode   synthetic desktop\n\
+  --login       remote login: PAM through rdsktp-authd, one session per user (TLS, no NLA)\n\
+  --session kwin  starts kwin_wayland --virtual (+ --session-app programs) and captures it\n\
+  --state-dir   self-signed TLS certificate generated if absent (default: /var/lib/rdsktp)\n\
+  --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable";
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -38,7 +38,7 @@ fn ensure_cert(dir: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
         }
-        tracing::info!(dir = %dir.display(), "certificat TLS auto-signé généré");
+        tracing::info!(dir = %dir.display(), "self-signed TLS certificate generated");
     }
     Ok((cert, key))
 }
@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         arg(&args, "--height").unwrap_or(1080),
     );
     let outputs: u32 = arg(&args, "--outputs").unwrap_or(1);
-    anyhow::ensure!((1..=16).contains(&outputs), "--outputs doit être entre 1 et 16");
+    anyhow::ensure!((1..=16).contains(&outputs), "--outputs must be between 1 and 16");
     let layout = Layout::side_by_side(outputs, u32::from(width), u32::from(height));
     let fps: f32 = arg(&args, "--fps").unwrap_or(30.0);
     let state_dir: PathBuf = arg(&args, "--state-dir").unwrap_or_else(|| "/var/lib/rdsktp".into());
@@ -79,19 +79,19 @@ async fn main() -> anyhow::Result<()> {
         Some(user) => Some((
             user,
             std::env::var("RDSKTP_PASSWORD")
-                .map_err(|_| anyhow::anyhow!("RDSKTP_PASSWORD requis avec --nla-user"))?,
+                .map_err(|_| anyhow::anyhow!("RDSKTP_PASSWORD required with --nla-user"))?,
         )),
         None => None,
     };
 
     if login_mode {
-        anyhow::ensure!(nla.is_none(), "--login est incompatible avec --nla-user (pas de NLA pour les comptes dynamiques)");
+        anyhow::ensure!(nla.is_none(), "--login is incompatible with --nla-user (no NLA for dynamic accounts)");
         let socket: PathBuf = arg(&args, "--authd-socket").unwrap_or_else(|| "/run/rdsktp/authd.sock".into());
         let broker = std::sync::Arc::new(rdsktp_remote::RemoteBroker::new(socket, outputs));
         let config = ServerConfig { addr, layout, fps, tls_cert, tls_key, nla };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
-            _ = tokio::signal::ctrl_c() => { tracing::info!("arrêt"); Ok(()) }
+            _ = tokio::signal::ctrl_c() => { tracing::info!("shutdown"); Ok(()) }
         };
     }
 
@@ -103,13 +103,13 @@ async fn main() -> anyhow::Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     #[cfg(feature = "kwin")]
     let mut _session = None;
-    // Audio : tonalité de test en mode synthétique, capture PipeWire en session KWin.
+    // Audio: test tone in synthetic mode, PipeWire capture in KWin session.
     let audio: Option<std::sync::Arc<dyn rdsktp_core::ports::AudioProvider>> =
         match arg::<String>(&args, "--audio").unwrap_or_else(|| if kwin_mode { "pulse" } else { "tone" }.into()).as_str() {
             "off" => None,
             "tone" => Some(std::sync::Arc::new(rdsktp_audio::ToneProvider)),
             "pulse" => Some(std::sync::Arc::new(rdsktp_audio::PulseCapture)),
-            other => anyhow::bail!("--audio inconnu : {other}"),
+            other => anyhow::bail!("unknown --audio: {other}"),
         };
     let (capture, input, clipboard): (
         Box<dyn rdsktp_core::ports::CaptureSource>,
@@ -121,9 +121,9 @@ async fn main() -> anyhow::Result<()> {
             {
                 use rdsktp_core::ports::SessionProvider;
                 if audio.is_some() {
-                    // Le puits doit exister avant les applications de la session (elles y jouent par défaut).
+                    // The sink must exist before the session applications (they play to it by default).
                     if let Err(e) = rdsktp_audio::PulseCapture::ensure_sink() {
-                        tracing::warn!("audio indisponible : {e}");
+                        tracing::warn!("audio unavailable: {e}");
                     }
                 }
                 let socket: String = arg(&args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
                     outputs,
                     programs,
                 });
-                session.start().map_err(|e| anyhow::anyhow!("session KWin : {e}"))?;
+                session.start().map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
                 _session = Some(session);
                 let sources = (0..outputs as usize)
                     .map(|i| {
@@ -153,11 +153,11 @@ async fn main() -> anyhow::Result<()> {
                 (Box::new(capture), Box::new(input), Box::new(clipboard))
             }
             #[cfg(not(feature = "kwin"))]
-            anyhow::bail!("binaire compilé sans la feature `kwin`");
+            anyhow::bail!("binary built without the `kwin` feature");
         } else {
-            anyhow::ensure!(outputs == 1, "--outputs > 1 nécessite --session kwin");
+            anyhow::ensure!(outputs == 1, "--outputs > 1 requires --session kwin");
             let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
-            // Mode test : le « bureau » synthétique renvoie en écho le texte reçu.
+            // Test mode: the synthetic "desktop" echoes back the received text.
             (Box::new(desktop.clone()), Box::new(desktop.clone()), Box::new(desktop))
         };
     let ports = Ports {
@@ -177,6 +177,6 @@ async fn main() -> anyhow::Result<()> {
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
-        _ = tokio::signal::ctrl_c() => { tracing::info!("arrêt"); Ok(()) }
+        _ = tokio::signal::ctrl_c() => { tracing::info!("shutdown"); Ok(()) }
     }
 }

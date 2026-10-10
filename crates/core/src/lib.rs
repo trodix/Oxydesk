@@ -1,5 +1,5 @@
-//! Domaine et ports du serveur. Aucune dépendance technique lourde ici :
-//! les adaptateurs (capture, encodage, RDP, ...) implémentent ces traits.
+//! Server domain and ports. No heavy technical dependency here:
+//! adapters (capture, encoding, RDP, ...) implement these traits.
 
 pub mod error;
 pub mod frame;

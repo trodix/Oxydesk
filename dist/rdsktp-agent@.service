@@ -1,9 +1,9 @@
 [Unit]
-Description=RustyDesktop (rdsktp) - agent de session de %i
+Description=RustyDesktop (rdsktp) - session agent for %i
 After=systemd-user-sessions.service systemd-logind.service
 
 [Service]
-# Tourne sous l'identité de l'utilisateur ; PAMName ouvre une vraie session logind (XDG_RUNTIME_DIR, bus de session).
+# Runs as the user's identity; PAMName opens a real logind session (XDG_RUNTIME_DIR, session bus).
 User=%i
 PAMName=rdsktp-session
 SupplementaryGroups=video render

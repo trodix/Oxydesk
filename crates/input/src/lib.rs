@@ -1,4 +1,4 @@
-//! Adaptateurs du port `InputSink`.
+//! `InputSink` port adapters.
 
 pub mod scancode;
 

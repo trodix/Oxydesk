@@ -1,6 +1,6 @@
-//! `rdsktp-authd` : seul composant privilégié. Authentifie via PAM, démarre l'agent de session de
-//! l'utilisateur (`rdsktp-agent@<user>.service`) et transmet à `rdsktp` un descripteur connecté à cet agent.
-//! Aucun secret dans les journaux ni dans argv.
+//! `rdsktp-authd`: the only privileged component. Authenticates through PAM, starts the user's session agent
+//! (`rdsktp-agent@<user>.service`) and hands `rdsktp` a descriptor connected to that agent.
+//! No secret in logs or in argv.
 
 mod pam;
 
@@ -27,13 +27,13 @@ fn arg(args: &[String], name: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
 }
 
-/// uid et gid d'un compte local via `getpwnam_r`.
+/// uid and gid of a local account via `getpwnam_r`.
 fn lookup_uid(name: &str) -> Option<u32> {
     let cname = std::ffi::CString::new(name).ok()?;
     let mut buf = vec![0u8; 4096];
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut res: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: tampon et structure valides pour la durée de l'appel.
+    // SAFETY: valid buffer and structure for the duration of the call.
     let rc = unsafe { libc::getpwnam_r(cname.as_ptr(), &mut pwd, buf.as_mut_ptr().cast(), buf.len(), &mut res) };
     (rc == 0 && !res.is_null()).then_some(pwd.pw_uid)
 }
@@ -42,11 +42,11 @@ fn agent_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/rdsktp-agent.sock"))
 }
 
-/// Démarre l'agent (idempotent) et attend que son socket accepte les connexions.
+/// Starts the agent (idempotent) and waits for its socket to accept connections.
 fn connect_agent(username: &str, uid: u32) -> anyhow::Result<UnixStream> {
     let unit = format!("rdsktp-agent@{username}.service");
     let status = Command::new("systemctl").args(["start", "--no-block", &unit]).status()?;
-    anyhow::ensure!(status.success(), "systemctl start {unit} : {status}");
+    anyhow::ensure!(status.success(), "systemctl start {unit}: {status}");
     let sock = agent_socket(uid);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -55,10 +55,10 @@ fn connect_agent(username: &str, uid: u32) -> anyhow::Result<UnixStream> {
                 return Ok(s);
             }
         }
-        // L'unité a pu échouer (PAM, KWin) : inutile d'attendre jusqu'au bout.
+        // The unit may have failed (PAM, KWin): no point waiting until the end.
         let failed = Command::new("systemctl").args(["is-failed", "--quiet", &unit]).status().is_ok_and(|s| s.success());
-        anyhow::ensure!(!failed, "l'unité {unit} a échoué");
-        anyhow::ensure!(Instant::now() < deadline, "délai dépassé en attendant l'agent");
+        anyhow::ensure!(!failed, "unit {unit} failed");
+        anyhow::ensure!(Instant::now() < deadline, "timed out waiting for the agent");
         std::thread::sleep(Duration::from_millis(200));
     }
 }
@@ -67,31 +67,31 @@ fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()>
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let Request::Login { username, password } = read_request(&mut stream)?;
     stream.set_read_timeout(None)?;
-    tracing::info!(user = %username, "demande de connexion");
+    tracing::info!(user = %username, "login request");
     let deny = |stream: &mut UnixStream| -> anyhow::Result<()> {
-        // Ralentit le bruteforce ; même réponse pour compte inconnu, mot de passe faux ou compte interdit.
+        // Slows down brute force; same answer for unknown account, wrong password or forbidden account.
         std::thread::sleep(Duration::from_secs(1));
         send_response(stream, &Response::Denied, None)?;
         Ok(())
     };
     if !valid_username(&username) {
-        tracing::warn!("nom d'utilisateur refusé (format)");
+        tracing::warn!("user name rejected (format)");
         return deny(&mut stream);
     }
     let uid = lookup_uid(&username);
     if pam.authenticate(&username, &password)? != PamOutcome::Granted || uid.is_none_or(|u| u < cfg.min_uid) {
-        tracing::warn!(user = %username, "authentification refusée");
+        tracing::warn!(user = %username, "authentication refused");
         return deny(&mut stream);
     }
-    let uid = uid.expect("vérifié ci-dessus");
+    let uid = uid.expect("checked above");
     match connect_agent(&username, uid) {
         Ok(agent) => {
             send_response(&mut stream, &Response::Granted { uid }, Some(agent.as_raw_fd()))?;
-            tracing::info!(user = %username, uid, "session accordée");
+            tracing::info!(user = %username, uid, "session granted");
         }
         Err(e) => {
-            tracing::error!(user = %username, "agent indisponible : {e:#}");
-            send_response(&mut stream, &Response::Error { message: "session indisponible".into() }, None)?;
+            tracing::error!(user = %username, "agent unavailable: {e:#}");
+            send_response(&mut stream, &Response::Error { message: "session unavailable".into() }, None)?;
         }
     }
     Ok(())
@@ -103,7 +103,7 @@ fn bind(path: &Path) -> anyhow::Result<UnixListener> {
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
-    // Accès réservé à root et au groupe `rdsktp` (propriétaire du service `rdsktp`).
+    // Access restricted to root and the `rdsktp` group (owner of the `rdsktp` service).
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
     if let Some(gid) = lookup_gid("rdsktp") {
         let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
@@ -133,16 +133,16 @@ fn main() -> anyhow::Result<()> {
         pam_service: arg(&args, "--pam-service").unwrap_or_else(|| "rdsktp".into()),
         min_uid: arg(&args, "--min-uid").and_then(|v| v.parse().ok()).unwrap_or(1000),
     });
-    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "rdsktp-authd doit tourner en root");
+    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "rdsktp-authd must run as root");
     let pam = Arc::new(Pam::load(&cfg.pam_service)?);
     let listener = bind(&cfg.socket)?;
-    tracing::info!(socket = %cfg.socket.display(), "en écoute");
+    tracing::info!(socket = %cfg.socket.display(), "listening");
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let (cfg, pam) = (cfg.clone(), pam.clone());
         std::thread::spawn(move || {
             if let Err(e) = handle(stream, &cfg, &pam) {
-                tracing::warn!("requête abandonnée : {e:#}");
+                tracing::warn!("request dropped: {e:#}");
             }
         });
     }

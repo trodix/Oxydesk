@@ -1,8 +1,8 @@
-//! Protocole entre `rdsktp` (non privilégié) et `authd` (root : PAM + démarrage des sessions).
+//! Protocol between `rdsktp` (unprivileged) and `authd` (root: PAM + session startup).
 //!
-//! Une requête = une connexion Unix. Trame : `[longueur: u32 big-endian][JSON]`. En cas de succès,
-//! la réponse `Granted` transporte, par `SCM_RIGHTS`, un descripteur déjà connecté à l'agent de
-//! session de l'utilisateur : aucun chemin de socket de l'utilisateur n'est exposé à `rdsktp`.
+//! One request = one Unix connection. Frame: `[length: u32 big-endian][JSON]`. On success,
+//! the `Granted` response carries, through `SCM_RIGHTS`, a descriptor already connected to the user's
+//! session agent: no user socket path is exposed to `rdsktp`.
 
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -20,7 +20,7 @@ const MAX_FRAME: usize = 8 * 1024;
 pub enum ProtoError {
     #[error("E/S : {0}")]
     Io(#[from] std::io::Error),
-    #[error("message invalide : {0}")]
+    #[error("invalid message: {0}")]
     Invalid(String),
 }
 
@@ -30,7 +30,7 @@ pub enum Request {
     Login { username: String, password: String },
 }
 
-// Le mot de passe ne doit jamais apparaître dans un journal.
+// The password must never appear in a log.
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -42,9 +42,9 @@ impl std::fmt::Debug for Request {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum Response {
-    /// Accompagné d'un descripteur connecté à l'agent de session.
+    /// Accompanied by a descriptor connected to the session agent.
     Granted { uid: u32 },
-    /// Refus d'authentification, sans détail (pas d'oracle sur l'existence des comptes).
+    /// Authentication refused, without detail (no oracle on account existence).
     Denied,
     Error { message: String },
 }
@@ -52,7 +52,7 @@ pub enum Response {
 fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
     let json = serde_json::to_vec(msg).map_err(|e| ProtoError::Invalid(e.to_string()))?;
     if json.len() > MAX_FRAME {
-        return Err(ProtoError::Invalid("trame trop grande".into()));
+        return Err(ProtoError::Invalid("frame too large".into()));
     }
     let mut out = (json.len() as u32).to_be_bytes().to_vec();
     out.extend_from_slice(&json);
@@ -73,19 +73,19 @@ pub fn read_request(stream: &mut UnixStream) -> Result<Request, ProtoError> {
     stream.read_exact(&mut head)?;
     let len = u32::from_be_bytes(head) as usize;
     if len > MAX_FRAME {
-        return Err(ProtoError::Invalid("trame trop grande".into()));
+        return Err(ProtoError::Invalid("frame too large".into()));
     }
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body)?;
     let req: Request = decode(&body)?;
     let Request::Login { username, password } = &req;
     if username.len() > MAX_USERNAME || password.len() > MAX_PASSWORD {
-        return Err(ProtoError::Invalid("identifiants trop longs".into()));
+        return Err(ProtoError::Invalid("credentials too long".into()));
     }
     Ok(req)
 }
 
-/// Envoie la réponse ; `fd` (au plus un) est transmis avec le premier octet.
+/// Sends the response; `fd` (at most one) is passed with the first byte.
 pub fn send_response(stream: &mut UnixStream, resp: &Response, fd: Option<RawFd>) -> Result<(), ProtoError> {
     let buf = encode(resp)?;
     match fd {
@@ -103,7 +103,7 @@ pub fn send_response(stream: &mut UnixStream, resp: &Response, fd: Option<RawFd>
     Ok(())
 }
 
-/// Reçoit la réponse et le descripteur éventuel (ouvert en `CLOEXEC`).
+/// Receives the response and the optional descriptor (opened with `CLOEXEC`).
 pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedFd>), ProtoError> {
     let mut buf = vec![0u8; 4 + MAX_FRAME];
     let mut cmsg_space = nix::cmsg_space!([RawFd; 1]);
@@ -116,7 +116,7 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
             for c in cmsgs {
                 if let ControlMessageOwned::ScmRights(fds) = c {
                     for raw in fds {
-                        // SAFETY: le noyau vient de créer ce descripteur pour ce processus ; on en prend la propriété.
+                        // SAFETY: the kernel just created this descriptor for this process; we take ownership of it.
                         let owned = unsafe { OwnedFd::from_raw_fd(raw) };
                         if fd.is_none() {
                             fd = Some(owned);
@@ -128,20 +128,20 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
         (msg.bytes, fd)
     };
     if got == 0 {
-        return Err(ProtoError::Invalid("connexion fermée sans réponse".into()));
+        return Err(ProtoError::Invalid("connection closed without a response".into()));
     }
-    // La longueur peut arriver en plusieurs morceaux : on complète par des lectures normales.
+    // The length may arrive in several chunks: complete it with normal reads.
     let mut have = got;
     while have < 4 {
         let n = stream.read(&mut buf[have..4])?;
         if n == 0 {
-            return Err(ProtoError::Invalid("réponse tronquée".into()));
+            return Err(ProtoError::Invalid("truncated response".into()));
         }
         have += n;
     }
     let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
     if len > MAX_FRAME {
-        return Err(ProtoError::Invalid("trame trop grande".into()));
+        return Err(ProtoError::Invalid("frame too large".into()));
     }
     if have < 4 + len {
         stream.read_exact(&mut buf[have..4 + len])?;
@@ -149,8 +149,8 @@ pub fn recv_response(stream: &mut UnixStream) -> Result<(Response, Option<OwnedF
     Ok((decode(&buf[4..4 + len])?, fd))
 }
 
-/// Nom d'utilisateur Unix raisonnable : refuse tout ce qui pourrait servir à injecter un nom d'unité
-/// systemd ou un chemin (`/`, `@`, espaces, caractères de contrôle…).
+/// Reasonable Unix user name: rejects anything that could be used to inject a systemd unit name
+/// or a path (`/`, `@`, spaces, control characters…).
 pub fn valid_username(name: &str) -> bool {
     let mut chars = name.chars();
     let ok_first = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
@@ -187,7 +187,7 @@ mod tests {
         send_response(&mut server, &Response::Granted { uid: 1000 }, Some(agent_side.as_fd().as_raw_fd())).unwrap();
         let (resp, fd) = recv_response(&mut client).unwrap();
         assert_eq!(resp, Response::Granted { uid: 1000 });
-        let mut passed = UnixStream::from(fd.expect("descripteur transmis"));
+        let mut passed = UnixStream::from(fd.expect("descriptor passed"));
         passed.write_all(b"ping").unwrap();
         let mut buf = [0u8; 4];
         agent_peer.read_exact(&mut buf).unwrap();

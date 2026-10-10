@@ -1,5 +1,5 @@
-//! Bench d'encodage : temps par frame (p50/p95/max) pour une résolution donnée.
-//! Usage : bench [--width W --height H --frames N --bitrate-mbps M --fps F --noise]
+//! Encoding bench: time per frame (p50/p95/max) for a given resolution.
+//! Usage: bench [--width W --height H --frames N --bitrate-mbps M --fps F --noise]
 
 use std::time::Instant;
 
@@ -42,7 +42,7 @@ fn main() {
         let out = enc.encode(&frame).expect("encode");
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if i >= 10 {
-            // 10 premières frames ignorées (échauffement).
+            // First 10 frames ignored (warm-up).
             times.push(ms);
             bytes += out.data.len();
             keyframes += out.keyframe as usize;
@@ -51,7 +51,7 @@ fn main() {
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mean = times.iter().sum::<f64>() / times.len() as f64;
     println!(
-        "{w}x{h} frames={} p50={:.1}ms p95={:.1}ms max={:.1}ms mean={:.1}ms => {:.0} fps max ; {:.1} Kio/frame moy ; {} IDR (budget {:.1} ms @ {fps} fps)",
+        "{w}x{h} frames={} p50={:.1}ms p95={:.1}ms max={:.1}ms mean={:.1}ms => {:.0} fps max; {:.1} KiB/frame avg; {} IDR (budget {:.1} ms @ {fps} fps)",
         times.len(),
         pct(&times, 50.0),
         pct(&times, 95.0),

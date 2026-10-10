@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 use crate::contract::*;
 use crate::session::{Frame, Session};
 
-/// Défauts injectables pour tester les scénarios.
+/// Faults that can be injected to test the scenarios.
 #[derive(Debug, Clone)]
 pub struct MockFaults {
     pub broken_clipboard: bool,
     pub key_delay: Duration,
     pub desktop: (u32, u32),
-    /// Fréquence émise par l'audio simulé.
+    /// Frequency emitted by the simulated audio.
     pub tone_hz: f64,
 }
 
@@ -26,7 +26,7 @@ impl Default for MockFaults {
     }
 }
 
-/// Simule le serveur de test : marqueur, heartbeat, écho presse-papiers.
+/// Simulates the test server: marker, heartbeat, clipboard echo.
 pub struct MockSession {
     faults: MockFaults,
     marker: [u8; 3],
@@ -88,7 +88,7 @@ impl Session for MockSession {
         }
         self.beat = !self.beat;
         let (w, h) = self.faults.desktop;
-        // Fond gris moyen : « non noir » sans interférer avec les blocs.
+        // Medium gray background: "non-black" without interfering with the blocks.
         let mut f = Frame {
             width: w,
             height: h,

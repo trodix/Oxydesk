@@ -1,5 +1,5 @@
-//! Adaptateur primaire RDP : traduit IronRDP en appels aux ports de `rdsktp-core`.
-//! Seul crate qui connaît IronRDP côté serveur.
+//! Primary RDP adapter: translates IronRDP into calls to the `rdsktp-core` ports.
+//! The only crate that knows IronRDP on the server side.
 
 pub mod clipboard;
 mod pump;

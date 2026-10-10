@@ -1,4 +1,4 @@
-//! Client de test RDP : scénarios à oracles déterministes, écrit `client.json`.
+//! RDP test client: scenarios with deterministic oracles, writes `client.json`.
 
 pub mod audio;
 pub mod contract;

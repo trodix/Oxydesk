@@ -4,7 +4,7 @@ pub struct OutputId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputInfo {
     pub id: OutputId,
-    /// Offsets éventuellement négatifs dans l'espace virtuel.
+    /// Possibly negative offsets in the virtual space.
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -18,7 +18,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// `n` sorties identiques alignées de gauche à droite, la première étant principale.
+    /// `n` identical outputs laid out left to right, the first being primary.
     pub fn side_by_side(n: u32, width: u32, height: u32) -> Self {
         Self {
             outputs: (0..n)
@@ -27,7 +27,7 @@ impl Layout {
         }
     }
 
-    /// Rectangle englobant (largeur, hauteur) à partir de l'origine (0, 0).
+    /// Bounding rectangle (width, height) from the origin (0, 0).
     pub fn desktop_size(&self) -> (u32, u32) {
         let right = self.outputs.iter().map(|o| o.x + o.width as i32).max().unwrap_or(0);
         let bottom = self.outputs.iter().map(|o| o.y + o.height as i32).max().unwrap_or(0);
@@ -35,7 +35,7 @@ impl Layout {
     }
 }
 
-/// Convertit des coordonnées souris de l'espace virtuel RDP vers une sortie.
+/// Converts mouse coordinates from the RDP virtual space to an output.
 pub struct CoordinateMapper<'a> {
     layout: &'a Layout,
 }
@@ -45,7 +45,7 @@ impl<'a> CoordinateMapper<'a> {
         Self { layout }
     }
 
-    /// Retourne la sortie contenant le point et les coordonnées locales.
+    /// Returns the output containing the point and the local coordinates.
     pub fn locate(&self, x: i32, y: i32) -> Option<(OutputId, u32, u32)> {
         self.layout.outputs.iter().find_map(|o| {
             let inside =

@@ -1,8 +1,8 @@
-//! Backend IronRDP du client de test : TCP → TLS → connexion → EGFX (H.264) + CLIPRDR texte.
+//! IronRDP backend of the test client: TCP → TLS → connection → EGFX (H.264) + text CLIPRDR.
 //!
-//! Un thread worker possède la connexion bloquante ; l'API `Session` lui parle par un canal de
-//! commandes et un état partagé (framebuffer, texte presse-papiers reçu).
-//! TLS : le certificat serveur n'est PAS vérifié (serveur de test local uniquement).
+//! A worker thread owns the blocking connection; the `Session` API talks to it through a command
+//! channel and a shared state (framebuffer, received clipboard text).
+//! TLS: the server certificate is NOT verified (local test server only).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Write as _};
@@ -43,15 +43,15 @@ use tracing::debug;
 
 use crate::session::{Frame, Session};
 
-/// Paramètres de connexion.
+/// Connection parameters.
 #[derive(Debug, Clone)]
 pub struct Options {
     pub host: String,
     pub port: u16,
     pub user: String,
-    /// Fourni uniquement par `RDP_TEST_PASSWORD` ; si présent, CredSSP/NLA est activé.
+    /// Provided only by `RDP_TEST_PASSWORD`; if present, CredSSP/NLA is enabled.
     pub password: Option<String>,
-    /// TLS seul : les identifiants partent dans le ClientInfoPdu (mode `rdsktp --login`, sans CredSSP).
+    /// TLS only: credentials go in the ClientInfoPdu (`rdsktp --login` mode, no CredSSP).
     pub no_nla: bool,
     pub width: u16,
     pub height: u16,
@@ -73,7 +73,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().expect("état client")
+        self.state.lock().expect("client state")
     }
     fn fail(&self, msg: String) {
         let mut s = self.lock();
@@ -111,13 +111,13 @@ impl IronRdpSession {
     }
 
     fn send(&self, cmd: Command) -> Result<(), String> {
-        let tx = self.tx.as_ref().ok_or("non connecté")?;
+        let tx = self.tx.as_ref().ok_or("not connected")?;
         tx.send(cmd).map_err(|_| {
             self.shared
                 .lock()
                 .error
                 .clone()
-                .unwrap_or_else(|| "connexion fermée".into())
+                .unwrap_or_else(|| "connection closed".into())
         })
     }
 }
@@ -138,7 +138,7 @@ impl Session for IronRdpSession {
         self.tx = Some(cmd_tx);
         ready_rx
             .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| "délai de connexion dépassé".to_string())?
+            .map_err(|_| "connection timed out".to_string())?
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Frame, String> {
@@ -156,13 +156,13 @@ impl Session for IronRdpSession {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err("aucune image reçue dans le délai".into());
+                return Err("no image received in time".into());
             }
             s = self
                 .shared
                 .cond
                 .wait_timeout(s, left)
-                .expect("état client")
+                .expect("client state")
                 .0;
         }
     }
@@ -189,7 +189,7 @@ impl Session for IronRdpSession {
             if left.is_zero() {
                 return Ok(None);
             }
-            s = self.shared.cond.wait_timeout(s, left).expect("état client").0;
+            s = self.shared.cond.wait_timeout(s, left).expect("client state").0;
         }
     }
 
@@ -211,7 +211,7 @@ impl Session for IronRdpSession {
                 .shared
                 .cond
                 .wait_timeout(s, left)
-                .expect("état client")
+                .expect("client state")
                 .0;
         }
     }
@@ -286,15 +286,15 @@ impl GraphicsPipelineHandler for GfxHandler {
     }
 }
 
-/// Décodeur H.264 via libopenh264 chargée à l'exécution. Accepte Annex-B ou AVC (préfixe de longueur).
+/// H.264 decoder through libopenh264 loaded at runtime. Accepts Annex-B or AVC (length prefix).
 struct OpenH264Decoder {
     inner: openh264::decoder::Decoder,
     annex_b: Vec<u8>,
 }
 
-/// `H264Decoder` d'ironrdp-egfx ne reçoit pas l'identifiant de surface alors que chaque surface a son
-/// propre flux (références P propres) : on garde un décodeur par surface, choisi grâce à la file
-/// d'identifiants que `SurfaceTap` alimente dans l'ordre exact des `WireToSurface1`.
+/// `H264Decoder` of ironrdp-egfx does not receive the surface identifier whereas each surface has its
+/// own stream (own P references): we keep one decoder per surface, chosen thanks to the queue
+/// of identifiers that `SurfaceTap` feeds in the exact order of the `WireToSurface1`.
 struct PerSurfaceDecoder {
     pending: Arc<Mutex<VecDeque<u16>>>,
     decoders: HashMap<u16, OpenH264Decoder>,
@@ -315,8 +315,8 @@ impl H264Decoder for PerSurfaceDecoder {
     }
 }
 
-/// Enveloppe du canal EGFX : relit (avec sa propre fenêtre ZGFX, alimentée des mêmes octets) les PDU
-/// avant de les confier au client, uniquement pour noter la surface de chaque `WireToSurface1`.
+/// EGFX channel wrapper: re-reads (with its own ZGFX window, fed with the same bytes) the PDUs
+/// before handing them to the client, only to note the surface of each `WireToSurface1`.
 struct SurfaceTap {
     inner: GraphicsPipelineClient,
     pending: Arc<Mutex<VecDeque<u16>>>,
@@ -370,27 +370,27 @@ fn locate_openh264() -> anyhow::Result<PathBuf> {
     .iter()
     .map(PathBuf::from)
     .find(|p| p.exists())
-    .ok_or_else(|| anyhow!("libopenh264 introuvable (définir RDSKTP_OPENH264_LIB)"))
+    .ok_or_else(|| anyhow!("libopenh264 not found (set RDSKTP_OPENH264_LIB)"))
 }
 
 impl OpenH264Decoder {
     fn new() -> anyhow::Result<Self> {
         let path = locate_openh264()?;
-        // SAFETY: bibliothèque système choisie par l'opérateur ; client de test uniquement.
+        // SAFETY: system library chosen by the operator; test client only.
         let api = unsafe { openh264::OpenH264API::from_blob_path_unchecked(&path) }
-            .map_err(|e| anyhow!("chargement de {} : {e}", path.display()))?;
+            .map_err(|e| anyhow!("loading {}: {e}", path.display()))?;
         let inner = openh264::decoder::Decoder::with_api_config(
             api,
             openh264::decoder::DecoderConfig::new(),
         )
-        .map_err(|e| anyhow!("création du décodeur : {e}"))?;
+        .map_err(|e| anyhow!("decoder creation: {e}"))?;
         Ok(Self {
             inner,
             annex_b: Vec::new(),
         })
     }
 
-    /// Normalise en Annex-B (le flux serveur l'est déjà ; sinon conversion AVC).
+    /// Normalizes to Annex-B (the server stream already is; otherwise AVC conversion).
     fn normalize(&mut self, data: &[u8]) {
         self.annex_b.clear();
         if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
@@ -418,8 +418,8 @@ impl H264Decoder for OpenH264Decoder {
         let yuv = self
             .inner
             .decode(&self.annex_b)
-            .map_err(|e| DecoderError::new("décodage OpenH264", e))?
-            .ok_or_else(|| DecoderError::msg("OpenH264 n'a produit aucune image"))?;
+            .map_err(|e| DecoderError::new("OpenH264 decoding", e))?
+            .ok_or_else(|| DecoderError::msg("OpenH264 produced no image"))?;
         let (w, h) = openh264::formats::YUVSource::dimensions(&yuv);
         let mut rgba = vec![0u8; w * h * 4];
         yuv.write_rgba8(&mut rgba);
@@ -430,7 +430,7 @@ impl H264Decoder for OpenH264Decoder {
 // ---------------------------------------------------------------------------------------------
 // Audio (RDPSND)
 
-/// Reçoit les paquets PCM du serveur dans `State::audio_inbox`.
+/// Receives the server's PCM packets into `State::audio_inbox`.
 struct AudioSink {
     shared: Arc<Shared>,
     formats: Vec<AudioFormat>,
@@ -453,8 +453,8 @@ impl AudioSink {
             bits_per_sample: 16,
             data: None,
         };
-        // Un seul format : ironrdp-rdpsnd (client) envoie l'intersection dans un ordre de HashSet,
-        // le `format_no` des paquets n'est donc pas relisible avec plusieurs formats.
+        // A single format: ironrdp-rdpsnd (client) sends the intersection in HashSet order,
+        // so the packets' `format_no` cannot be read back with several formats.
         Self { shared, formats: vec![pcm(48_000)] }
     }
 }
@@ -486,7 +486,7 @@ impl RdpsndClientHandler for AudioSink {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Connexion
+// Connection
 
 struct NoNetwork;
 
@@ -494,7 +494,7 @@ impl NetworkClient for NoNetwork {
     fn send(&self, _: &NetworkRequest) -> ironrdp_connector::sspi::Result<Vec<u8>> {
         Err(ironrdp_connector::sspi::Error::new(
             ironrdp_connector::sspi::ErrorKind::NoAuthenticatingAuthority,
-            "pas de requête réseau Kerberos dans le client de test",
+            "no Kerberos network request in the test client",
         ))
     }
 }
@@ -543,17 +543,17 @@ fn tls_upgrade(stream: TcpStream, host: &str) -> anyhow::Result<(Tls, Vec<u8>)> 
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoCertVerification(provider)))
         .with_no_client_auth();
-    // Pas de reprise de session TLS (incompatible CredSSP).
+    // No TLS session resumption (incompatible with CredSSP).
     config.resumption = rustls::client::Resumption::disabled();
-    let name = ServerName::try_from(host.to_owned()).context("nom de serveur invalide")?;
+    let name = ServerName::try_from(host.to_owned()).context("invalid server name")?;
     let conn = rustls::ClientConnection::new(Arc::new(config), name)?;
     let mut tls = rustls::StreamOwned::new(conn, stream);
-    tls.flush()?; // fait avancer la poignée de main
+    tls.flush()?; // advances the handshake
     let cert = tls
         .conn
         .peer_certificates()
         .and_then(|c| c.first())
-        .context("certificat du serveur absent")?;
+        .context("server certificate missing")?;
     use x509_cert::der::Decode as _;
     let cert = x509_cert::Certificate::from_der(cert)?;
     let key = cert
@@ -561,7 +561,7 @@ fn tls_upgrade(stream: TcpStream, host: &str) -> anyhow::Result<(Tls, Vec<u8>)> 
         .subject_public_key_info
         .subject_public_key
         .as_bytes()
-        .context("clé publique non alignée")?
+        .context("public key not aligned")?
         .to_owned();
     Ok((tls, key))
 }
@@ -616,13 +616,13 @@ fn run_worker(
     let addr = (opts.host.as_str(), opts.port)
         .to_socket_addrs()?
         .next()
-        .context("adresse introuvable")?;
+        .context("address not found")?;
     let tcp =
-        TcpStream::connect_timeout(&addr, Duration::from_secs(10)).context("connexion TCP")?;
+        TcpStream::connect_timeout(&addr, Duration::from_secs(10)).context("TCP connection")?;
     tcp.set_nodelay(true)?;
     let client_addr = tcp.local_addr()?;
 
-    // Presse-papiers : les messages émis par le backend sont mis en file puis envoyés par le worker.
+    // Clipboard: messages emitted by the backend are queued then sent by the worker.
     let (clip_tx, clip_rx) = mpsc::channel::<ClipboardMessage>();
     let clip_tx = Mutex::new(clip_tx);
     let send: SendFn = Arc::new(move |m| {
@@ -664,7 +664,7 @@ fn run_worker(
 
     let mut framed = ironrdp_blocking::Framed::new(tcp);
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector)
-        .context("début de connexion")?;
+        .context("connection start")?;
     let (tls, server_key) =
         tls_upgrade(framed.into_inner_no_leftover(), &opts.host).context("TLS")?;
     let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector);
@@ -678,7 +678,7 @@ fn run_worker(
         server_key,
         None,
     )
-    .context("finalisation de la connexion")?;
+    .context("connection finalization")?;
 
     let (w, h) = (
         u32::from(result.desktop_size.width),
@@ -711,7 +711,7 @@ fn run_worker(
     let mut input = Database::new();
     let _ = ready.send(Ok((w, h)));
 
-    // Lecture avec un délai court pour entrelacer commandes et réseau.
+    // Read with a short timeout to interleave commands and network.
     framed
         .get_inner()
         .0
@@ -719,7 +719,7 @@ fn run_worker(
         .set_read_timeout(Some(Duration::from_millis(2)))?;
 
     loop {
-        // Commandes de l'utilisateur.
+        // Commands from the user.
         while let Ok(cmd) = commands.try_recv() {
             match cmd {
                 Command::Close => {
@@ -746,13 +746,13 @@ fn run_worker(
                 Command::Clipboard(text) => announce(&send, &local, text),
             }
         }
-        // Messages CLIPRDR sortants.
+        // Outgoing CLIPRDR messages.
         while let Ok(msg) = clip_rx.try_recv() {
             if let Some(bytes) = encode_clipboard(&mut stage, msg)? {
                 framed.write_all(&bytes)?;
             }
         }
-        // Réseau.
+        // Network.
         match framed.read_pdu() {
             Ok((action, payload)) => {
                 let outs = stage
@@ -762,14 +762,14 @@ fn run_worker(
                     match out {
                         ActiveStageOutput::ResponseFrame(f) => framed.write_all(&f)?,
                         ActiveStageOutput::Terminate(r) => {
-                            return Err(anyhow!("session terminée par le serveur : {r:?}"))
+                            return Err(anyhow!("session terminated by the server: {r:?}"))
                         }
-                        other => debug!(?other, "sortie ignorée"),
+                        other => debug!(?other, "output ignored"),
                     }
                 }
             }
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(e) => return Err(anyhow!(e).context("lecture réseau")),
+            Err(e) => return Err(anyhow!(e).context("network read")),
         }
     }
 }

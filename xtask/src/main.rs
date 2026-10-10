@@ -1,4 +1,4 @@
-//! `cargo xtask vm-test` : orchestre build → VM jetable → client de test → rapport.
+//! `cargo xtask vm-test`: orchestrates build → disposable VM → test client → report.
 
 mod opts;
 mod report;

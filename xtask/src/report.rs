@@ -18,7 +18,7 @@ pub struct StepResult {
     pub duration_ms: u128,
     pub log: Option<String>,
     pub note: Option<String>,
-    /// Étapes de collecte / arrêt : leur échec est noté mais ne change pas le verdict.
+    /// Collection / shutdown steps: their failure is noted but does not change the verdict.
     #[serde(skip)]
     pub always: bool,
 }
@@ -30,8 +30,8 @@ pub struct Verdict {
     pub reason: Option<String>,
 }
 
-/// `passed` seulement si aucune étape normale n'échoue ET `client.json` est valide
-/// avec un tableau `checks` sans `passed: false`.
+/// `passed` only if no normal step fails AND `client.json` is valid
+/// with a `checks` array without `passed: false`.
 pub fn verdict(steps: &[StepResult], client_json: Option<&str>) -> Verdict {
     let mut v = Verdict {
         passed: false,
@@ -42,19 +42,19 @@ pub fn verdict(steps: &[StepResult], client_json: Option<&str>) -> Verdict {
         .iter()
         .find(|s| !s.always && s.status != Status::Passed && s.status != Status::Skipped)
     {
-        v.reason = Some(format!("étape {} : {:?}", s.name, s.status));
+        v.reason = Some(format!("step {} : {:?}", s.name, s.status));
         return v;
     }
     let Some(text) = client_json else {
-        v.reason = Some("client.json absent".into());
+        v.reason = Some("client.json missing".into());
         return v;
     };
     let Ok(json) = serde_json::from_str::<Value>(text) else {
-        v.reason = Some("client.json invalide".into());
+        v.reason = Some("client.json invalid".into());
         return v;
     };
     let Some(checks) = json.get("checks").and_then(Value::as_array) else {
-        v.reason = Some("client.json sans tableau checks".into());
+        v.reason = Some("client.json without checks array".into());
         return v;
     };
     for c in checks {
@@ -69,12 +69,12 @@ pub fn verdict(steps: &[StepResult], client_json: Option<&str>) -> Verdict {
         }
     }
     if checks.is_empty() {
-        v.reason = Some("checks vide".into());
+        v.reason = Some("checks empty".into());
         return v;
     }
     v.passed = v.failed_checks.is_empty();
     if !v.passed {
-        v.reason = Some("checks en échec".into());
+        v.reason = Some("checks failed".into());
     }
     v
 }

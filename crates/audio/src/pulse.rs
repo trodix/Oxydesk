@@ -4,22 +4,22 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use rdsktp_core::error::AudioError;
 use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource};
 
-/// Nom du puits virtuel créé pour la session : les applications y jouent (puits par défaut),
-/// on capture son moniteur.
+/// Name of the virtual sink created for the session: applications play to it (default sink),
+/// the "monitor" of that sink is captured.
 const SINK: &str = "rdsktp";
 
-/// Capture du « moniteur » d'un puits nul PipeWire, via l'API PulseAudio de `pipewire-pulse`
-/// (`pactl` / `parec`, paquet `pulseaudio-utils`).
+/// Capture of the "monitor" of a PipeWire null sink, through the PulseAudio API of `pipewire-pulse`
+/// (`pactl` / `parec`, `pulseaudio-utils` package).
 pub struct PulseCapture;
 
 impl PulseCapture {
-    /// Crée le puits nul s'il n'existe pas et le rend par défaut.
+    /// Creates the null sink if it does not exist and makes it the default.
     pub fn ensure_sink() -> Result<(), AudioError> {
-        let backend = |what: &str, e: std::io::Error| AudioError::Backend(format!("{what} : {e} (paquet pulseaudio-utils requis)"));
+        let backend = |what: &str, e: std::io::Error| AudioError::Backend(format!("{what}: {e} (pulseaudio-utils package required)"));
         let list = Command::new("pactl").args(["list", "short", "sinks"]).output().map_err(|e| backend("pactl", e))?;
         if !list.status.success() {
             return Err(AudioError::Backend(format!(
-                "pactl list sinks : {} (pipewire-pulse démarré ?)",
+                "pactl list sinks: {} (is pipewire-pulse started?)",
                 String::from_utf8_lossy(&list.stderr).trim()
             )));
         }
@@ -30,7 +30,7 @@ impl PulseCapture {
                 .output()
                 .map_err(|e| backend("pactl", e))?;
             if !out.status.success() {
-                return Err(AudioError::Backend(format!("création du puits : {}", String::from_utf8_lossy(&out.stderr).trim())));
+                return Err(AudioError::Backend(format!("sink creation: {}", String::from_utf8_lossy(&out.stderr).trim())));
             }
         }
         let _ = Command::new("pactl").args(["set-default-sink", SINK]).status();
@@ -49,7 +49,7 @@ impl AudioProvider for PulseCapture {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| AudioError::Backend(format!("parec : {e} (paquet pulseaudio-utils requis)")))?;
+            .map_err(|e| AudioError::Backend(format!("parec: {e} (pulseaudio-utils package required)")))?;
         let stdout = child.stdout.take().ok_or(AudioError::Closed)?;
         Ok(Box::new(PulseSource { child, stdout }))
     }

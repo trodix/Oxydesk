@@ -8,7 +8,7 @@ use crate::stats::percentile;
 pub struct Config {
     pub width: u32,
     pub height: u32,
-    /// Nombre d'écrans côte à côte, chacun `width`×`height` (M5).
+    /// Number of side-by-side screens, each `width`×`height` (M5).
     pub outputs: u32,
     pub key_samples: usize,
     pub max_key_latency_ms: f64,
@@ -66,7 +66,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         .into_iter()
         .chain((cfg.outputs > 1).then_some("multi_screen"))
         {
-            r.check(n, false, "non exécuté : connexion échouée");
+            r.check(n, false, "not run: connection failed");
         }
         return;
     };
@@ -93,7 +93,7 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
                 "first_frame",
                 ok,
                 format!(
-                    "frame {}x{}, négocié {}x{}, attendu {}x{}, non noire: {}",
+                    "frame {}x{}, negotiated {}x{}, expected {}x{}, non-black: {}",
                     f.width, f.height, size.0, size.1, expected.0, expected.1, non_black
                 ),
             );
@@ -101,8 +101,8 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
     }
 }
 
-/// Chaque écran k affiche `PALETTE[k]` en (64, 0) de son propre repère : le bureau annoncé doit les
-/// juxtaposer à l'abscisse k·largeur.
+/// Each screen k displays `PALETTE[k]` at (64, 0) of its own frame of reference: the announced desktop must
+/// juxtapose them at abscissa k·width.
 fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     let start = Instant::now();
     let mut detail = String::new();
@@ -112,20 +112,20 @@ fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             .map(|k| f.block_mean(k * cfg.width + 2 * BLOCK, 0, BLOCK))
             .collect();
         if seen.iter().enumerate().all(|(k, m)| m.is_some_and(|m| close_to(m, PALETTE[k % PALETTE.len()]))) {
-            r.check("multi_screen", true, format!("{} écrans identifiés dans un bureau {}x{}", cfg.outputs, f.width, f.height));
+            r.check("multi_screen", true, format!("{} screens identified in a {}x{} desktop", cfg.outputs, f.width, f.height));
             return;
         }
-        detail = format!("bureau {}x{}, blocs d'identité lus : {seen:?}", f.width, f.height);
+        detail = format!("desktop {}x{}, identity blocks read: {seen:?}", f.width, f.height);
     }
-    r.check("multi_screen", false, format!("écrans non identifiés ({detail})"));
+    r.check("multi_screen", false, format!("screens not identified ({detail})"));
 }
 
-/// Le serveur joue `TONE_HZ` : on doit recevoir ≥ 1 s de PCM continu (au rythme du temps réel) dont
-/// l'énergie est portée par cette fréquence.
+/// The server plays `TONE_HZ`: we must receive ≥ 1 s of continuous PCM (at real-time pace) whose
+/// energy is carried by that frequency.
 fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     const WINDOW_SECS: f64 = 1.5;
-    const SKIP_SECS: f64 = 0.3; // amorçage du flux
-    // Les paquets accumulés pendant les autres scénarios sont périmés : on repart d'un flux frais.
+    const SKIP_SECS: f64 = 0.3; // stream priming
+    // Packets accumulated during the other scenarios are stale: restart from a fresh stream.
     while let Ok(Some(c)) = s.next_audio(Duration::ZERO) {
         if c.arrived.elapsed() < Duration::from_millis(5) {
             break;
@@ -162,7 +162,7 @@ fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         }
     }
     let (Some((rate, channels)), Some(first), Some(last_at)) = (format, first, last_at) else {
-        r.check("audio_tone", false, "aucun paquet audio reçu (canal RDPSND non négocié ?)");
+        r.check("audio_tone", false, "no audio packet received (RDPSND channel not negotiated?)");
         return;
     };
     let wall = last_at.duration_since(first).as_secs_f64().max(1e-6);
@@ -175,7 +175,7 @@ fn audio_tone(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     r.check(
         "audio_tone",
         enough && ratio > 0.5 && continuity > 0.9,
-        format!("{rate} Hz, {channels} canaux, tonalité {:.0} Hz : ratio {ratio:.2}, continuité {continuity:.2}, {:.1} s analysées", crate::audio::TONE_HZ, samples.len() as f64 / f64::from(rate)),
+        format!("{rate} Hz, {channels} channels, tone {:.0} Hz: ratio {ratio:.2}, continuity {continuity:.2}, {:.1} s analyzed", crate::audio::TONE_HZ, samples.len() as f64 / f64::from(rate)),
     );
 }
 
@@ -199,7 +199,7 @@ fn frames_flow(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     r.check(
         "frames_flow",
         transitions >= 10,
-        format!("{transitions} alternances sur {frames} frames"),
+        format!("{transitions} alternations over {frames} frames"),
     );
 }
 
@@ -230,7 +230,7 @@ fn key_to_pixel(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             r.check(
                 "key_to_pixel",
                 false,
-                format!("échantillon {i} : marqueur jamais apparu"),
+                format!("sample {i}: marker never appeared"),
             );
             return;
         }
@@ -250,7 +250,7 @@ fn key_to_pixel(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         "key_to_pixel",
         !lat.is_empty() && p95 <= cfg.max_key_latency_ms,
         format!(
-            "p95 {:.1} ms (seuil {:.1} ms, {} échantillons)",
+            "p95 {:.1} ms (threshold {:.1} ms, {} samples)",
             p95,
             cfg.max_key_latency_ms,
             lat.len()
@@ -259,11 +259,11 @@ fn key_to_pixel(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
 }
 
 fn short_text() -> String {
-    "Café déjà vu — 10 € 😀 日本".to_string()
+    "Naïve café — 10 € 😀 日本".to_string()
 }
 
 fn large_text() -> String {
-    let unit = "Écrit à la main : €uro, naïve, 😀 — ligne\n";
+    let unit = "Handwritten: €uro, naïve, 😀 — line\n";
     let mut s = String::new();
     while s.len() < 64 * 1024 {
         s.push_str(unit);
@@ -278,18 +278,18 @@ fn clipboard(s: &mut dyn Session, cfg: &Config, name: &str, text: &str, r: &mut 
     }
     match s.next_clipboard_text(cfg.timeout) {
         Ok(Some(got)) if got == text => {
-            r.check(name, true, format!("{} octets identiques", text.len()))
+            r.check(name, true, format!("{} identical bytes", text.len()))
         }
         Ok(Some(got)) => r.check(
             name,
             false,
             format!(
-                "texte différent ({} octets reçus, {} attendus)",
+                "different text ({} bytes received, {} expected)",
                 got.len(),
                 text.len()
             ),
         ),
-        Ok(None) => r.check(name, false, "aucun texte reçu avant le timeout"),
+        Ok(None) => r.check(name, false, "no text received before the timeout"),
         Err(e) => r.check(name, false, e),
     }
 }
