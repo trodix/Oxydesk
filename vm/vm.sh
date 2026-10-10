@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # VM de test jetable (QEMU/KVM, Debian 13). Voir docs/ et le brief §11.1.
-# Usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|logs|status> [args]
+# Usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status> [args]
 #
 # ATTENTION : les overlays qcow2 référencent leur backing file par chemin ABSOLU.
 # Déplacer le dossier vm/ (ou le dépôt) casse les overlays : relancer `create`.
@@ -206,10 +206,35 @@ ProtectHome=no
 ProtectSystem=full
 PrivateTmp=no
 Environment=XDG_RUNTIME_DIR=$uid_run
+Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
 ExecStart=
 ExecStart=/usr/bin/rdsktp --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
 EOF
   vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
+}
+
+# Mode login distant : rdsktp (utilisateur rdsktp, --login) + rdsktp-authd (root) + rdsktp-agent@dev.
+# Le mot de passe du compte de test vient de RDP_TEST_PASSWORD et transite par l'entrée standard (jamais par argv).
+cmd_login_config() {
+  [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD requis"
+  printf '%s:%s\n' "$VM_USER" "$RDP_TEST_PASSWORD" | vm_ssh 'sudo chpasswd'
+  vm_ssh 'sudo mkdir -p /etc/rdsktp /etc/systemd/system/rdsktp.service.d && sudo rm -f /etc/systemd/system/rdsktp.service.d/kwin.conf'
+  vm_ssh 'sudo tee /etc/rdsktp/agent.conf >/dev/null' <<CONF
+RDSKTP_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone"
+CONF
+  vm_ssh 'sudo tee /etc/systemd/system/rdsktp.service.d/login.conf >/dev/null' <<CONF
+[Unit]
+Requires=rdsktp-authd.service
+After=rdsktp-authd.service
+
+[Service]
+User=rdsktp
+DynamicUser=no
+Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
+ExecStart=
+ExecStart=/usr/bin/rdsktp --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+CONF
+  vm_ssh 'sudo systemd-sysusers /usr/lib/sysusers.d/rdsktp.conf; sudo systemctl daemon-reload && sudo systemctl restart rdsktp-authd rdsktp && sleep 3 && systemctl is-active rdsktp-authd rdsktp && sudo journalctl -u rdsktp-authd -u rdsktp -n 20 --no-pager'
 }
 
 cmd_logs() {
@@ -237,9 +262,10 @@ main() {
     ssh) cmd_ssh "$@" ;;
     deploy) cmd_deploy "$@" ;;
     kwin-config) cmd_kwin_config ;;
+    login-config) cmd_login_config ;;
     logs) cmd_logs "$@" ;;
     status) cmd_status ;;
-    *) die "usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|logs|status>" ;;
+    *) die "usage : bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status>" ;;
   esac
 }
 main "$@"

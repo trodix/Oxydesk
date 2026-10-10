@@ -132,6 +132,10 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         eprintln!("--outputs > 1 nécessite --session kwin");
         return ExitCode::from(2);
     }
+    if o.login && std::env::var("RDP_TEST_PASSWORD").map_or(true, |p| p.is_empty()) {
+        eprintln!("--session login exige RDP_TEST_PASSWORD (mot de passe du compte de test de la VM)");
+        return ExitCode::from(2);
+    }
     let mut client_cmd = o
         .client_cmd
         .replace("{host}", "127.0.0.1")
@@ -140,6 +144,23 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     if o.outputs > 1 {
         client_cmd.push_str(&format!(" --outputs {}", o.outputs));
     }
+    if o.login {
+        client_cmd.push_str(" --no-nla --user dev");
+    }
+    // Témoin négatif du login : un mauvais mot de passe doit être refusé (aucune image reçue : le check `first_frame` échoue ; le handshake RDP, lui, aboutit avant la validation).
+    let deny_cmd = o.login.then(|| {
+        let deny_dir = abs_dir.join("deny");
+        let base = o
+            .client_cmd
+            .replace("{host}", "127.0.0.1")
+            .replace("{port}", &o.rdp_port.to_string())
+            .replace("{out}", &deny_dir.display().to_string());
+        format!(
+            "RDP_TEST_PASSWORD=\"wrong-$(head -c 9 /dev/urandom | base64)\" {base} --no-nla --user dev --timeout 60; \
+             python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"checks\"]; sys.exit(0 if any(x[\"name\"]==\"first_frame\" and not x[\"passed\"] for x in c) else 1)' {}/client.json",
+            deny_dir.display()
+        )
+    });
     let normal: Vec<(&str, String, Duration, Option<&str>)> = vec![
         (
             "build",
@@ -157,9 +178,15 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         ("deploy", deploy_cmd, min(5), None),
         (
             "configure-kwin",
-            format!("VM_OUTPUTS={} bash {VM} kwin-config", o.outputs),
-            min(3),
+            format!("VM_OUTPUTS={} bash {VM} {}", o.outputs, if o.login { "login-config" } else { "kwin-config" }),
+            min(if o.login { 6 } else { 3 }),
             (!o.kwin).then_some("--session synthetic"),
+        ),
+        (
+            "deny-control",
+            deny_cmd.clone().unwrap_or_default(),
+            min(3),
+            deny_cmd.is_none().then_some("hors mode login"),
         ),
         (
             "client",
@@ -192,6 +219,9 @@ pub fn vm_test(o: &Opts) -> ExitCode {
             format!("bash {VM} logs journal rdsktp"),
             min(2),
         ),
+        ("journal-authd", format!("bash {VM} logs journal rdsktp-authd"), min(2)),
+        ("journal-agent", format!("bash {VM} logs journal rdsktp-agent@dev"), min(2)),
+        ("journal-all", format!("bash {VM} logs journal"), min(2)),
         ("console", format!("bash {VM} logs console"), min(2)),
     ];
     if !o.keep {

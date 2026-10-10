@@ -1,0 +1,132 @@
+//! Mandataires des ports de bureau vers l'agent.
+
+use std::sync::Arc;
+
+use rdsktp_agent_proto::ToAgent;
+use rdsktp_core::error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError};
+use rdsktp_core::frame::{Frame, FrameData};
+use rdsktp_core::layout::OutputId;
+use rdsktp_core::ports::*;
+
+use crate::link::AgentLink;
+
+pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
+    DesktopPorts {
+        capture: Box::new(RemoteCapture(link.clone())),
+        encoders: (0..outputs).map(|i| Box::new(PassthroughEncoder { link: link.clone(), output: OutputId(i) }) as Box<dyn FrameEncoder>).collect(),
+        input: Box::new(RemoteInput(link.clone())),
+        clipboard: Box::new(RemoteClipboard(link.clone())),
+        audio: Some(Arc::new(RemoteAudio(link))),
+    }
+}
+
+struct RemoteCapture(Arc<AgentLink>);
+
+impl CaptureSource for RemoteCapture {
+    fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
+        self.0.set_waker(wake);
+    }
+
+    fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
+        match self.0.take_frame(output) {
+            Some(f) => Ok(Some(f)),
+            None if self.0.is_dead() => Err(CaptureError::Closed),
+            None => Ok(None),
+        }
+    }
+}
+
+/// « Encodeur » des images déjà encodées par l'agent : extrait les octets H.264 de la frame.
+struct PassthroughEncoder {
+    link: Arc<AgentLink>,
+    output: OutputId,
+}
+
+impl FrameEncoder for PassthroughEncoder {
+    fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {
+        match &frame.data {
+            FrameData::Encoded { keyframe, data } => Ok(EncodedFrame { output: Some(self.output), keyframe: *keyframe, data: data.clone() }),
+            _ => Err(EncodeError::Unsupported("image non encodée reçue de l'agent".into())),
+        }
+    }
+
+    fn request_keyframe(&mut self) {
+        self.link.request_keyframe(self.output);
+    }
+}
+
+struct RemoteInput(Arc<AgentLink>);
+
+impl RemoteInput {
+    fn send(&self, msg: ToAgent) -> Result<(), InputError> {
+        if self.0.send(&msg) {
+            Ok(())
+        } else {
+            Err(InputError::Backend("agent injoignable".into()))
+        }
+    }
+}
+
+impl InputSink for RemoteInput {
+    fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+        self.send(ToAgent::Key { scancode, pressed })
+    }
+    fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
+        self.send(ToAgent::PointerMove { x, y })
+    }
+    fn pointer_button(&mut self, button: PointerButton, pressed: bool) -> Result<(), InputError> {
+        let button = match button {
+            PointerButton::Left => 0,
+            PointerButton::Right => 1,
+            PointerButton::Middle => 2,
+            PointerButton::Back => 3,
+            PointerButton::Forward => 4,
+        };
+        self.send(ToAgent::PointerButton { button, pressed })
+    }
+    fn wheel(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
+        self.send(ToAgent::Wheel { dx, dy })
+    }
+}
+
+struct RemoteClipboard(Arc<AgentLink>);
+
+impl ClipboardBackend for RemoteClipboard {
+    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+        if self.0.send(&ToAgent::ClipboardSet(text.to_owned())) {
+            Ok(())
+        } else {
+            Err(ClipboardError::Backend("agent injoignable".into()))
+        }
+    }
+    fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
+        Ok(self.0.take_clipboard())
+    }
+}
+
+struct RemoteAudio(Arc<AgentLink>);
+
+impl AudioProvider for RemoteAudio {
+    fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
+        self.0.open_audio(params.sample_rate, params.channels);
+        Ok(Box::new(RemoteAudioSource(self.0.clone())))
+    }
+}
+
+struct RemoteAudioSource(Arc<AgentLink>);
+
+impl AudioSource for RemoteAudioSource {
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), AudioError> {
+        if self.0.read_audio(buf) {
+            Ok(())
+        } else {
+            Err(AudioError::Closed)
+        }
+    }
+}
+
+impl Drop for RemoteAudioSource {
+    fn drop(&mut self) {
+        self.0.close_audio();
+    }
+}

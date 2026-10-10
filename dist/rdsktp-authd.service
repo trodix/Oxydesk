@@ -1,0 +1,22 @@
+[Unit]
+Description=RustyDesktop (rdsktp) - authentification PAM et démarrage des sessions
+After=network.target systemd-logind.service
+
+[Service]
+# Seul composant privilégié : il authentifie (PAM), démarre rdsktp-agent@<user>.service et transmet un
+# descripteur connecté à cet agent au serveur RDP non privilégié.
+ExecStart=/usr/bin/rdsktp-authd
+RuntimeDirectory=rdsktp
+RuntimeDirectoryMode=0755
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+# /run/user/<uid> (socket de l'agent) doit rester accessible : pas de ProtectHome (il masque aussi /run/user).
+ProtectHome=no
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

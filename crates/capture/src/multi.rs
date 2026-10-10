@@ -18,6 +18,12 @@ impl MultiCapture {
 }
 
 impl CaptureSource for MultiCapture {
+    fn set_waker(&mut self, wake: std::sync::Arc<rdsktp_core::wake::Wake>) {
+        for s in &mut self.sources {
+            s.set_waker(wake.clone());
+        }
+    }
+
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
         match self.sources.get_mut(output.0 as usize) {
             Some(source) => source.recv_latest(output),

@@ -35,3 +35,12 @@ pub enum AudioError {
     #[error("audio stream closed")]
     Closed,
 }
+
+#[derive(Debug, Error)]
+pub enum LoginError {
+    /// Identifiants refusés (mauvais mot de passe, compte inconnu ou interdit) : volontairement sans détail.
+    #[error("login denied")]
+    Denied,
+    #[error("login backend failure: {0}")]
+    Backend(String),
+}

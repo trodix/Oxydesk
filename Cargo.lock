@@ -1930,6 +1930,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1966,6 +1975,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -2618,6 +2628,7 @@ dependencies = [
  "rdsktp-encode",
  "rdsktp-input",
  "rdsktp-rdp",
+ "rdsktp-remote",
  "rdsktp-session",
  "tokio",
  "tracing",
@@ -2625,10 +2636,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdsktp-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rdsktp-agent-proto",
+ "rdsktp-audio",
+ "rdsktp-capture",
+ "rdsktp-clipboard",
+ "rdsktp-core",
+ "rdsktp-encode",
+ "rdsktp-input",
+ "rdsktp-session",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rdsktp-agent-proto"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "rdsktp-audio"
 version = "0.1.0"
 dependencies = [
  "rdsktp-core",
+]
+
+[[package]]
+name = "rdsktp-authd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "libloading",
+ "rdsktp-authd-proto",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rdsktp-authd-proto"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2694,6 +2752,16 @@ dependencies = [
  "rdsktp-core",
  "rustls",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rdsktp-remote"
+version = "0.1.0"
+dependencies = [
+ "rdsktp-agent-proto",
+ "rdsktp-authd-proto",
+ "rdsktp-core",
  "tracing",
 ]
 

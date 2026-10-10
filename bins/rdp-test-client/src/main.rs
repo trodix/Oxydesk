@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
 #[cfg_attr(not(feature = "ironrdp"), allow(dead_code))]
@@ -21,18 +21,21 @@ struct Args {
     user: String,
     cfg: Config,
     mock: bool,
+    no_nla: bool,
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
     let mut out = None;
     let mut cfg = Config::default();
     let mut mock = false;
+    let mut no_nla = false;
     let (mut host, mut port, mut user) = ("127.0.0.1".to_string(), 3389u16, "test".to_string());
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or(format!("{name} attend une valeur"));
         match a.as_str() {
             "--mock" => mock = true,
+            "--no-nla" => no_nla = true,
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalide")?,
@@ -62,6 +65,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
         user,
         cfg,
         mock,
+        no_nla,
     })
 }
 
@@ -75,6 +79,7 @@ fn real_session(args: &Args) -> Box<dyn Session> {
         password: std::env::var("RDP_TEST_PASSWORD")
             .ok()
             .filter(|p| !p.is_empty()),
+        no_nla: args.no_nla,
         width: (args.cfg.width * args.cfg.outputs) as u16,
         height: args.cfg.height as u16,
     }))

@@ -1,0 +1,16 @@
+[Unit]
+Description=RustyDesktop (rdsktp) - agent de session de %i
+After=systemd-user-sessions.service systemd-logind.service
+
+[Service]
+# Tourne sous l'identité de l'utilisateur ; PAMName ouvre une vraie session logind (XDG_RUNTIME_DIR, bus de session).
+User=%i
+PAMName=rdsktp-session
+SupplementaryGroups=video render
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+EnvironmentFile=-/etc/rdsktp/agent.conf
+ExecStart=/usr/bin/rdsktp-agent --session kwin $RDSKTP_AGENT_ARGS
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+KillMode=control-group

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::ops::Not;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,11 +14,12 @@ use ironrdp_server::{
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
 use rdsktp_core::layout::Layout;
-use rdsktp_core::ports::{AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink};
+use rdsktp_core::error::{AudioError, LoginError};
+use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource, ClipboardBackend, DesktopPorts, InputSink, SessionBroker};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::clipboard::{announce, LocalText, TextClipboard};
-use crate::pump::{self, PumpParams, Shared};
+use crate::pump::{self, PumpParams, PumpPorts, Shared};
 use crate::sound::SoundFactory;
 
 pub struct ServerConfig {
@@ -31,15 +33,76 @@ pub struct ServerConfig {
     pub nla: Option<(String, String)>,
 }
 
-/// Adaptateurs sortants fournis par le composition root.
-pub struct Ports {
-    pub capture: Box<dyn CaptureSource>,
-    /// Un encodeur par sortie, dans l'ordre de `ServerConfig::layout`.
-    pub encoders: Vec<Box<dyn FrameEncoder>>,
-    pub input: Box<dyn InputSink>,
-    pub clipboard: Box<dyn ClipboardBackend>,
-    /// Audio sortant (RDPSND) ; `None` = pas de canal audio.
-    pub audio: Option<Arc<dyn AudioProvider>>,
+/// Adaptateurs sortants d'un bureau, fournis par le composition root (mode fixe) ou par un `SessionBroker`.
+pub type Ports = DesktopPorts;
+
+type Slot<T> = Arc<Mutex<Option<T>>>;
+
+/// Emplacements des ports de la session courante, remplis à l'installation d'une session (au démarrage
+/// en mode fixe, après un login réussi en mode broker) et lus par les gestionnaires IronRDP.
+#[derive(Clone)]
+struct SessionSlot {
+    shared: Arc<Shared>,
+    input: Slot<Box<dyn InputSink>>,
+    clipboard: Slot<Box<dyn ClipboardBackend>>,
+    audio: Slot<Arc<dyn AudioProvider>>,
+}
+
+impl SessionSlot {
+    fn new(shared: Arc<Shared>) -> Self {
+        Self { shared, input: Default::default(), clipboard: Default::default(), audio: Default::default() }
+    }
+
+    fn install(&self, ports: Ports) {
+        // `shared.gfx` n'est pas touché : le canal EGFX de la connexion en cours peut déjà exister (il est créé
+        // avant la validation des identifiants). La pompe repart de zéro à chaque nouvelle session.
+        *self.input.lock().expect("input mutex") = Some(ports.input);
+        *self.clipboard.lock().expect("clipboard mutex") = Some(ports.clipboard);
+        *self.audio.lock().expect("audio mutex") = ports.audio;
+        *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts { capture: ports.capture, encoders: ports.encoders });
+    }
+}
+
+/// Fournisseur audio qui délègue à la session courante.
+struct SlotAudio(Slot<Arc<dyn AudioProvider>>);
+
+impl AudioProvider for SlotAudio {
+    fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
+        let provider = self.0.lock().expect("audio mutex").clone();
+        provider.ok_or_else(|| AudioError::Backend("pas de session audio".into()))?.open(params)
+    }
+}
+
+/// Valide les identifiants reçus (mode TLS) en ouvrant la session de l'utilisateur via le broker.
+struct BrokerValidator {
+    broker: Arc<dyn SessionBroker>,
+    slot: SessionSlot,
+}
+
+#[async_trait::async_trait]
+impl ironrdp_server::CredentialValidator for BrokerValidator {
+    async fn validate(&self, credentials: &Credentials) -> Result<ironrdp_server::CredentialDecision, ironrdp_server::CredentialValidationError> {
+        use ironrdp_server::CredentialDecision;
+        let (user, pass) = (credentials.username.clone(), credentials.password.clone());
+        let broker = self.broker.clone();
+        let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass))
+            .await
+            .map_err(ironrdp_server::CredentialValidationError::new)?;
+        match outcome {
+            Ok(ports) => {
+                self.slot.install(ports);
+                Ok(CredentialDecision::Accept)
+            }
+            Err(LoginError::Denied) => {
+                tracing::warn!(user = %credentials.username, "connexion refusée");
+                Ok(CredentialDecision::Reject)
+            }
+            Err(LoginError::Backend(e)) => {
+                tracing::error!("login : {e}");
+                Err(ironrdp_server::CredentialValidationError::new(std::io::Error::other(e)))
+            }
+        }
+    }
 }
 
 struct GfxHandler;
@@ -77,7 +140,7 @@ impl GfxServerFactory for GfxFactory {
 struct ClipFactory {
     shared: Arc<Shared>,
     local: LocalText,
-    clipboard: Arc<Mutex<Box<dyn ClipboardBackend>>>,
+    clipboard: Slot<Box<dyn ClipboardBackend>>,
 }
 
 impl ClipFactory {
@@ -101,8 +164,10 @@ impl CliprdrBackendFactory for ClipFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
         let clipboard = self.clipboard.clone();
         let on_text = Arc::new(move |text: String| {
-            if let Err(e) = clipboard.lock().expect("clipboard mutex").set_text(&text) {
-                tracing::warn!("presse-papiers: {e}");
+            if let Some(backend) = clipboard.lock().expect("clipboard mutex").as_mut() {
+                if let Err(e) = backend.set_text(&text) {
+                    tracing::warn!("presse-papiers: {e}");
+                }
             }
         });
         Box::new(TextClipboard::new(
@@ -115,7 +180,14 @@ impl CliprdrBackendFactory for ClipFactory {
 
 impl CliprdrServerFactory for ClipFactory {}
 
-struct Input(Box<dyn InputSink>);
+struct Input(Slot<Box<dyn InputSink>>);
+
+impl Input {
+    /// Applique `f` au port d'entrée de la session courante (ignoré tant qu'aucune session n'est ouverte).
+    fn with<R>(&self, f: impl FnOnce(&mut dyn InputSink) -> R) -> Option<R> {
+        self.0.lock().expect("input mutex").as_mut().map(|i| f(i.as_mut()))
+    }
+}
 
 impl RdpServerInputHandler for Input {
     fn keyboard(&mut self, event: KeyboardEvent) {
@@ -125,29 +197,29 @@ impl RdpServerInputHandler for Input {
             _ => return,
         };
         let scancode = u16::from(code) | if extended { 0xE000 } else { 0 };
-        if let Err(e) = self.0.key(scancode, pressed) {
+        if let Some(Err(e)) = self.with(|i| i.key(scancode, pressed)) {
             tracing::warn!("entrée: {e}");
         }
     }
     fn mouse(&mut self, event: MouseEvent) {
         use rdsktp_core::ports::PointerButton as B;
-        let r = match event {
-            MouseEvent::Move { x, y } => self.0.pointer_move(i32::from(x), i32::from(y)),
-            MouseEvent::LeftPressed => self.0.pointer_button(B::Left, true),
-            MouseEvent::LeftReleased => self.0.pointer_button(B::Left, false),
-            MouseEvent::RightPressed => self.0.pointer_button(B::Right, true),
-            MouseEvent::RightReleased => self.0.pointer_button(B::Right, false),
-            MouseEvent::MiddlePressed => self.0.pointer_button(B::Middle, true),
-            MouseEvent::MiddleReleased => self.0.pointer_button(B::Middle, false),
-            MouseEvent::Button4Pressed => self.0.pointer_button(B::Back, true),
-            MouseEvent::Button4Released => self.0.pointer_button(B::Back, false),
-            MouseEvent::Button5Pressed => self.0.pointer_button(B::Forward, true),
-            MouseEvent::Button5Released => self.0.pointer_button(B::Forward, false),
-            MouseEvent::VerticalScroll { value } => self.0.wheel(0, i32::from(value)),
-            MouseEvent::Scroll { x, y } => self.0.wheel(x, y),
+        let r = self.with(|i| match event {
+            MouseEvent::Move { x, y } => i.pointer_move(i32::from(x), i32::from(y)),
+            MouseEvent::LeftPressed => i.pointer_button(B::Left, true),
+            MouseEvent::LeftReleased => i.pointer_button(B::Left, false),
+            MouseEvent::RightPressed => i.pointer_button(B::Right, true),
+            MouseEvent::RightReleased => i.pointer_button(B::Right, false),
+            MouseEvent::MiddlePressed => i.pointer_button(B::Middle, true),
+            MouseEvent::MiddleReleased => i.pointer_button(B::Middle, false),
+            MouseEvent::Button4Pressed => i.pointer_button(B::Back, true),
+            MouseEvent::Button4Released => i.pointer_button(B::Back, false),
+            MouseEvent::Button5Pressed => i.pointer_button(B::Forward, true),
+            MouseEvent::Button5Released => i.pointer_button(B::Forward, false),
+            MouseEvent::VerticalScroll { value } => i.wheel(0, i32::from(value)),
+            MouseEvent::Scroll { x, y } => i.wheel(x, y),
             MouseEvent::RelMove { .. } => Ok(()),
-        };
-        if let Err(e) = r {
+        });
+        if let Some(Err(e)) = r {
             tracing::warn!("entrée: {e}");
         }
     }
@@ -174,13 +246,30 @@ impl RdpServerDisplay for Display {
     }
 }
 
-/// Lance le serveur RDP jusqu'à son arrêt.
+/// Lance le serveur RDP avec un bureau fixe (mode test, autologin) jusqu'à son arrêt.
 pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
+    serve(config, Some(ports), None).await
+}
+
+/// Lance le serveur RDP en mode login : chaque connexion est authentifiée (mode TLS, identifiants du
+/// ClientInfoPdu) et ouvre sa session via le `SessionBroker`. Incompatible avec NLA (voir ADR 008).
+pub async fn run_with_broker(config: ServerConfig, broker: Arc<dyn SessionBroker>) -> anyhow::Result<()> {
+    anyhow::ensure!(config.nla.is_none(), "le mode login est incompatible avec NLA");
+    serve(config, None, Some(broker)).await
+}
+
+async fn serve(config: ServerConfig, initial: Option<Ports>, broker: Option<Arc<dyn SessionBroker>>) -> anyhow::Result<()> {
     // ring ET aws-lc-rs sont dans l'arbre de dépendances : choisir explicitement (déjà installé = ok).
     let _ = rustls::crypto::ring::default_provider().install_default();
     let shared = Arc::new(Shared::default());
     let local: LocalText = Arc::new(Mutex::new(None));
-    let clipboard = Arc::new(Mutex::new(ports.clipboard));
+    let slot = SessionSlot::new(shared.clone());
+    let clipboard = slot.clipboard.clone();
+    // Le canal audio est annoncé dès que le serveur peut en offrir un : toujours en mode login, selon le port sinon.
+    let audio_enabled = broker.is_some() || initial.as_ref().is_some_and(|p| p.audio.is_some());
+    if let Some(ports) = initial {
+        slot.install(ports);
+    }
 
     let desktop = config.layout.desktop_size();
     let ctx = TlsIdentityCtx::init_from_paths(&config.tls_cert, &config.tls_key)?;
@@ -197,16 +286,18 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
     };
     let send = clip_factory.send_fn();
     let mut server = builder
-        .with_input_handler(Input(ports.input))
+        .with_input_handler(Input(slot.input.clone()))
         .with_display_handler(Display(DesktopSize {
             width: desktop.0 as u16,
             height: desktop.1 as u16,
         }))
         .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
-        .with_sound_factory(ports.audio.map(|provider| {
-            Box::new(SoundFactory { shared: shared.clone(), provider }) as Box<dyn ironrdp_server::SoundServerFactory>
+        .with_sound_factory(audio_enabled.then(|| {
+            Box::new(SoundFactory { shared: shared.clone(), provider: Arc::new(SlotAudio(slot.audio.clone())) })
+                as Box<dyn ironrdp_server::SoundServerFactory>
         }))
+        .with_credential_validator(broker.map(|broker| Arc::new(BrokerValidator { broker, slot: slot.clone() }) as Arc<dyn ironrdp_server::CredentialValidator>))
         .build();
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {
@@ -218,11 +309,10 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
 
     let pump = pump::spawn(
         shared.clone(),
-        ports.capture,
-        ports.encoders,
         PumpParams {
             layout: config.layout.clone(),
             fps: config.fps,
+            event: std::env::var("RDSKTP_PUMP").is_ok_and(|v| v == "tick").not(),
         },
     );
     // Texte local -> distant : on interroge le port, on annonce la copie différée.
@@ -232,7 +322,10 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
         .spawn(move || {
             while !poller_shared.stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
-                let text = clipboard.lock().expect("clipboard mutex").poll_text();
+                let text = match clipboard.lock().expect("clipboard mutex").as_mut() {
+                    Some(c) => c.poll_text(),
+                    None => continue,
+                };
                 match text {
                     Ok(Some(t)) => announce(&send, &local, t),
                     Ok(None) => {}

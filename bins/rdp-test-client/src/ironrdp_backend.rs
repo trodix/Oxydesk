@@ -51,6 +51,8 @@ pub struct Options {
     pub user: String,
     /// Fourni uniquement par `RDP_TEST_PASSWORD` ; si présent, CredSSP/NLA est activé.
     pub password: Option<String>,
+    /// TLS seul : les identifiants partent dans le ClientInfoPdu (mode `rdsktp --login`, sans CredSSP).
+    pub no_nla: bool,
     pub width: u16,
     pub height: u16,
 }
@@ -572,7 +574,7 @@ fn connector_config(opts: &Options) -> Config {
         },
         domain: None,
         enable_tls: true,
-        enable_credssp: opts.password.is_some(),
+        enable_credssp: opts.password.is_some() && !opts.no_nla,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_layout: 0,

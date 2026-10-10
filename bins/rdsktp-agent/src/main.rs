@@ -1,0 +1,385 @@
+//! `rdsktp-agent` : tourne sous l'identité de l'utilisateur connecté (unité `rdsktp-agent@<user>.service`).
+//! Possède la session KWin, la capture, l'encodage H.264, les entrées, le presse-papiers et l'audio, et les
+//! expose à `rdsktp` par le protocole `rdsktp-agent-proto` sur un socket Unix. Une seule connexion à la fois :
+//! la plus récente remplace la précédente (reconnexion), la session de bureau survit aux déconnexions.
+
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent};
+use rdsktp_core::layout::OutputId;
+use rdsktp_core::ports::{AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink, PointerButton};
+use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
+
+const AUDIO_PACKET_MS: u32 = 20;
+
+struct Desktop {
+    capture: Mutex<Box<dyn CaptureSource>>,
+    input: Mutex<Box<dyn InputSink>>,
+    clipboard: Mutex<Box<dyn ClipboardBackend>>,
+    audio: Option<Arc<dyn AudioProvider>>,
+    outputs: u32,
+    width: u32,
+    height: u32,
+    fps: f32,
+    /// Réveil par la capture (`event`) ou cadence fixe de `poll_ms` (ou 1/fps si absent).
+    event: bool,
+    poll_ms: Option<f32>,
+    /// Délai minimal entre deux tours d'encodage (plafonne le débit en mode `event`).
+    min_interval_ms: f32,
+    _session: Mutex<Box<dyn std::any::Any + Send>>,
+}
+
+fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
+    args.windows(2).find(|w| w[0] == name).and_then(|w| w[1].parse().ok())
+}
+
+fn runtime_dir() -> PathBuf {
+    // `%U` n'est pas utilisable dans l'unité : on dérive le répertoire de l'uid effectif.
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })))
+}
+
+fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
+    let session: String = arg(args, "--session").unwrap_or_else(|| "kwin".into());
+    let width: u32 = arg(args, "--width").unwrap_or(1920);
+    let height: u32 = arg(args, "--height").unwrap_or(1080);
+    let outputs: u32 = arg(args, "--outputs").unwrap_or(1);
+    anyhow::ensure!((1..=16).contains(&outputs), "--outputs doit être entre 1 et 16");
+    let fps: f32 = arg(args, "--fps").unwrap_or(30.0);
+    let audio_mode: String = arg(args, "--audio").unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
+    let audio: Option<Arc<dyn AudioProvider>> = match audio_mode.as_str() {
+        "off" => None,
+        "tone" => Some(Arc::new(rdsktp_audio::ToneProvider)),
+        "pulse" => Some(Arc::new(rdsktp_audio::PulseCapture)),
+        other => anyhow::bail!("--audio inconnu : {other}"),
+    };
+    let make = |capture: Box<dyn CaptureSource>, input: Box<dyn InputSink>, clipboard: Box<dyn ClipboardBackend>, keep: Box<dyn std::any::Any + Send>| Desktop {
+        capture: Mutex::new(capture),
+        input: Mutex::new(input),
+        clipboard: Mutex::new(clipboard),
+        audio: audio.clone(),
+        outputs,
+        width,
+        height,
+        fps,
+        event: arg::<String>(args, "--loop").is_none_or(|v| v != "tick"),
+        poll_ms: arg(args, "--poll-ms"),
+        min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
+        _session: Mutex::new(keep),
+    };
+    match session.as_str() {
+        "synthetic" => {
+            anyhow::ensure!(outputs == 1, "--outputs > 1 nécessite --session kwin");
+            let d = rdsktp_capture::SyntheticDesktop::new(width, height);
+            Ok(make(Box::new(d.clone()), Box::new(d.clone()), Box::new(d), Box::new(())))
+        }
+        "kwin" => {
+            #[cfg(feature = "kwin")]
+            {
+                use rdsktp_core::ports::SessionProvider;
+                if audio.is_some() {
+                    if let Err(e) = rdsktp_audio::PulseCapture::ensure_sink() {
+                        tracing::warn!("audio indisponible : {e}");
+                    }
+                }
+                let socket: String = arg(args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
+                let programs = args
+                    .windows(2)
+                    .filter(|w| w[0] == "--session-app")
+                    .map(|w| w[1].split_whitespace().map(str::to_owned).collect())
+                    .collect();
+                let mut kwin = rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
+                    socket: socket.clone(),
+                    width,
+                    height,
+                    outputs,
+                    programs,
+                });
+                kwin.start().map_err(|e| anyhow::anyhow!("session KWin : {e}"))?;
+                let sources = (0..outputs as usize)
+                    .map(|i| rdsktp_capture::KwinCapture::start(Some(&socket), i).map(|c| Box::new(c) as Box<dyn CaptureSource>))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let capture = rdsktp_capture::MultiCapture::new(sources);
+                let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
+                let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
+                Ok(make(Box::new(capture), Box::new(input), Box::new(clipboard), Box::new(kwin)))
+            }
+            #[cfg(not(feature = "kwin"))]
+            anyhow::bail!("binaire compilé sans la feature `kwin`");
+        }
+        other => anyhow::bail!("--session inconnu : {other}"),
+    }
+}
+
+type Writer = Arc<Mutex<UnixStream>>;
+
+fn send(w: &Writer, msg: &FromAgent) -> bool {
+    let mut guard = w.lock().expect("writer mutex");
+    write_msg(&mut *guard, msg).is_ok() && guard.flush().is_ok()
+}
+
+fn button(b: u8) -> Option<PointerButton> {
+    Some(match b {
+        0 => PointerButton::Left,
+        1 => PointerButton::Right,
+        2 => PointerButton::Middle,
+        3 => PointerButton::Back,
+        4 => PointerButton::Forward,
+        _ => return None,
+    })
+}
+
+/// Capture -> encodage -> envoi, à cadence fixe. Une image clé est produite à la connexion et sur demande.
+fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<Vec<AtomicBool>>) {
+    let fps = d.fps;
+    let mut encoders: Vec<Box<dyn FrameEncoder>> = Vec::new();
+    for _ in 0..d.outputs {
+        match OpenH264Encoder::new(&OpenH264Config { fps, ..Default::default() }) {
+            Ok(e) => encoders.push(Box::new(e)),
+            Err(e) => {
+                send(&w, &FromAgent::Fatal(format!("encodeur : {e}")));
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+    let mut last: Vec<Option<rdsktp_core::Frame>> = (0..d.outputs).map(|_| None).collect();
+    let period = d.poll_ms.map_or_else(|| Duration::from_secs_f32(1.0 / fps), |ms| Duration::from_secs_f32(ms / 1000.0));
+    let min_interval = Duration::from_secs_f32(d.min_interval_ms / 1000.0);
+    let wake = Arc::new(rdsktp_core::wake::Wake::default());
+    d.capture.lock().expect("capture mutex").set_waker(wake.clone());
+    let mut next = Instant::now();
+    let mut first = true;
+    let mut seen = 0u64;
+    while !stop.load(Ordering::Relaxed) {
+        if d.event {
+            if !first {
+                wake.wait(seen, period.max(Duration::from_millis(1)));
+            }
+            seen = wake.generation();
+        } else {
+            next += period;
+            match next.checked_duration_since(Instant::now()) {
+                Some(wait) => std::thread::sleep(wait),
+                None => next = Instant::now(),
+            }
+        }
+        let round_start = Instant::now();
+        for i in 0..d.outputs as usize {
+            let wanted_key = first || keyframes[i].swap(false, Ordering::Relaxed);
+            if wanted_key {
+                encoders[i].request_keyframe();
+            }
+            let fresh = match d.capture.lock().expect("capture mutex").recv_latest(OutputId(i as u32)) {
+                Ok(f) => f,
+                Err(e) => {
+                    send(&w, &FromAgent::Fatal(format!("capture : {e}")));
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+            };
+            match fresh {
+                Some(f) => last[i] = Some(f),
+                // Bureau statique : on ré-encode la dernière image seulement si une clé est demandée.
+                None if wanted_key => {}
+                None => continue,
+            }
+            let Some(frame) = last[i].as_ref() else {
+                if wanted_key {
+                    keyframes[i].store(true, Ordering::Relaxed); // rien à encoder encore : on réessaie
+                }
+                continue;
+            };
+            let encoded = match encoders[i].encode(frame) {
+                Ok(e) => e,
+                Err(e) => {
+                    send(&w, &FromAgent::Fatal(format!("encodage : {e}")));
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+            };
+            let msg = FromAgent::Video { output: i as u32, keyframe: encoded.keyframe, width: frame.width, height: frame.height, data: encoded.data };
+            if !send(&w, &msg) {
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+        first = false;
+        if let Some(rest) = min_interval.checked_sub(round_start.elapsed()) {
+            std::thread::sleep(rest);
+        }
+    }
+}
+
+fn audio_loop(provider: Arc<dyn AudioProvider>, params: AudioParams, w: Writer, stop: Arc<AtomicBool>) {
+    let mut source = match provider.open(params) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("audio : {e}");
+            return;
+        }
+    };
+    let mut buf = vec![0u8; params.bytes_for_ms(AUDIO_PACKET_MS)];
+    while !stop.load(Ordering::Relaxed) {
+        if source.read_exact(&mut buf).is_err() || !send(&w, &FromAgent::Audio(buf.clone())) {
+            break;
+        }
+    }
+}
+
+fn serve(d: Arc<Desktop>, stream: UnixStream) {
+    let writer: Writer = match stream.try_clone() {
+        Ok(s) => Arc::new(Mutex::new(s)),
+        Err(e) => {
+            tracing::error!("socket : {e}");
+            return;
+        }
+    };
+    if !send(&writer, &FromAgent::Hello { outputs: d.outputs, width: d.width, height: d.height }) {
+        return;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let keyframes: Arc<Vec<AtomicBool>> = Arc::new((0..d.outputs).map(|_| AtomicBool::new(true)).collect());
+    let mut threads = vec![{
+        let (d, w, stop, kf) = (d.clone(), writer.clone(), stop.clone(), keyframes.clone());
+        std::thread::spawn(move || video_loop(d, w, stop, kf))
+    }];
+    threads.push({
+        let (d, w, stop) = (d.clone(), writer.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+                let text = d.clipboard.lock().expect("clipboard mutex").poll_text();
+                match text {
+                    Ok(Some(t)) => {
+                        if !send(&w, &FromAgent::ClipboardText(t)) {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("presse-papiers : {e}"),
+                }
+            }
+        })
+    });
+    // Audio : un flux à la fois, arrêté par un drapeau propre à chaque ouverture.
+    let mut audio_stop: Option<Arc<AtomicBool>> = None;
+    let mut reader = stream;
+    loop {
+        let msg: ToAgent = match read_msg(&mut reader) {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("protocole : {e}");
+                break;
+            }
+        };
+        match msg {
+            ToAgent::Key { scancode, pressed } => {
+                let _ = d.input.lock().expect("input mutex").key(scancode, pressed);
+            }
+            ToAgent::PointerMove { x, y } => {
+                let _ = d.input.lock().expect("input mutex").pointer_move(x, y);
+            }
+            ToAgent::PointerButton { button: b, pressed } => {
+                if let Some(b) = button(b) {
+                    let _ = d.input.lock().expect("input mutex").pointer_button(b, pressed);
+                }
+            }
+            ToAgent::Wheel { dx, dy } => {
+                let _ = d.input.lock().expect("input mutex").wheel(dx, dy);
+            }
+            ToAgent::RequestKeyframe { output } => {
+                if let Some(k) = keyframes.get(output as usize) {
+                    k.store(true, Ordering::Relaxed);
+                }
+            }
+            ToAgent::ClipboardSet(text) => {
+                if let Err(e) = d.clipboard.lock().expect("clipboard mutex").set_text(&text) {
+                    tracing::warn!("presse-papiers : {e}");
+                }
+            }
+            ToAgent::AudioOpen { sample_rate, channels } => {
+                if let Some(s) = audio_stop.take() {
+                    s.store(true, Ordering::Relaxed);
+                }
+                if let Some(provider) = d.audio.clone() {
+                    let flag = Arc::new(AtomicBool::new(false));
+                    audio_stop = Some(flag.clone());
+                    let w = writer.clone();
+                    let params = AudioParams { sample_rate, channels };
+                    // Arrêt si la connexion tombe (`stop`) ou si ce flux est fermé (`flag`).
+                    let global = stop.clone();
+                    let both = Arc::new(AtomicBool::new(false));
+                    let both2 = both.clone();
+                    std::thread::spawn(move || {
+                        while !global.load(Ordering::Relaxed) && !flag.load(Ordering::Relaxed) {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        both2.store(true, Ordering::Relaxed);
+                    });
+                    threads.push(std::thread::spawn(move || audio_loop(provider, params, w, both)));
+                }
+            }
+            ToAgent::AudioClose => {
+                if let Some(s) = audio_stop.take() {
+                    s.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    if let Some(s) = audio_stop {
+        s.store(true, Ordering::Relaxed);
+    }
+    let _ = writer.lock().map(|s| s.shutdown(std::net::Shutdown::Both));
+    for t in threads {
+        let _ = t.join();
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let runtime = runtime_dir();
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        // SAFETY: appelé au démarrage, avant la création de tout autre thread.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
+    }
+    // Le gestionnaire utilisateur de systemd (bus de session) démarre en parallèle de la session logind.
+    let bus = runtime.join("bus");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while arg::<String>(&args, "--session").as_deref().unwrap_or("kwin") == "kwin" && !bus.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let desktop = Arc::new(build_desktop(&args)?);
+    let socket: PathBuf = arg(&args, "--socket").unwrap_or_else(|| runtime.join("rdsktp-agent.sock"));
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket)?;
+    // Seul l'utilisateur (propriétaire) et root peuvent s'y connecter ; authd (root) transmet le descripteur.
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    tracing::info!(socket = %socket.display(), "agent prêt");
+    // Connexion courante : la nouvelle remplace l'ancienne.
+    let mut current: Option<(UnixStream, std::thread::JoinHandle<()>)> = None;
+    for conn in listener.incoming() {
+        let Ok(stream) = conn else { continue };
+        if let Some((old, handle)) = current.take() {
+            let _ = old.shutdown(std::net::Shutdown::Both);
+            let _ = handle.join();
+        }
+        let Ok(handle_stream) = stream.try_clone() else { continue };
+        let d = desktop.clone();
+        tracing::info!("client connecté");
+        current = Some((handle_stream, std::thread::spawn(move || serve(d, stream))));
+    }
+    Ok(())
+}

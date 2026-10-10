@@ -8,14 +8,15 @@ pub const HELP: &str = "cargo xtask vm-test [options]
   --build-cmd <cmd>     commande de build (env XTASK_BUILD_CMD, défaut : testapp release + cargo deb -p rdsktp)
   --client-cmd <cmd>    commande client, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
   --outputs N                 nombre d'écrans (avec --session kwin ; défaut 1)
-  --session <synthetic|kwin>  source du bureau côté serveur (défaut synthetic ; kwin = vrai KWin virtuel)
+  --session <synthetic|kwin|login>  source du bureau côté serveur (défaut synthetic ; kwin = vrai KWin virtuel ;
+                              login = login distant PAM + agent, exige RDP_TEST_PASSWORD)
   --timeout <s>         timeout de l'étape client (défaut 600)
   --out <dir>           dossier des artefacts (défaut artifacts/vm-test)
   --help                cette aide
 env : VM_RDP_PORT (défaut 3390)
 code de sortie : 0 tout passe, 1 échec, 2 arguments";
 
-pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp && cargo deb -p rdsktp";
+pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp -p rdsktp-authd && cargo build --release -p rdsktp-agent --features kwin && cargo deb -p rdsktp";
 pub const DEFAULT_CLIENT_CMD: &str =
     "cargo run --quiet --release -p rdp-test-client --features ironrdp -- --host {host} --port {port} --out {out}";
 
@@ -25,6 +26,8 @@ pub struct Opts {
     pub no_reset: bool,
     pub keep: bool,
     pub kwin: bool,
+    /// Login distant (authd + agent par utilisateur) ; implique `kwin`.
+    pub login: bool,
     /// Nombre d'écrans (session kwin uniquement).
     pub outputs: u32,
     pub deb: Option<String>,
@@ -47,6 +50,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         no_reset: false,
         keep: false,
         kwin: false,
+        login: false,
         outputs: 1,
         deb: None,
         build_cmd: env("XTASK_BUILD_CMD").unwrap_or_else(|| DEFAULT_BUILD_CMD.into()),
@@ -71,6 +75,10 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             "--session" => {
                 o.kwin = match val("--session")?.as_str() {
                     "kwin" => true,
+                    "login" => {
+                        o.login = true;
+                        true
+                    }
                     "synthetic" => false,
                     other => return Err(format!("--session inconnu : {other}")),
                 }
@@ -134,6 +142,12 @@ mod tests {
         };
         assert_eq!(o.build_cmd, "x");
         assert!(o.keep && o.no_build);
+    }
+
+    #[test]
+    fn login_session_implies_kwin() {
+        let Parsed::Run(o) = p(&["--session", "login"], &[]).unwrap() else { panic!() };
+        assert!(o.login && o.kwin);
     }
 
     #[test]

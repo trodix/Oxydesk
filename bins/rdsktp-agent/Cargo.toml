@@ -1,0 +1,25 @@
+[package]
+name = "rdsktp-agent"
+description = "Agent de session RustyDesktop : tourne sous l'utilisateur connecté (KWin, capture, encodage, entrées)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
+
+[dependencies]
+rdsktp-core.workspace = true
+rdsktp-agent-proto.workspace = true
+rdsktp-capture.workspace = true
+rdsktp-audio.workspace = true
+rdsktp-encode = { workspace = true, features = ["openh264"] }
+rdsktp-input = { workspace = true, optional = true }
+rdsktp-clipboard = { workspace = true, optional = true }
+rdsktp-session = { workspace = true, optional = true }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"

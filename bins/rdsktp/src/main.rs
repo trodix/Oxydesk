@@ -10,8 +10,9 @@ use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
 use rdsktp_core::layout::Layout;
 use rdsktp_rdp::{Ports, ServerConfig};
 
-const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--audio tone|pulse|off] [--width W] [--height H] [--fps F] [--nla-user U]\n\
+const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--audio tone|pulse|off] [--width W] [--height H] [--fps F] [--nla-user U]\n\
   --test-mode   bureau synthétique\n\
+  --login       login distant : PAM via rdsktp-authd, une session par utilisateur (TLS, sans NLA)\n\
   --session kwin  démarre kwin_wayland --virtual (+ programmes --session-app) et le capture\n\
   --state-dir   certificat TLS auto-signé généré s'il est absent (défaut : /var/lib/rdsktp)\n\
   --nla-user    active NLA ; mot de passe via la variable RDSKTP_PASSWORD uniquement";
@@ -51,8 +52,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let kwin_mode = arg::<String>(&args, "--session").as_deref() == Some("kwin");
+    let login_mode = args.iter().any(|a| a == "--login");
     if args.iter().any(|a| a == "--help" || a == "-h")
-        || !(kwin_mode || args.iter().any(|a| a == "--test-mode"))
+        || !(kwin_mode || login_mode || args.iter().any(|a| a == "--test-mode"))
     {
         eprintln!("{USAGE}");
         std::process::exit(if args.iter().any(|a| a == "--help") {
@@ -81,6 +83,17 @@ async fn main() -> anyhow::Result<()> {
         )),
         None => None,
     };
+
+    if login_mode {
+        anyhow::ensure!(nla.is_none(), "--login est incompatible avec --nla-user (pas de NLA pour les comptes dynamiques)");
+        let socket: PathBuf = arg(&args, "--authd-socket").unwrap_or_else(|| "/run/rdsktp/authd.sock".into());
+        let broker = std::sync::Arc::new(rdsktp_remote::RemoteBroker::new(socket, outputs));
+        let config = ServerConfig { addr, layout, fps, tls_cert, tls_key, nla };
+        return tokio::select! {
+            r = rdsktp_rdp::run_with_broker(config, broker) => r,
+            _ = tokio::signal::ctrl_c() => { tracing::info!("arrêt"); Ok(()) }
+        };
+    }
 
     let encoders = (0..outputs)
         .map(|_| {

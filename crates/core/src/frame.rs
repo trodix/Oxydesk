@@ -11,6 +11,8 @@ pub enum PixelFormat {
 pub enum FrameData {
     Shm(Vec<u8>),
     DmaBuf(i32),
+    /// Déjà encodé en H.264 Annex-B par l'agent de session (voir `PassthroughEncoder`).
+    Encoded { keyframe: bool, data: Vec<u8> },
 }
 
 #[derive(Debug)]

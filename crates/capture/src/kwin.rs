@@ -88,9 +88,11 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
 }
 
 type Mailbox = Arc<Mutex<Option<Frame>>>;
+type Waker = Arc<Mutex<Option<Arc<rdsktp_core::wake::Wake>>>>;
 
 pub struct KwinCapture {
     mailbox: Mailbox,
+    waker: Waker,
     stop: Arc<AtomicBool>,
     dead: Arc<Mutex<Option<String>>>,
     worker: Option<JoinHandle<()>>,
@@ -102,15 +104,16 @@ impl KwinCapture {
     pub fn start(socket: Option<&str>, output: usize) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
+        let waker: Waker = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let dead: Arc<Mutex<Option<String>>> = Arc::default();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let worker = {
-            let (mailbox, stop, dead) = (mailbox.clone(), stop.clone(), dead.clone());
+            let (mailbox, waker, stop, dead) = (mailbox.clone(), waker.clone(), stop.clone(), dead.clone());
             std::thread::Builder::new()
                 .name("kwin-capture".into())
                 .spawn(move || {
-                    if let Err(e) = run(conn, output, mailbox, stop, &ready_tx) {
+                    if let Err(e) = run(conn, output, mailbox, waker, stop, &ready_tx) {
                         let _ = ready_tx.send(Err(e.clone()));
                         *dead.lock().expect("dead") = Some(e);
                     }
@@ -118,7 +121,7 @@ impl KwinCapture {
                 .map_err(|e| CaptureError::Unavailable(e.to_string()))?
         };
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
-            Ok(Ok(())) => Ok(Self { mailbox, stop, dead, worker: Some(worker) }),
+            Ok(Ok(())) => Ok(Self { mailbox, waker, stop, dead, worker: Some(worker) }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
             Err(_) => Err(CaptureError::Unavailable("KWin n'a pas fourni de flux dans le délai".into())),
         }
@@ -126,6 +129,10 @@ impl KwinCapture {
 }
 
 impl CaptureSource for KwinCapture {
+    fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
+        *self.waker.lock().expect("waker") = Some(wake);
+    }
+
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
         if let Some(frame) = self.mailbox.lock().expect("mailbox").take() {
             return Ok(Some(frame));
@@ -162,9 +169,10 @@ fn connect(socket: Option<&str>) -> Result<Connection, CaptureError> {
 struct PwData {
     format: VideoInfoRaw,
     mailbox: Mailbox,
+    waker: Waker,
 }
 
-fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+fn run(conn: Connection, output: usize, mailbox: Mailbox, waker: Waker, stop: Arc<AtomicBool>, ready: &mpsc::Sender<Result<(), String>>) -> Result<(), String> {
     // 1. Wayland : demander le flux et obtenir le nœud PipeWire.
     let mut queue = conn.new_event_queue::<Wl>();
     let qh = queue.handle();
@@ -215,7 +223,7 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
     let ready_ok = ready.clone();
     let announced = std::cell::Cell::new(false);
     let _listener = stream
-        .add_local_listener_with_user_data(PwData { format: Default::default(), mailbox })
+        .add_local_listener_with_user_data(PwData { format: Default::default(), mailbox, waker })
         .state_changed(|_, _, old, new| tracing_log(format_args!("pipewire: {old:?} -> {new:?}")))
         .param_changed(|_, d, id, param| {
             let Some(param) = param else { return };
@@ -260,6 +268,9 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
                 data: FrameData::Shm(src[offset..offset + need].to_vec()),
             };
             *d.mailbox.lock().expect("mailbox") = Some(frame);
+            if let Some(w) = d.waker.lock().expect("waker").as_ref() {
+                w.notify();
+            }
             if !announced.replace(true) {
                 let _ = ready_ok.send(Ok(()));
             }

@@ -7,4 +7,4 @@ mod server;
 mod sound;
 
 pub use clipboard::TextClipboard;
-pub use server::{run, Ports, ServerConfig};
+pub use server::{run, run_with_broker, Ports, ServerConfig};

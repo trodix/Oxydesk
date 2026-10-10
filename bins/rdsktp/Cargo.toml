@@ -15,6 +15,7 @@ kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", 
 rdsktp-input = { workspace = true, optional = true }
 rdsktp-clipboard = { workspace = true, optional = true }
 rdsktp-audio.workspace = true
+rdsktp-remote.workspace = true
 rdsktp-session = { workspace = true, optional = true }
 rdsktp-core.workspace = true
 rdsktp-capture.workspace = true
@@ -39,6 +40,14 @@ assets = [
     ["target/release/rdsktp", "usr/bin/", "755"],
     ["target/release/rdsktp-testapp", "usr/lib/rdsktp/", "755"],
     ["../../dist/rdsktp.desktop", "usr/share/applications/", "644"],
+    ["../../dist/rdsktp-agent.desktop", "usr/share/applications/", "644"],
     ["../../dist/rdsktp.service", "lib/systemd/system/", "644"],
+    ["target/release/rdsktp-authd", "usr/bin/", "755"],
+    ["target/release/rdsktp-agent", "usr/bin/", "755"],
+    ["../../dist/rdsktp-authd.service", "lib/systemd/system/", "644"],
+    ["../../dist/rdsktp-agent@.service", "lib/systemd/system/", "644"],
+    ["../../dist/pam/rdsktp", "etc/pam.d/", "644"],
+    ["../../dist/pam/rdsktp-session", "etc/pam.d/", "644"],
+    ["../../dist/sysusers/rdsktp.conf", "usr/lib/sysusers.d/", "644"],
 ]
 maintainer-scripts = "../../dist/debian/"

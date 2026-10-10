@@ -7,6 +7,9 @@ use crate::layout::{Layout, OutputId};
 /// Source de frames. `recv_latest` ne retourne que la plus récente (drop, pas de file).
 pub trait CaptureSource: Send {
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError>;
+    /// Le consommateur peut s'endormir sur `wake` au lieu de sonder : la source le notifie à chaque nouvelle
+    /// frame. Sans effet par défaut (sources sondées uniquement).
+    fn set_waker(&mut self, _wake: std::sync::Arc<crate::wake::Wake>) {}
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,6 +81,22 @@ pub trait AudioSource: Send {
 /// Ouvre des flux audio au format négocié avec le client.
 pub trait AudioProvider: Send + Sync {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError>;
+}
+
+/// Ports d'un bureau distant ouvert pour un utilisateur.
+pub struct DesktopPorts {
+    pub capture: Box<dyn CaptureSource>,
+    /// Un encodeur par sortie, dans l'ordre de la disposition.
+    pub encoders: Vec<Box<dyn FrameEncoder>>,
+    pub input: Box<dyn InputSink>,
+    pub clipboard: Box<dyn ClipboardBackend>,
+    pub audio: Option<std::sync::Arc<dyn AudioProvider>>,
+}
+
+/// Authentifie un utilisateur et ouvre (ou rejoint) sa session de bureau.
+/// Bloquant : à appeler hors du runtime asynchrone.
+pub trait SessionBroker: Send + Sync {
+    fn login(&self, username: &str, password: &str) -> Result<DesktopPorts, LoginError>;
 }
 
 pub trait OutputManager: Send {
