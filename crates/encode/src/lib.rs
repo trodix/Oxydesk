@@ -7,6 +7,7 @@ mod openh264_enc;
 pub use openh264_enc::{OpenH264Config, OpenH264Encoder};
 
 mod dmabuf;
+pub use dmabuf::with_pixels;
 mod h264_headers;
 
 #[cfg(any(feature = "vaapi", feature = "openh264"))]

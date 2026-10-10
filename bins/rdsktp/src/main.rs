@@ -188,6 +188,8 @@ async fn main() -> anyhow::Result<()> {
                         Box::new(rdsktp_clipboard::UnavailableClipboard)
                     }
                 };
+            // KWin that cannot resize its desktop (6.3): the client's size is obtained by scaling.
+            let (capture, input) = rdsktp_scaling::wrap(Box::new(capture), Box::new(input));
             (Box::new(capture), Box::new(input), clipboard)
         }
         #[cfg(not(feature = "kwin"))]

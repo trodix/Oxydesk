@@ -147,6 +147,8 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 let capture = rdsktp_capture::MultiCapture::new(sources);
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
                 let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
+                // KWin that cannot resize its desktop (6.3): the client's size is obtained by scaling.
+                let (capture, input) = rdsktp_scaling::wrap(Box::new(capture), Box::new(input));
                 Ok(make(
                     Box::new(capture),
                     Box::new(input),

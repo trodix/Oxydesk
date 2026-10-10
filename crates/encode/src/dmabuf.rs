@@ -30,7 +30,7 @@ pub(crate) fn size(dma: &DmaBuf) -> Result<u64, EncodeError> {
 }
 
 /// Calls `f` with the mapped pixels of `frame` (rows start at `stride`, from the buffer's offset).
-pub(crate) fn with_pixels<R>(
+pub fn with_pixels<R>(
     frame: &Frame,
     dma: &DmaBuf,
     f: impl FnOnce(&[u8]) -> R,

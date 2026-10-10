@@ -2672,6 +2672,7 @@ dependencies = [
  "rdsktp-input",
  "rdsktp-rdp",
  "rdsktp-remote",
+ "rdsktp-scaling",
  "rdsktp-session",
  "tokio",
  "tracing",
@@ -2691,6 +2692,7 @@ dependencies = [
  "rdsktp-core",
  "rdsktp-encode",
  "rdsktp-input",
+ "rdsktp-scaling",
  "rdsktp-session",
  "tracing",
  "tracing-subscriber",
@@ -2808,6 +2810,15 @@ dependencies = [
  "rdsktp-agent-proto",
  "rdsktp-authd-proto",
  "rdsktp-core",
+ "tracing",
+]
+
+[[package]]
+name = "rdsktp-scaling"
+version = "0.1.0"
+dependencies = [
+ "rdsktp-core",
+ "rdsktp-encode",
  "tracing",
 ]
 

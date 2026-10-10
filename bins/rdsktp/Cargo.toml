@@ -11,7 +11,7 @@ default = []
 # GPU H.264 encoder through VA-API (links libva; needs libva-dev). Falls back to openh264 at run time.
 vaapi = ["rdsktp-encode/vaapi"]
 # Real KWin session: PipeWire capture + fake_input input (requires libpipewire-dev and libclang).
-kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
+kwin = ["dep:rdsktp-scaling", "rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
 
 [dependencies]
 rdsktp-input = { workspace = true, optional = true }
@@ -22,6 +22,7 @@ rdsktp-session = { workspace = true, optional = true }
 rdsktp-core.workspace = true
 rdsktp-capture.workspace = true
 rdsktp-encode = { workspace = true, features = ["openh264"] }
+rdsktp-scaling = { workspace = true, optional = true }
 rdsktp-rdp.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 anyhow = "1"

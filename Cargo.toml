@@ -6,6 +6,7 @@ members = [
     "crates/core",
     "crates/capture",
     "crates/encode",
+    "crates/scaling",
     "crates/input",
     "crates/clipboard",
     "crates/audio",
@@ -42,5 +43,6 @@ rdsktp-authd-proto = { path = "crates/authd-proto" }
 rdsktp-remote = { path = "crates/remote" }
 rdsktp-input = { path = "crates/input" }
 rdsktp-encode = { path = "crates/encode" }
+rdsktp-scaling = { path = "crates/scaling" }
 rdsktp-session = { path = "crates/session" }
 rdsktp-rdp = { path = "crates/rdp" }

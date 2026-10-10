@@ -10,7 +10,7 @@ publish.workspace = true
 default = []
 # GPU H.264 encoder through VA-API (links libva; needs libva-dev). Falls back to openh264 at run time.
 vaapi = ["rdsktp-encode/vaapi"]
-kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
+kwin = ["dep:rdsktp-scaling", "rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
 
 [dependencies]
 rdsktp-core.workspace = true
@@ -18,6 +18,7 @@ rdsktp-agent-proto.workspace = true
 rdsktp-capture.workspace = true
 rdsktp-audio.workspace = true
 rdsktp-encode = { workspace = true, features = ["openh264"] }
+rdsktp-scaling = { workspace = true, optional = true }
 rdsktp-input = { workspace = true, optional = true }
 rdsktp-clipboard = { workspace = true, optional = true }
 rdsktp-session = { workspace = true, optional = true }

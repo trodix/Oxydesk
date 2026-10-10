@@ -198,7 +198,7 @@ impl CaptureSource for KwinCapture {
 
     /// The virtual output gets a custom mode of the requested size (`kscreen-doctor`, libkscreen); the
     /// PipeWire stream then renegotiates its format and delivers frames of the new size. Custom modes
-    /// need a recent KWin (measured: absent from Plasma 6.3, present in 6.7); `kscreen-doctor` reports
+    /// need a recent KWin (measured: absent from Plasma 6.3.6, present in 6.7.5); `kscreen-doctor` reports
     /// failures on its output with a zero exit status, so the result is checked on the output geometry.
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
         let name = format!("Virtual-{}", self.output);
@@ -216,7 +216,7 @@ impl CaptureSource for KwinCapture {
             }
             if std::time::Instant::now() > deadline {
                 return Err(CaptureError::Unavailable(format!(
-                    "KWin cannot set {width}x{height} on {name} (now {size:?}): custom modes need Plasma 6.4+"
+                    "KWin cannot set {width}x{height} on {name} (now {size:?}): custom modes are missing in Plasma 6.3 (present in 6.7)"
                 )));
             }
             std::thread::sleep(Duration::from_millis(100));
