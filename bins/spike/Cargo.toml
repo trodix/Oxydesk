@@ -1,0 +1,19 @@
+[package]
+name = "spike"
+description = "M1 : spike IronRDP (jetable, remplacé par rdsktp en M2)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rdsktp-core.workspace = true
+rdsktp-capture.workspace = true
+rdsktp-encode = { workspace = true, features = ["openh264"] }
+ironrdp-server = { version = "=0.13.0", features = ["egfx", "helper"] }
+ironrdp-egfx = "=0.3.0"
+ironrdp-dvc = "=0.8.0"
+ironrdp-svc = "*"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+async-trait = "0.1"
+anyhow = "1"

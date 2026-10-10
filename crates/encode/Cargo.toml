@@ -5,5 +5,11 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# H.264 via libopenh264 chargée à l'exécution (aucune compilation C++ requise).
+openh264 = ["dep:openh264"]
+
 [dependencies]
 rdsktp-core.workspace = true
+openh264 = { version = "0.9.8", default-features = false, features = ["libloading"], optional = true }

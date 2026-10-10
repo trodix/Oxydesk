@@ -7,3 +7,5 @@ publish.workspace = true
 
 [dependencies]
 rdsktp-core.workspace = true
+rdsktp-capture.workspace = true
+rdsktp-encode = { workspace = true, features = ["openh264"] }
