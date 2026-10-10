@@ -9,7 +9,7 @@ use rdp_test_client::session::Session;
 use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
-    "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] \
+    "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
 [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -38,6 +38,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalide")?,
             "--user" => user = val(&a)?,
             "--width" => cfg.width = val(&a)?.parse().map_err(|_| "--width invalide")?,
+            "--outputs" => cfg.outputs = val(&a)?.parse().map_err(|_| "--outputs invalide")?,
             "--height" => cfg.height = val(&a)?.parse().map_err(|_| "--height invalide")?,
             "--key-samples" => {
                 cfg.key_samples = val(&a)?.parse().map_err(|_| "--key-samples invalide")?
@@ -74,7 +75,7 @@ fn real_session(args: &Args) -> Box<dyn Session> {
         password: std::env::var("RDP_TEST_PASSWORD")
             .ok()
             .filter(|p| !p.is_empty()),
-        width: args.cfg.width as u16,
+        width: (args.cfg.width * args.cfg.outputs) as u16,
         height: args.cfg.height as u16,
     }))
 }

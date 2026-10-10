@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_egfx::pdu::Avc420Region;
 use ironrdp_server::{EgfxServerMessage, GfxServerHandle, ServerEvent};
-use rdsktp_core::layout::OutputId;
+use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::{CaptureSource, FrameEncoder};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -22,30 +23,52 @@ pub struct Shared {
 }
 
 pub struct PumpParams {
-    pub width: u16,
-    pub height: u16,
+    pub layout: Layout,
     pub fps: f32,
+}
+
+/// Une sortie = un encodeur + sa dernière frame (ré-encodée pour un nouveau client si le bureau est statique).
+struct OutputState {
+    encoder: Box<dyn FrameEncoder>,
+    last: Option<rdsktp_core::Frame>,
+}
+
+fn monitors(layout: &Layout) -> Vec<Monitor> {
+    layout
+        .outputs
+        .iter()
+        .map(|o| Monitor {
+            left: o.x,
+            top: o.y,
+            right: o.x + o.width as i32 - 1,
+            bottom: o.y + o.height as i32 - 1,
+            flags: if o.primary { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+        })
+        .collect()
 }
 
 pub fn spawn(
     shared: Arc<Shared>,
     mut capture: Box<dyn CaptureSource>,
-    mut encoder: Box<dyn FrameEncoder>,
+    encoders: Vec<Box<dyn FrameEncoder>>,
     p: PumpParams,
 ) -> JoinHandle<()> {
+    assert_eq!(encoders.len(), p.layout.outputs.len(), "un encodeur par sortie");
     std::thread::Builder::new()
         .name("frame-pump".into())
         .spawn(move || {
             let period = Duration::from_secs_f32(1.0 / p.fps);
             let started = Instant::now();
             let mut next = Instant::now();
-            let mut current: Option<(GfxServerHandle, Option<u16>)> = None;
+            let (desktop_w, desktop_h) = p.layout.desktop_size();
+            let mut outputs: Vec<OutputState> =
+                encoders.into_iter().map(|encoder| OutputState { encoder, last: None }).collect();
+            // Connexion courante et une surface EGFX par sortie (vide tant que non créées).
+            let mut current: Option<(GfxServerHandle, Vec<u16>)> = None;
             let (mut sent, mut dropped) = (0u64, 0u64);
-            // Dernière frame capturée, ré-encodée pour un nouveau client si le bureau est statique.
-            let mut last: Option<rdsktp_core::Frame> = None;
             let mut repeat = false;
             let mut report = Instant::now();
-            while !shared.stop.load(Ordering::Relaxed) {
+            'pump: while !shared.stop.load(Ordering::Relaxed) {
                 next += period;
                 if let Some(wait) = next.checked_duration_since(Instant::now()) {
                     std::thread::sleep(wait);
@@ -55,25 +78,32 @@ pub fn spawn(
                 let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
                     continue;
                 };
-                if !current
-                    .as_ref()
-                    .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
-                {
-                    current = Some((handle.clone(), None)); // nouvelle connexion
+                if !current.as_ref().is_some_and(|(h, _)| Arc::ptr_eq(h, &handle)) {
+                    current = Some((handle.clone(), Vec::new())); // nouvelle connexion
                 }
-                let (handle, surface) = current.as_mut().expect("set above");
+                let (handle, surfaces) = current.as_mut().expect("set above");
                 {
                     let mut g = handle.lock().expect("gfx handle mutex");
                     if !g.is_ready() || !g.supports_avc420() {
                         continue;
                     }
-                    if surface.is_none() {
-                        let Some(id) = g.create_surface(p.width, p.height) else {
-                            continue;
-                        };
-                        g.map_surface_to_output(id, 0, 0);
-                        *surface = Some(id);
-                        encoder.request_keyframe();
+                    if surfaces.is_empty() {
+                        // Plusieurs écrans : ResetGraphics annonce la liste des moniteurs avant les surfaces.
+                        if p.layout.outputs.len() > 1 {
+                            g.resize_with_monitors(desktop_w as u16, desktop_h as u16, monitors(&p.layout));
+                        }
+                        let mut created = Vec::new();
+                        for o in &p.layout.outputs {
+                            let Some(id) = g.create_surface(o.width as u16, o.height as u16) else {
+                                continue 'pump;
+                            };
+                            g.map_surface_to_output(id, o.x.max(0) as u32, o.y.max(0) as u32);
+                            created.push(id);
+                        }
+                        *surfaces = created;
+                        for o in &mut outputs {
+                            o.encoder.request_keyframe();
+                        }
                         repeat = true;
                     }
                     if g.should_backpressure() {
@@ -81,53 +111,48 @@ pub fn spawn(
                         continue;
                     }
                 }
-                match capture.recv_latest(OutputId(0)) {
-                    Ok(Some(f)) => {
-                        last = Some(f);
-                        repeat = false;
-                    }
-                    Ok(None) if repeat && last.is_some() => repeat = false,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        tracing::error!("capture: {e}");
-                        break;
-                    }
-                }
-                let Some(frame) = last.as_ref() else { continue };
-                let encoded = match encoder.encode(frame) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::error!("encodage: {e}");
-                        break;
-                    }
-                };
-                let (messages, channel) = {
-                    let mut g = handle.lock().expect("gfx handle mutex");
-                    let region = Avc420Region::full_frame(p.width, p.height, 22);
-                    let ts = started.elapsed().as_millis() as u32;
-                    if g.send_avc420_frame(surface.expect("surface"), &encoded.data, &[region], ts)
-                        .is_none()
-                    {
-                        dropped += 1;
-                        continue;
-                    }
-                    (g.drain_output(), g.channel_id())
-                };
-                sent += 1;
-                if let Some(channel) = channel {
-                    match encode_dvc_messages(channel, messages, ironrdp_svc::ChannelFlags::empty())
-                    {
-                        Ok(svc) => {
-                            if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
-                                let _ =
-                                    tx.send(ServerEvent::Egfx(EgfxServerMessage::SendMessages {
-                                        messages: svc,
-                                    }));
-                            }
+                for (i, out) in outputs.iter_mut().enumerate() {
+                    match capture.recv_latest(OutputId(i as u32)) {
+                        Ok(Some(f)) => out.last = Some(f),
+                        Ok(None) if repeat && out.last.is_some() => {}
+                        Ok(None) => continue,
+                        Err(e) => {
+                            tracing::error!("capture: {e}");
+                            break 'pump;
                         }
-                        Err(e) => tracing::error!("encodage DVC: {e}"),
+                    }
+                    let Some(frame) = out.last.as_ref() else { continue };
+                    let encoded = match out.encoder.encode(frame) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            tracing::error!("encodage: {e}");
+                            break 'pump;
+                        }
+                    };
+                    let info = &p.layout.outputs[i];
+                    let (messages, channel) = {
+                        let mut g = handle.lock().expect("gfx handle mutex");
+                        let region = Avc420Region::full_frame(info.width as u16, info.height as u16, 22);
+                        let ts = started.elapsed().as_millis() as u32;
+                        if g.send_avc420_frame(surfaces[i], &encoded.data, &[region], ts).is_none() {
+                            dropped += 1;
+                            continue;
+                        }
+                        (g.drain_output(), g.channel_id())
+                    };
+                    sent += 1;
+                    if let Some(channel) = channel {
+                        match encode_dvc_messages(channel, messages, ironrdp_svc::ChannelFlags::empty()) {
+                            Ok(svc) => {
+                                if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
+                                    let _ = tx.send(ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages: svc }));
+                                }
+                            }
+                            Err(e) => tracing::error!("encodage DVC: {e}"),
+                        }
                     }
                 }
+                repeat = false;
                 if report.elapsed() >= Duration::from_secs(10) {
                     tracing::info!(sent, dropped, "frame-pump");
                     report = Instant::now();

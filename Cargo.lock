@@ -2678,6 +2678,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-egfx",
+ "ironrdp-pdu",
  "ironrdp-server",
  "ironrdp-svc",
  "rdsktp-core",

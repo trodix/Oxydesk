@@ -128,11 +128,18 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         Some(d) => format!("bash {VM} deploy {}", sq(d)),
         None => format!("bash {VM} deploy"),
     };
-    let client_cmd = o
+    if o.outputs > 1 && !o.kwin {
+        eprintln!("--outputs > 1 nécessite --session kwin");
+        return ExitCode::from(2);
+    }
+    let mut client_cmd = o
         .client_cmd
         .replace("{host}", "127.0.0.1")
         .replace("{port}", &o.rdp_port.to_string())
         .replace("{out}", &abs_dir.display().to_string());
+    if o.outputs > 1 {
+        client_cmd.push_str(&format!(" --outputs {}", o.outputs));
+    }
     let normal: Vec<(&str, String, Duration, Option<&str>)> = vec![
         (
             "build",
@@ -150,7 +157,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         ("deploy", deploy_cmd, min(5), None),
         (
             "configure-kwin",
-            format!("bash {VM} kwin-config"),
+            format!("VM_OUTPUTS={} bash {VM} kwin-config", o.outputs),
             min(3),
             (!o.kwin).then_some("--session synthetic"),
         ),

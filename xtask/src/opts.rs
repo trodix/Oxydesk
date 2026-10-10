@@ -7,6 +7,7 @@ pub const HELP: &str = "cargo xtask vm-test [options]
   --deb <fichier>       .deb à déployer (défaut : le plus récent de target/debian/)
   --build-cmd <cmd>     commande de build (env XTASK_BUILD_CMD, défaut : testapp release + cargo deb -p rdsktp)
   --client-cmd <cmd>    commande client, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
+  --outputs N                 nombre d'écrans (avec --session kwin ; défaut 1)
   --session <synthetic|kwin>  source du bureau côté serveur (défaut synthetic ; kwin = vrai KWin virtuel)
   --timeout <s>         timeout de l'étape client (défaut 600)
   --out <dir>           dossier des artefacts (défaut artifacts/vm-test)
@@ -24,6 +25,8 @@ pub struct Opts {
     pub no_reset: bool,
     pub keep: bool,
     pub kwin: bool,
+    /// Nombre d'écrans (session kwin uniquement).
+    pub outputs: u32,
     pub deb: Option<String>,
     pub build_cmd: String,
     pub client_cmd: String,
@@ -44,6 +47,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         no_reset: false,
         keep: false,
         kwin: false,
+        outputs: 1,
         deb: None,
         build_cmd: env("XTASK_BUILD_CMD").unwrap_or_else(|| DEFAULT_BUILD_CMD.into()),
         client_cmd: env("XTASK_CLIENT_CMD").unwrap_or_else(|| DEFAULT_CLIENT_CMD.into()),
@@ -70,6 +74,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     "synthetic" => false,
                     other => return Err(format!("--session inconnu : {other}")),
                 }
+            }
+            "--outputs" => {
+                o.outputs = val("--outputs")?
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=16).contains(n))
+                    .ok_or("--outputs invalide (1 à 16)")?
             }
             "--deb" => o.deb = Some(val("--deb")?),
             "--build-cmd" => o.build_cmd = val("--build-cmd")?,

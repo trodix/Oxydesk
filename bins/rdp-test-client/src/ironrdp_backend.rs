@@ -19,13 +19,17 @@ use ironrdp_cliprdr::CliprdrClient;
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{ClientConnector, Config, Credentials, DesktopSize};
-use ironrdp_dvc::DrdynvcClient;
+use ironrdp_core::{decode_cursor, impl_as_any, ReadCursor};
+use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor};
 use ironrdp_egfx::client::{
     BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface,
 };
+use ironrdp_egfx::pdu::GfxPdu;
 use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+use ironrdp_graphics::zgfx;
 use ironrdp_input::{Database, Operation, Scancode};
 use ironrdp_pdu::gcc::KeyboardType;
+use ironrdp_pdu::PduResult;
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_session::image::DecodedImage;
@@ -265,6 +269,71 @@ struct OpenH264Decoder {
     annex_b: Vec<u8>,
 }
 
+/// `H264Decoder` d'ironrdp-egfx ne reçoit pas l'identifiant de surface alors que chaque surface a son
+/// propre flux (références P propres) : on garde un décodeur par surface, choisi grâce à la file
+/// d'identifiants que `SurfaceTap` alimente dans l'ordre exact des `WireToSurface1`.
+struct PerSurfaceDecoder {
+    pending: Arc<Mutex<VecDeque<u16>>>,
+    decoders: HashMap<u16, OpenH264Decoder>,
+}
+
+impl H264Decoder for PerSurfaceDecoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        let id = self.pending.lock().expect("pending").pop_front().unwrap_or(0);
+        if let std::collections::hash_map::Entry::Vacant(v) = self.decoders.entry(id) {
+            v.insert(OpenH264Decoder::new().map_err(|e| DecoderError::msg(&e.to_string()))?);
+        }
+        self.decoders.get_mut(&id).expect("inserted").decode(data)
+    }
+
+    fn reset(&mut self) {
+        self.decoders.clear();
+        self.pending.lock().expect("pending").clear();
+    }
+}
+
+/// Enveloppe du canal EGFX : relit (avec sa propre fenêtre ZGFX, alimentée des mêmes octets) les PDU
+/// avant de les confier au client, uniquement pour noter la surface de chaque `WireToSurface1`.
+struct SurfaceTap {
+    inner: GraphicsPipelineClient,
+    pending: Arc<Mutex<VecDeque<u16>>>,
+    zgfx: zgfx::Decompressor,
+    buf: Vec<u8>,
+}
+
+impl_as_any!(SurfaceTap);
+
+impl DvcProcessor for SurfaceTap {
+    fn channel_name(&self) -> &str {
+        self.inner.channel_name()
+    }
+
+    fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.inner.start(channel_id)
+    }
+
+    fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        self.buf.clear();
+        if self.zgfx.decompress(payload, &mut self.buf).is_ok() {
+            let mut cursor = ReadCursor::new(&self.buf);
+            while !cursor.is_empty() {
+                match decode_cursor::<GfxPdu>(&mut cursor) {
+                    Ok(GfxPdu::WireToSurface1(w)) => {
+                        self.pending.lock().expect("pending").push_back(w.surface_id);
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+        self.inner.process(channel_id, payload)
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.inner.close(channel_id);
+    }
+}
+
 fn locate_openh264() -> anyhow::Result<PathBuf> {
     if let Ok(p) = std::env::var("RDSKTP_OPENH264_LIB") {
         return Ok(p.into());
@@ -488,13 +557,22 @@ fn run_worker(
     };
 
     let mut connector = ClientConnector::new(connector_config(&opts), client_addr);
-    let gfx = GraphicsPipelineClient::new(
-        Box::new(GfxHandler {
-            shared: shared.clone(),
-            origins: HashMap::new(),
-        }),
-        Some(Box::new(OpenH264Decoder::new()?)),
-    );
+    let pending = Arc::new(Mutex::new(VecDeque::new()));
+    let gfx = SurfaceTap {
+        inner: GraphicsPipelineClient::new(
+            Box::new(GfxHandler {
+                shared: shared.clone(),
+                origins: HashMap::new(),
+            }),
+            Some(Box::new(PerSurfaceDecoder {
+                pending: pending.clone(),
+                decoders: HashMap::new(),
+            })),
+        ),
+        pending,
+        zgfx: zgfx::Decompressor::new(),
+        buf: Vec::new(),
+    };
     connector.attach_static_channel(DrdynvcClient::new().with_dynamic_channel(gfx));
     connector.attach_static_channel(CliprdrClient::new(Box::new(TextClipboard::new(
         send.clone(),

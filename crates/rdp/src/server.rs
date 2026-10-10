@@ -12,6 +12,7 @@ use ironrdp_server::{
     GfxServerHandle, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
+use rdsktp_core::layout::Layout;
 use rdsktp_core::ports::{CaptureSource, ClipboardBackend, FrameEncoder, InputSink};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -20,8 +21,8 @@ use crate::pump::{self, PumpParams, Shared};
 
 pub struct ServerConfig {
     pub addr: SocketAddr,
-    pub width: u16,
-    pub height: u16,
+    /// Disposition des écrans ; le bureau RDP est leur rectangle englobant.
+    pub layout: Layout,
     pub fps: f32,
     pub tls_cert: PathBuf,
     pub tls_key: PathBuf,
@@ -32,7 +33,8 @@ pub struct ServerConfig {
 /// Adaptateurs sortants fournis par le composition root.
 pub struct Ports {
     pub capture: Box<dyn CaptureSource>,
-    pub encoder: Box<dyn FrameEncoder>,
+    /// Un encodeur par sortie, dans l'ordre de `ServerConfig::layout`.
+    pub encoders: Vec<Box<dyn FrameEncoder>>,
     pub input: Box<dyn InputSink>,
     pub clipboard: Box<dyn ClipboardBackend>,
 }
@@ -177,6 +179,7 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
     let local: LocalText = Arc::new(Mutex::new(None));
     let clipboard = Arc::new(Mutex::new(ports.clipboard));
 
+    let desktop = config.layout.desktop_size();
     let ctx = TlsIdentityCtx::init_from_paths(&config.tls_cert, &config.tls_key)?;
     let tls = ctx.make_acceptor()?;
     let builder = RdpServer::builder().with_addr(config.addr);
@@ -193,8 +196,8 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
     let mut server = builder
         .with_input_handler(Input(ports.input))
         .with_display_handler(Display(DesktopSize {
-            width: config.width,
-            height: config.height,
+            width: desktop.0 as u16,
+            height: desktop.1 as u16,
         }))
         .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
@@ -210,10 +213,9 @@ pub async fn run(config: ServerConfig, ports: Ports) -> anyhow::Result<()> {
     let pump = pump::spawn(
         shared.clone(),
         ports.capture,
-        ports.encoder,
+        ports.encoders,
         PumpParams {
-            width: config.width,
-            height: config.height,
+            layout: config.layout.clone(),
             fps: config.fps,
         },
     );

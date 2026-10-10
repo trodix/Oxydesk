@@ -15,6 +15,8 @@ pub struct KwinSessionConfig {
     pub socket: String,
     pub width: u32,
     pub height: u32,
+    /// Nombre d'écrans virtuels (de même taille, côte à côte).
+    pub outputs: u32,
     /// Programmes lancés dans la session une fois KWin prêt (argv complet).
     pub programs: Vec<Vec<String>>,
 }
@@ -138,6 +140,7 @@ impl SessionProvider for KwinSession {
         Self::session_env(&mut kwin, &runtime, &self.cfg.socket);
         kwin.args(["--virtual", "--socket", &self.cfg.socket])
             .args(["--width", &self.cfg.width.to_string(), "--height", &self.cfg.height.to_string()])
+            .args(["--output-count", &self.cfg.outputs.max(1).to_string()])
             .args(["--no-lockscreen", "--no-global-shortcuts"])
             .env_remove("WAYLAND_DISPLAY")
             .stdin(Stdio::null());

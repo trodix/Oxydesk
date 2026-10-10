@@ -46,6 +46,8 @@ const POINTER_HIDDEN: u32 = 1;
 struct Wl {
     screencast: Option<ZkdeScreencastUnstableV1>,
     outputs: Vec<wl_output::WlOutput>,
+    /// Position (x, y) de chaque sortie, dans l'ordre d'annonce du registre.
+    positions: Vec<(i32, i32)>,
     node: Option<u32>,
     failed: Option<String>,
 }
@@ -55,14 +57,22 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Wl {
         if let wl_registry::Event::Global { name, interface, version } = ev {
             match interface.as_str() {
                 "zkde_screencast_unstable_v1" => state.screencast = Some(reg.bind(name, version.min(5), qh, ())),
-                "wl_output" => state.outputs.push(reg.bind(name, version.min(4), qh, ())),
+                "wl_output" => {
+                    let index = state.outputs.len();
+                    state.outputs.push(reg.bind(name, version.min(4), qh, index));
+                    state.positions.push((0, 0));
+                }
                 _ => {}
             }
         }
     }
 }
-impl Dispatch<wl_output::WlOutput, ()> for Wl {
-    fn event(_: &mut Self, _: &wl_output::WlOutput, _: wl_output::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+impl Dispatch<wl_output::WlOutput, usize> for Wl {
+    fn event(state: &mut Self, _: &wl_output::WlOutput, ev: wl_output::Event, index: &usize, _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_output::Event::Geometry { x, y, .. } = ev {
+            state.positions[*index] = (x, y);
+        }
+    }
 }
 impl Dispatch<ZkdeScreencastUnstableV1, ()> for Wl {
     fn event(_: &mut Self, _: &ZkdeScreencastUnstableV1, _: proto::zkde_screencast_unstable_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
@@ -165,7 +175,13 @@ fn run(conn: Connection, output: usize, mailbox: Mailbox, stop: Arc<AtomicBool>,
         .screencast
         .clone()
         .ok_or("zkde_screencast_unstable_v1 non annoncé : exécutable non autorisé par KWin (ADR 004)")?;
-    let wl_output = wl.outputs.get(output).ok_or_else(|| format!("sortie {output} introuvable ({} sortie(s))", wl.outputs.len()))?.clone();
+    // Les événements `geometry` arrivent après la liaison : un second aller-retour les rapatrie.
+    queue.roundtrip(&mut wl).map_err(|e| format!("géométrie des sorties : {e}"))?;
+    // L'index logique d'une sortie est son rang de gauche à droite puis de haut en bas, pas l'ordre du registre.
+    let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
+    order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
+    let registry_index = *order.get(output).ok_or_else(|| format!("sortie {output} introuvable ({} sortie(s))", wl.outputs.len()))?;
+    let wl_output = wl.outputs[registry_index].clone();
     let _stream = screencast.stream_output(&wl_output, POINTER_HIDDEN, &qh, ());
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while wl.node.is_none() && wl.failed.is_none() {

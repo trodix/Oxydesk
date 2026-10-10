@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use rdsktp_capture::SyntheticDesktop;
 use rdsktp_encode::{OpenH264Config, OpenH264Encoder};
+use rdsktp_core::layout::Layout;
 use rdsktp_rdp::{Ports, ServerConfig};
 
-const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--width W] [--height H] [--fps F] [--nla-user U]\n\
+const USAGE: &str = "usage: rdsktp (--test-mode | --session kwin [--kwin-socket NOM] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT] [--state-dir DIR] [--outputs N] [--width W] [--height H] [--fps F] [--nla-user U]\n\
   --test-mode   bureau synthétique\n\
   --session kwin  démarre kwin_wayland --virtual (+ programmes --session-app) et le capture\n\
   --state-dir   certificat TLS auto-signé généré s'il est absent (défaut : /var/lib/rdsktp)\n\
@@ -66,6 +67,9 @@ async fn main() -> anyhow::Result<()> {
         arg(&args, "--width").unwrap_or(1920),
         arg(&args, "--height").unwrap_or(1080),
     );
+    let outputs: u32 = arg(&args, "--outputs").unwrap_or(1);
+    anyhow::ensure!((1..=16).contains(&outputs), "--outputs doit être entre 1 et 16");
+    let layout = Layout::side_by_side(outputs, u32::from(width), u32::from(height));
     let fps: f32 = arg(&args, "--fps").unwrap_or(30.0);
     let state_dir: PathBuf = arg(&args, "--state-dir").unwrap_or_else(|| "/var/lib/rdsktp".into());
     let (tls_cert, tls_key) = ensure_cert(&state_dir)?;
@@ -78,10 +82,12 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
-    let encoder = OpenH264Encoder::new(&OpenH264Config {
-        fps,
-        ..Default::default()
-    })?;
+    let encoders = (0..outputs)
+        .map(|_| {
+            OpenH264Encoder::new(&OpenH264Config { fps, ..Default::default() })
+                .map(|e| Box::new(e) as Box<dyn rdsktp_core::ports::FrameEncoder>)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     #[cfg(feature = "kwin")]
     let mut _session = None;
     let (capture, input, clipboard): (
@@ -103,11 +109,18 @@ async fn main() -> anyhow::Result<()> {
                     socket: socket.clone(),
                     width: u32::from(width),
                     height: u32::from(height),
+                    outputs,
                     programs,
                 });
                 session.start().map_err(|e| anyhow::anyhow!("session KWin : {e}"))?;
                 _session = Some(session);
-                let capture = rdsktp_capture::KwinCapture::start(Some(&socket), 0)?;
+                let sources = (0..outputs as usize)
+                    .map(|i| {
+                        rdsktp_capture::KwinCapture::start(Some(&socket), i)
+                            .map(|c| Box::new(c) as Box<dyn rdsktp_core::ports::CaptureSource>)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let capture = rdsktp_capture::MultiCapture::new(sources);
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
                 let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
                 (Box::new(capture), Box::new(input), Box::new(clipboard))
@@ -115,20 +128,20 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(not(feature = "kwin"))]
             anyhow::bail!("binaire compilé sans la feature `kwin`");
         } else {
+            anyhow::ensure!(outputs == 1, "--outputs > 1 nécessite --session kwin");
             let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
             // Mode test : le « bureau » synthétique renvoie en écho le texte reçu.
             (Box::new(desktop.clone()), Box::new(desktop.clone()), Box::new(desktop))
         };
     let ports = Ports {
         capture,
-        encoder: Box::new(encoder),
+        encoders,
         input,
         clipboard,
     };
     let config = ServerConfig {
         addr,
-        width,
-        height,
+        layout,
         fps,
         tls_cert,
         tls_key,

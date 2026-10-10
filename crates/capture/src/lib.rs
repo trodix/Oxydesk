@@ -10,3 +10,6 @@ pub use synthetic::{
 mod kwin;
 #[cfg(feature = "kwin")]
 pub use kwin::KwinCapture;
+
+mod multi;
+pub use multi::MultiCapture;

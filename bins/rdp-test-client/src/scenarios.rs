@@ -8,6 +8,8 @@ use crate::stats::percentile;
 pub struct Config {
     pub width: u32,
     pub height: u32,
+    /// Nombre d'écrans côte à côte, chacun `width`×`height` (M5).
+    pub outputs: u32,
     pub key_samples: usize,
     pub max_key_latency_ms: f64,
     pub timeout: Duration,
@@ -18,6 +20,7 @@ impl Default for Config {
         Self {
             width: 1920,
             height: 1080,
+            outputs: 1,
             key_samples: 20,
             max_key_latency_ms: 250.0,
             timeout: Duration::from_secs(10),
@@ -58,12 +61,18 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "key_to_pixel",
             "clipboard_roundtrip",
             "clipboard_roundtrip_large",
-        ] {
+        ]
+        .into_iter()
+        .chain((cfg.outputs > 1).then_some("multi_screen"))
+        {
             r.check(n, false, "non exécuté : connexion échouée");
         }
         return;
     };
     first_frame(s, cfg, size, r);
+    if cfg.outputs > 1 {
+        multi_screen(s, cfg, r);
+    }
     frames_flow(s, cfg, r);
     key_to_pixel(s, cfg, r);
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
@@ -75,7 +84,7 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
     match s.next_frame(cfg.timeout) {
         Err(e) => r.check("first_frame", false, e),
         Ok(f) => {
-            let expected = (cfg.width, cfg.height);
+            let expected = (cfg.width * cfg.outputs, cfg.height);
             let non_black = f.rgba.chunks(4).any(|p| p[0] > 8 || p[1] > 8 || p[2] > 8);
             let ok = (f.width, f.height) == expected && size == expected && non_black;
             r.check(
@@ -88,6 +97,25 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
             );
         }
     }
+}
+
+/// Chaque écran k affiche `PALETTE[k]` en (64, 0) de son propre repère : le bureau annoncé doit les
+/// juxtaposer à l'abscisse k·largeur.
+fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    let start = Instant::now();
+    let mut detail = String::new();
+    while start.elapsed() < cfg.timeout {
+        let Ok(f) = s.next_frame(cfg.timeout) else { break };
+        let seen: Vec<Option<[u8; 3]>> = (0..cfg.outputs)
+            .map(|k| f.block_mean(k * cfg.width + 2 * BLOCK, 0, BLOCK))
+            .collect();
+        if seen.iter().enumerate().all(|(k, m)| m.is_some_and(|m| close_to(m, PALETTE[k % PALETTE.len()]))) {
+            r.check("multi_screen", true, format!("{} écrans identifiés dans un bureau {}x{}", cfg.outputs, f.width, f.height));
+            return;
+        }
+        detail = format!("bureau {}x{}, blocs d'identité lus : {seen:?}", f.width, f.height);
+    }
+    r.check("multi_screen", false, format!("écrans non identifiés ({detail})"));
 }
 
 fn frames_flow(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
