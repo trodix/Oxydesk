@@ -3,7 +3,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::contract::*;
-use crate::session::{Frame, Session};
+use crate::session::{Frame, MonitorRequest, Session};
 
 /// Faults that can be injected to test the scenarios.
 #[derive(Debug, Clone)]
@@ -38,6 +38,7 @@ pub struct MockSession {
     clip: VecDeque<String>,
     audio_pos: u64,
     connections: u32,
+    monitors: Vec<MonitorRequest>,
 }
 
 impl MockSession {
@@ -50,6 +51,7 @@ impl MockSession {
             clip: VecDeque::new(),
             audio_pos: 0,
             connections: 0,
+            monitors: Vec::new(),
         }
     }
 }
@@ -91,6 +93,7 @@ impl Session for MockSession {
 
     fn connect(&mut self) -> Result<(u32, u32), String> {
         self.connections += 1;
+        self.monitors.clear();
         if self.faults.no_reconnect && self.connections > 1 {
             return Err("connection refused (mock fault)".into());
         }
@@ -113,6 +116,14 @@ impl Session for MockSession {
             height: h,
             rgba: vec![90; (w * h * 4) as usize],
         };
+        for (k, m) in self.monitors.iter().enumerate().skip(1) {
+            fill(
+                &mut f,
+                m.x as u32 + 2 * BLOCK,
+                m.y as u32,
+                PALETTE[k % PALETTE.len()],
+            );
+        }
         fill(&mut f, MARKER_POS.0, MARKER_POS.1, self.marker);
         fill(
             &mut f,
@@ -125,6 +136,18 @@ impl Session for MockSession {
             },
         );
         Ok(f)
+    }
+
+    fn set_monitors(&mut self, monitors: &[MonitorRequest]) -> Result<(), String> {
+        let width = monitors
+            .iter()
+            .map(|m| m.x as u32 + m.width)
+            .max()
+            .unwrap_or(0);
+        let height = monitors.iter().map(|m| m.height).max().unwrap_or(0);
+        self.faults.desktop = (width, height);
+        self.monitors = monitors.to_vec();
+        Ok(())
     }
 
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String> {
@@ -184,6 +207,22 @@ mod tests {
     fn healthy_server_passes_all_eight() {
         let r = run(MockFaults::default(), fast());
         assert_eq!(r.checks.len(), 8);
+        assert!(failed(&r).is_empty(), "{:?}", r.checks);
+    }
+
+    #[test]
+    fn multi_resize_follows_the_requested_layouts() {
+        let r = run(
+            MockFaults::default(),
+            Config {
+                multi_resize: true,
+                ..fast()
+            },
+        );
+        let names: Vec<_> = r.checks.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"multi_resize_add_third") && names.contains(&"multi_resize_add_again")
+        );
         assert!(failed(&r).is_empty(), "{:?}", r.checks);
     }
 

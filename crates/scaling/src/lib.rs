@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use rdsktp_core::error::{CaptureError, InputError};
 use rdsktp_core::frame::{Frame, FrameData};
-use rdsktp_core::layout::OutputId;
+use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::{CaptureSource, InputSink, PointerButton};
 use rdsktp_core::ScaleMap;
 
@@ -76,6 +76,23 @@ impl CaptureSource for ScalingCapture {
         );
         self.state.lock().expect("scaling mutex").map = Some(map);
         Ok(())
+    }
+
+    /// One output keeps the scaling fallback; several outputs go straight to the source (scaling is
+    /// still single-output, so a KWin without custom modes refuses them).
+    fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
+        match layout.outputs.as_slice() {
+            [o] => self.resize(o.width, o.height),
+            _ => {
+                self.inner.apply_layout(layout)?;
+                self.state.lock().expect("scaling mutex").map = None;
+                Ok(())
+            }
+        }
+    }
+
+    fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
+        self.inner.place(x, y)
     }
 
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {

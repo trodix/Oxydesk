@@ -21,7 +21,7 @@ use rdsktp_core::ports::CaptureSource;
 use spa::param::video::{VideoFormat, VideoInfoRaw};
 use spa::pod::Pod;
 use wayland_client::protocol::{wl_output, wl_registry};
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
 mod proto {
     #![allow(clippy::all, non_camel_case_types, non_upper_case_globals, unused)]
@@ -50,6 +50,8 @@ struct Wl {
     outputs: Vec<wl_output::WlOutput>,
     /// Position (x, y) of each output, in registry announcement order.
     positions: Vec<(i32, i32)>,
+    /// Name (`Virtual-0`...) of each output, in registry announcement order (empty until announced).
+    names: Vec<String>,
     node: Option<u32>,
     failed: Option<String>,
 }
@@ -79,6 +81,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Wl {
                         .outputs
                         .push(reg.bind(name, version.min(4), qh, index));
                     state.positions.push((0, 0));
+                    state.names.push(String::new());
                 }
                 _ => {}
             }
@@ -94,8 +97,10 @@ impl Dispatch<wl_output::WlOutput, usize> for Wl {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Geometry { x, y, .. } = ev {
-            state.positions[*index] = (x, y);
+        match ev {
+            wl_output::Event::Geometry { x, y, .. } => state.positions[*index] = (x, y),
+            wl_output::Event::Name { name } => state.names[*index] = name,
+            _ => {}
         }
     }
 }
@@ -130,6 +135,21 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
 type Mailbox = Arc<Mutex<Option<Frame>>>;
 type Waker = Arc<Mutex<Option<Arc<rdsktp_core::wake::Wake>>>>;
 
+/// What a capture stream is bound to.
+#[derive(Debug, Clone)]
+enum Target {
+    /// The output of this left-to-right rank (startup).
+    Rank(usize),
+    /// The existing output of this name.
+    Named(String),
+    /// A new virtual output, created with the stream and destroyed with it.
+    Virtual {
+        name: String,
+        width: u32,
+        height: u32,
+    },
+}
+
 pub struct KwinCapture {
     mailbox: Mailbox,
     waker: Waker,
@@ -137,7 +157,9 @@ pub struct KwinCapture {
     dead: Arc<Mutex<Option<String>>>,
     worker: Option<JoinHandle<()>>,
     socket: Option<String>,
-    output: usize,
+    /// Name of the output in KWin (`kscreen-doctor`).
+    name: String,
+    target: Target,
 }
 
 impl KwinCapture {
@@ -154,6 +176,52 @@ impl KwinCapture {
         output: usize,
         dmabuf: bool,
     ) -> Result<Self, CaptureError> {
+        Self::start_target(
+            socket,
+            Target::Rank(output),
+            format!("Virtual-{output}"),
+            dmabuf,
+        )
+    }
+
+    /// Captures the existing output `name` (enabled again if it had been disabled).
+    pub fn start_named(
+        socket: Option<&str>,
+        name: &str,
+        dmabuf: bool,
+    ) -> Result<Self, CaptureError> {
+        let _ = run_kscreen_doctor(socket, &[&format!("output.{name}.enable")]);
+        Self::start_target(
+            socket,
+            Target::Named(name.to_owned()),
+            name.to_owned(),
+            dmabuf,
+        )
+    }
+
+    /// Creates a virtual output of this size (KWin 6.7: `stream_virtual_output`), which exists as long as
+    /// the capture. KWin prefixes the requested name with `Virtual-`: `name` is the resulting one.
+    pub fn start_virtual(
+        socket: Option<&str>,
+        name: &str,
+        width: u32,
+        height: u32,
+        dmabuf: bool,
+    ) -> Result<Self, CaptureError> {
+        let target = Target::Virtual {
+            name: name.strip_prefix("Virtual-").unwrap_or(name).to_owned(),
+            width,
+            height,
+        };
+        Self::start_target(socket, target, name.to_owned(), dmabuf)
+    }
+
+    fn start_target(
+        socket: Option<&str>,
+        target: Target,
+        name: String,
+        dmabuf: bool,
+    ) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
         let waker: Waker = Arc::default();
@@ -163,10 +231,11 @@ impl KwinCapture {
         let worker = {
             let (mailbox, waker, stop, dead) =
                 (mailbox.clone(), waker.clone(), stop.clone(), dead.clone());
+            let target = target.clone();
             std::thread::Builder::new()
                 .name("kwin-capture".into())
                 .spawn(move || {
-                    if let Err(e) = run(conn, output, dmabuf, mailbox, waker, stop, &ready_tx) {
+                    if let Err(e) = run(conn, &target, dmabuf, mailbox, waker, stop, &ready_tx) {
                         let _ = ready_tx.send(Err(e.clone()));
                         *dead.lock().expect("dead") = Some(e);
                     }
@@ -181,7 +250,8 @@ impl KwinCapture {
                 dead,
                 worker: Some(worker),
                 socket: socket.map(str::to_owned),
-                output,
+                name,
+                target,
             }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
             Err(_) => Err(CaptureError::Unavailable(
@@ -201,7 +271,7 @@ impl CaptureSource for KwinCapture {
     /// need a recent KWin (measured: absent from Plasma 6.3.6, present in 6.7.5); `kscreen-doctor` reports
     /// failures on its output with a zero exit status, so the result is checked on the output geometry.
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
-        let name = format!("Virtual-{}", self.output);
+        let name = self.name.clone();
         // Adding an existing mode fails harmlessly; selecting the mode is what decides.
         let _ = self.kscreen_doctor(&[&format!(
             "output.{name}.addCustomMode.{width}.{height}.60000.reduced"
@@ -216,13 +286,49 @@ impl CaptureSource for KwinCapture {
             }
             if std::time::Instant::now() > deadline {
                 return Err(CaptureError::Unavailable(format!(
-                    "KWin cannot set {width}x{height} on {name} (now {size:?}): custom modes are missing in Plasma 6.3 (present in 6.7)"
+                    "KWin cannot set {width}x{height} on {name} (now {size:?}, outputs {:?}): custom modes are missing in Plasma 6.3 (present in 6.7)",
+                    output_names(&listing)
                 )));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        self.mailbox.lock().expect("mailbox").take(); // old-size frame
+        // Old-size frame: dropped. A frame of the new size may already be there (a static desktop sends no other).
+        let mut mailbox = self.mailbox.lock().expect("mailbox");
+        if mailbox
+            .as_ref()
+            .is_some_and(|f| (f.width, f.height) != (width, height))
+        {
+            mailbox.take();
+        }
         Ok(())
+    }
+
+    /// An output of the session stays in KWin when its capture stops: it is disabled. A virtual output
+    /// vanishes with its stream.
+    fn retire(&mut self) {
+        if !matches!(self.target, Target::Virtual { .. }) {
+            if let Err(e) = self.kscreen_doctor(&[&format!("output.{}.disable", self.name)]) {
+                tracing_log(format_args!("cannot disable {}: {e}", self.name));
+            }
+        }
+    }
+
+    fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
+        let name = self.name.clone();
+        self.kscreen_doctor(&[&format!("output.{name}.position.{x},{y}")])?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let listing = self.kscreen_doctor(&["-o"])?;
+            if parse_output_position(&listing, &name) == Some((x, y)) {
+                return Ok(());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(CaptureError::Unavailable(format!(
+                    "KWin did not move {name} to {x},{y}"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
@@ -239,22 +345,26 @@ impl CaptureSource for KwinCapture {
 impl KwinCapture {
     /// Runs `kscreen-doctor` against the captured session; returns its standard output (colors removed).
     fn kscreen_doctor(&self, args: &[&str]) -> Result<String, CaptureError> {
-        let mut cmd = std::process::Command::new("kscreen-doctor");
-        if let Some(socket) = &self.socket {
-            cmd.env("WAYLAND_DISPLAY", socket);
-        }
-        let out = cmd
-            .args(args)
-            .output()
-            .map_err(|e| CaptureError::Unavailable(format!("kscreen-doctor: {e}")))?;
-        if !out.status.success() {
-            return Err(CaptureError::Unavailable(format!(
-                "kscreen-doctor: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        Ok(strip_ansi(&String::from_utf8_lossy(&out.stdout)))
+        run_kscreen_doctor(self.socket.as_deref(), args)
     }
+}
+
+fn run_kscreen_doctor(socket: Option<&str>, args: &[&str]) -> Result<String, CaptureError> {
+    let mut cmd = std::process::Command::new("kscreen-doctor");
+    if let Some(socket) = socket {
+        cmd.env("WAYLAND_DISPLAY", socket);
+    }
+    let out = cmd
+        .args(args)
+        .output()
+        .map_err(|e| CaptureError::Unavailable(format!("kscreen-doctor: {e}")))?;
+    if !out.status.success() {
+        return Err(CaptureError::Unavailable(format!(
+            "kscreen-doctor: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(strip_ansi(&String::from_utf8_lossy(&out.stdout)))
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -274,6 +384,15 @@ fn strip_ansi(text: &str) -> String {
     out
 }
 
+/// Names of the outputs in a `kscreen-doctor -o` listing.
+fn output_names(listing: &str) -> Vec<&str> {
+    listing
+        .lines()
+        .filter_map(|l| l.strip_prefix("Output:"))
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .collect()
+}
+
 /// Size read from the `Geometry: X,Y WxH` line of output `name` in a `kscreen-doctor -o` listing.
 fn parse_output_size(listing: &str, name: &str) -> Option<(u32, u32)> {
     let block = listing
@@ -284,6 +403,18 @@ fn parse_output_size(listing: &str, name: &str) -> Option<(u32, u32)> {
         .find(|l| l.trim_start().starts_with("Geometry:"))?;
     let (w, h) = line.split_whitespace().last()?.split_once('x')?;
     Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// Position read from the `Geometry: X,Y WxH` line of output `name` in a `kscreen-doctor -o` listing.
+fn parse_output_position(listing: &str, name: &str) -> Option<(i32, i32)> {
+    let block = listing
+        .split("Output:")
+        .find(|b| b.split_whitespace().nth(1) == Some(name))?;
+    let line = block
+        .lines()
+        .find(|l| l.trim_start().starts_with("Geometry:"))?;
+    let (x, y) = line.split_whitespace().nth(1)?.split_once(',')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
 }
 
 impl Drop for KwinCapture {
@@ -318,7 +449,7 @@ struct PwData {
 
 fn run(
     conn: Connection,
-    output: usize,
+    target: &Target,
     dmabuf: bool,
     mailbox: Mailbox,
     waker: Waker,
@@ -340,14 +471,43 @@ fn run(
     queue
         .roundtrip(&mut wl)
         .map_err(|e| format!("output geometry: {e}"))?;
-    // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
-    let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
-    order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
-    let registry_index = *order
-        .get(output)
-        .ok_or_else(|| format!("output {output} not found ({} output(s))", wl.outputs.len()))?;
-    let wl_output = wl.outputs[registry_index].clone();
-    let _stream = screencast.stream_output(&wl_output, POINTER_HIDDEN, &qh, ());
+    let _stream = match target {
+        Target::Virtual {
+            name,
+            width,
+            height,
+        } => {
+            if screencast.version() < 2 {
+                return Err("virtual outputs need zkde_screencast version 2 (KWin 6.7)".into());
+            }
+            screencast.stream_virtual_output(
+                name.clone(),
+                *width as i32,
+                *height as i32,
+                1.0,
+                POINTER_HIDDEN,
+                &qh,
+                (),
+            )
+        }
+        Target::Named(name) => {
+            let i = wl
+                .names
+                .iter()
+                .position(|n| n == name)
+                .ok_or_else(|| format!("output {name} not found ({:?})", wl.names))?;
+            screencast.stream_output(&wl.outputs[i], POINTER_HIDDEN, &qh, ())
+        }
+        Target::Rank(output) => {
+            // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
+            let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
+            order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
+            let registry_index = *order.get(*output).ok_or_else(|| {
+                format!("output {output} not found ({} output(s))", wl.outputs.len())
+            })?;
+            screencast.stream_output(&wl.outputs[registry_index], POINTER_HIDDEN, &qh, ())
+        }
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while wl.node.is_none() && wl.failed.is_none() {
         if std::time::Instant::now() > deadline {
@@ -645,6 +805,8 @@ mod tests {
         assert_eq!(parse_output_size(listing, "Virtual-0"), Some((1024, 576)));
         assert_eq!(parse_output_size(listing, "Virtual-1"), Some((1920, 1080)));
         assert_eq!(parse_output_size(listing, "Virtual-2"), None);
+        assert_eq!(parse_output_position(listing, "Virtual-1"), Some((1024, 0)));
+        assert_eq!(parse_output_position(listing, "Virtual-2"), None);
         assert_eq!(
             strip_ansi("\u{1b}[01;33mGeometry: \u{1b}[0;0m0,0 1x2"),
             "Geometry: 0,0 1x2"

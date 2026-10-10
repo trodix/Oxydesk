@@ -12,6 +12,19 @@ pub struct OutputInfo {
     pub primary: bool,
 }
 
+/// Most outputs a layout may carry.
+pub const MAX_OUTPUTS: usize = 16;
+
+/// A monitor as announced by the client (Display Control): position in the client's space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorSpec {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     pub outputs: Vec<OutputInfo>,
@@ -32,6 +45,54 @@ impl Layout {
                 })
                 .collect(),
         }
+    }
+
+    /// Layout from the client's monitors: at most `MAX_OUTPUTS`, even dimensions, translated so that
+    /// the bounding rectangle starts at (0, 0) (RDP requirement). The primary monitor is output 0
+    /// (the first one when none is flagged); the others keep their relative order (left to right,
+    /// then top to bottom). `None` without any usable monitor.
+    pub fn from_monitors(monitors: &[MonitorSpec]) -> Option<Self> {
+        let mut m: Vec<MonitorSpec> = monitors
+            .iter()
+            .take(MAX_OUTPUTS)
+            .map(|m| MonitorSpec {
+                width: m.width & !1,
+                height: m.height & !1,
+                ..*m
+            })
+            .filter(|m| m.width > 0 && m.height > 0)
+            .collect();
+        if m.is_empty() {
+            return None;
+        }
+        let primary = m.iter().position(|m| m.primary).unwrap_or(0);
+        let first = m.remove(primary);
+        m.sort_by_key(|m| (m.x, m.y));
+        m.insert(
+            0,
+            MonitorSpec {
+                primary: true,
+                ..first
+            },
+        );
+        let (ox, oy) = (
+            m.iter().map(|m| m.x).min().unwrap_or(0),
+            m.iter().map(|m| m.y).min().unwrap_or(0),
+        );
+        Some(Self {
+            outputs: m
+                .iter()
+                .enumerate()
+                .map(|(i, m)| OutputInfo {
+                    id: OutputId(i as u32),
+                    x: m.x - ox,
+                    y: m.y - oy,
+                    width: m.width,
+                    height: m.height,
+                    primary: i == 0,
+                })
+                .collect(),
+        })
     }
 
     /// Bounding rectangle (width, height) from the origin (0, 0).
@@ -97,6 +158,47 @@ mod tests {
             CoordinateMapper::new(&l).locate(1920, 5),
             Some((OutputId(1), 0, 5))
         );
+    }
+
+    fn mon(x: i32, y: i32, w: u32, h: u32, primary: bool) -> MonitorSpec {
+        MonitorSpec {
+            x,
+            y,
+            width: w,
+            height: h,
+            primary,
+        }
+    }
+
+    #[test]
+    fn from_monitors_normalises_to_origin_and_even_sizes() {
+        let l = Layout::from_monitors(&[
+            mon(-1920, 100, 1921, 1081, false),
+            mon(0, 0, 1280, 720, true),
+        ])
+        .unwrap();
+        assert_eq!(l.outputs[0].id, OutputId(0));
+        assert!(l.outputs[0].primary && !l.outputs[1].primary);
+        // Primary first; the other monitor was left of it and 100 px lower.
+        assert_eq!((l.outputs[0].x, l.outputs[0].y), (1920, 0));
+        assert_eq!((l.outputs[1].x, l.outputs[1].y), (0, 100));
+        assert_eq!((l.outputs[1].width, l.outputs[1].height), (1920, 1080));
+        assert_eq!(l.desktop_size(), (3200, 1180));
+    }
+
+    #[test]
+    fn from_monitors_limits_and_rejects_empty() {
+        assert!(Layout::from_monitors(&[]).is_none());
+        assert!(Layout::from_monitors(&[mon(0, 0, 0, 10, true)]).is_none());
+        let many: Vec<_> = (0..20).map(|i| mon(i * 100, 0, 100, 100, i == 0)).collect();
+        assert_eq!(
+            Layout::from_monitors(&many).unwrap().outputs.len(),
+            MAX_OUTPUTS
+        );
+        let stacked =
+            Layout::from_monitors(&[mon(0, 0, 100, 100, true), mon(0, 100, 100, 100, false)])
+                .unwrap();
+        assert_eq!(stacked.desktop_size(), (100, 200));
     }
 
     #[test]

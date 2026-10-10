@@ -28,6 +28,16 @@ impl Frame {
     }
 }
 
+/// One monitor of a Display Control layout, in client coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorRequest {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
 /// Blocking RDP session (mock or IronRDP backend).
 pub trait Session {
     /// Connects and returns the negotiated desktop size.
@@ -42,6 +52,10 @@ pub trait Session {
         _timeout: Duration,
     ) -> Result<Option<crate::audio::AudioChunk>, String> {
         Err("audio not supported by this backend".into())
+    }
+    /// Sends a whole monitor layout (Display Control). The next frames carry the new desktop.
+    fn set_monitors(&mut self, _monitors: &[MonitorRequest]) -> Result<(), String> {
+        Err("Display Control not supported by this backend".into())
     }
     fn close(&mut self);
     /// Abrupt loss of the link: drops the connection without any RDP disconnect (default: `close`).

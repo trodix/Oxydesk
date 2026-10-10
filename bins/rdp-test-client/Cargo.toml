@@ -26,6 +26,7 @@ ironrdp-core = { version = "0.2", optional = true }
 ironrdp-blocking = { version = "=0.10.0", optional = true }
 ironrdp-egfx = { version = "=0.3.0", optional = true }
 ironrdp-dvc = { version = "=0.8.0", optional = true }
+ironrdp-displaycontrol = { version = "=0.8.0", optional = true }
 ironrdp-cliprdr = { version = "=0.7.0", optional = true }
 ironrdp-input = { version = "=0.7.0", optional = true }
 ironrdp-rdpsnd = { version = "0.9", optional = true }
@@ -36,4 +37,4 @@ rdsktp-rdp = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 
 [features]
-ironrdp = ["dep:anyhow", "dep:ironrdp-connector", "dep:ironrdp-session", "dep:ironrdp-pdu", "dep:ironrdp-graphics", "dep:ironrdp-svc", "dep:ironrdp-core", "dep:ironrdp-blocking", "dep:ironrdp-egfx", "dep:ironrdp-dvc", "dep:ironrdp-cliprdr", "dep:ironrdp-input", "dep:ironrdp-rdpsnd", "dep:openh264", "dep:rustls", "dep:x509-cert", "dep:rdsktp-rdp", "dep:tracing"]
+ironrdp = ["dep:anyhow", "dep:ironrdp-connector", "dep:ironrdp-session", "dep:ironrdp-pdu", "dep:ironrdp-graphics", "dep:ironrdp-svc", "dep:ironrdp-core", "dep:ironrdp-blocking", "dep:ironrdp-egfx", "dep:ironrdp-dvc", "dep:ironrdp-displaycontrol", "dep:ironrdp-cliprdr", "dep:ironrdp-input", "dep:ironrdp-rdpsnd", "dep:openh264", "dep:rustls", "dep:x509-cert", "dep:rdsktp-rdp", "dep:tracing"]

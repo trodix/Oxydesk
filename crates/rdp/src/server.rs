@@ -15,7 +15,7 @@ use ironrdp_server::{
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
 use rdsktp_core::error::{AudioError, LoginError};
-use rdsktp_core::layout::Layout;
+use rdsktp_core::layout::{Layout, MonitorSpec};
 use rdsktp_core::ports::{
     AudioParams, AudioProvider, AudioSource, ClipboardBackend, DesktopPorts, InputSink,
     SessionBroker,
@@ -71,6 +71,7 @@ impl SessionSlot {
         *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts {
             capture: ports.capture,
             encoders: ports.encoders,
+            make_encoder: ports.make_encoder,
         });
     }
 }
@@ -277,6 +278,10 @@ impl RdpServerDisplay for Display {
             None => self.initial,
         }
     }
+    async fn monitors(&mut self) -> Option<Vec<ironrdp_pdu::gcc::Monitor>> {
+        let layout = self.shared.layout.lock().expect("layout mutex").clone()?;
+        Some(pump::monitors(&layout))
+    }
     async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         *self.shared.display.lock().expect("display mutex") = Some(tx);
@@ -285,20 +290,73 @@ impl RdpServerDisplay for Display {
     }
     /// The client asks for a new size: handed to the pump, which resizes the capture and announces it through EGFX.
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
-        let Some(monitor) = layout
+        let specs: Vec<MonitorSpec> = layout
             .monitors()
             .iter()
-            .find(|m| m.is_primary())
-            .or_else(|| layout.monitors().first())
-        else {
+            .map(|m| {
+                let (w, h) = m.dimensions();
+                let (w, h) = MonitorLayoutEntry::adjust_display_size(w, h);
+                let (x, y) = m.position().unwrap_or((0, 0));
+                MonitorSpec {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    primary: m.is_primary(),
+                }
+            })
+            .collect();
+        let Some(new) = Layout::from_monitors(&specs) else {
             return;
         };
-        let (w, h) = monitor.dimensions();
-        let (w, h) = MonitorLayoutEntry::adjust_display_size(w, h);
-        tracing::debug!(w, h, "display control: resize requested");
-        *self.shared.resize.lock().expect("resize mutex") = Some((w, h & !1));
+        tracing::debug!(
+            outputs = new.outputs.len(),
+            "display control: layout requested"
+        );
+        *self.shared.resize.lock().expect("resize mutex") = Some(new);
         self.shared.wake.notify();
     }
+}
+
+/// Multi-monitor client (mstsc): the desktop follows the monitors it announces in its GCC data, negotiated from the
+/// start (no deactivation-reactivation). Limited to `max_outputs` monitors; a client with a single monitor keeps the
+/// server's layout.
+fn monitor_policy(shared: Arc<Shared>, max_outputs: usize) -> ironrdp_server::MonitorPolicy {
+    Arc::new(move |client| {
+        let specs: Vec<MonitorSpec> = client
+            .iter()
+            .take(max_outputs)
+            .map(|m| MonitorSpec {
+                x: m.left,
+                y: m.top,
+                width: (m.right - m.left + 1).max(0) as u32,
+                height: (m.bottom - m.top + 1).max(0) as u32,
+                primary: m.flags.contains(ironrdp_pdu::gcc::MonitorFlags::PRIMARY),
+            })
+            .collect();
+        let layout = (specs.len() >= 2)
+            .then(|| Layout::from_monitors(&specs))
+            .flatten();
+        *shared.client_initial.lock().expect("client layout mutex") = layout.clone();
+        let layout = layout?;
+        tracing::debug!(
+            outputs = layout.outputs.len(),
+            "client monitors adopted at connection"
+        );
+        let (w, h) = layout.desktop_size();
+        // Announced now: the pump applies the layout to the capture without a reactivation.
+        *shared.desktop.lock().expect("desktop mutex") = Some((w, h));
+        *shared.layout.lock().expect("layout mutex") = Some(layout.clone());
+        *shared.announced.lock().expect("announced mutex") = Some(layout.clone());
+        let monitors = pump::monitors(&layout);
+        Some((
+            ironrdp_server::DesktopSize {
+                width: w as u16,
+                height: h as u16,
+            },
+            monitors,
+        ))
+    })
 }
 
 /// Runs the RDP server with a fixed desktop (test mode, autologin) until it stops.
@@ -371,6 +429,10 @@ async fn serve(
             }) as Arc<dyn ironrdp_server::CredentialValidator>
         }))
         .build();
+    server.set_monitor_policy(Some(monitor_policy(
+        shared.clone(),
+        config.layout.outputs.len(),
+    )));
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {
             username,

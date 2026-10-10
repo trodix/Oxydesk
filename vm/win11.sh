@@ -12,6 +12,8 @@ ISO_URL="${WIN11_ISO_URL:-https://public.trodix.com/iso/windows/Windows11_Client
 ISO="${WIN11_ISO:-${WIN11_ISO_DIR:-$VM_DIR/../iso}/$(basename "$ISO_URL")}"
 # Missing ISO: downloaded to that path, then checked against the SHA-256 of the ISO used for the tests.
 ISO_SHA256="bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650"
+# Two display adapters (QXL, drivers installed by `drivers`): the guest has two monitors, without SPICE.
+DEFAULT_VGA="-vga none -device qxl-vga,id=gpu0,ram_size=67108864,vram_size=67108864 -device qxl,id=gpu1,ram_size=67108864,vram_size=67108864"
 CPUS="${WIN_CPUS:-4}"; MEM="${WIN_MEM:-8192}"; DISK="${WIN_DISK:-80G}"
 MON="$S/monitor.sock"; PIDFILE="$S/qemu.pid"; TPMDIR="$S/tpm"
 
@@ -70,7 +72,7 @@ launch() { # launch <with-install-iso: 0|1> [extra qemu args...]
     -drive "if=none,id=dat,media=cdrom,file=$S/data.iso,readonly=on" -device ide-cd,drive=dat,bus=ide.2,id=datcd \
     -device e1000e,netdev=n0 -netdev user,id=n0 \
     -audiodev "wav,id=snd,path=$S/audio.wav,out.frequency=48000" -device ich9-intel-hda -device hda-output,audiodev=snd \
-    -vga std -device qemu-xhci -device usb-tablet -device usb-kbd \
+    ${WIN_VGA:-$DEFAULT_VGA} ${WIN_EXTRA_QEMU:-} -device qemu-xhci -device usb-tablet -device usb-kbd \
     -serial "file:$S/serial.log" -display none -monitor "unix:$MON,server,nowait" -pidfile "$PIDFILE" "$@" -daemonize
 }
 
@@ -80,7 +82,7 @@ stop_vm() { # quit QEMU (lets the wav backend finalize its file), stop swtpm
 }
 
 # The snapshot depends on the guest script and on the virtual hardware defined in this file.
-snapshot_key() { cat "$W/rdp-activex-test.ps1" "${BASH_SOURCE[0]}" | sha256sum | cut -d' ' -f1; }
+snapshot_key() { { cat "$W/rdp-activex-test.ps1" "${BASH_SOURCE[0]}"; echo "${WIN_VGA:-} ${WIN_EXTRA_QEMU:-}"; } | sha256sum | cut -d' ' -f1; }
 
 take_snapshot() { # boot, wait for the guest script to wait for its parameters (READY), savevm
   running && die "already running"
@@ -129,6 +131,33 @@ case "${1:-}" in
     printf 'full address:s:%s\nauthentication level:i:0\nprompt for credentials:i:0\nredirectclipboard:i:1\nscreen mode id:i:1\ndesktopwidth:i:1280\ndesktopheight:i:720\nsmart sizing:i:1\n' "${2:?HOST:PORT}" > "$S/target.rdp"
     printf '%s\t%s' "${3:?USER}" "$RDP_TEST_PASSWORD" > "$S/cred.txt"
     make_iso "$S/data.iso" RDPDATA "$S/target.rdp" "$S/cred.txt" "$W/mstsc-test.ps1"; rm -f "$S/cred.txt" ;;
+  drivers) # drivers: installs the QXL / virtio-gpu display drivers (virtio-win CD) in the base image, once
+    # (needed for a multi-monitor guest: WIN_EXTRA_QEMU / WIN_VGA, see ADR 011). Works on a throwaway overlay
+    # committed into base.qcow2 only if the guest reports success.
+    VIRTIO="${VIRTIO_WIN_ISO:-$S/../virtio/virtio-win.iso}"
+    if [[ ! -r "$VIRTIO" ]]; then # mirror first, then the upstream Fedora location
+      mkdir -p "$(dirname "$VIRTIO")"
+      for url in "${VIRTIO_WIN_URL:-https://public.trodix.com/iso/windows/virtio-win.iso}" \
+                 https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso; do
+        echo "downloading $url"; curl -fL --retry 3 -C - -o "$VIRTIO.part" "$url" && mv "$VIRTIO.part" "$VIRTIO" && break
+      done
+      [[ -r "$VIRTIO" ]] || die "virtio-win ISO download failed"
+    fi
+    running && die "already running"
+    rm -f "$S/drv.qcow2"; qemu-img create -q -f qcow2 -b "$S/base.qcow2" -F qcow2 "$S/drv.qcow2"
+    # The logon task runs a CD file named rdp-activex-test.ps1 / mstsc-test.ps1: use the second name.
+    mkdir -p "$S/drv" && cp "$W/install-drivers.ps1" "$S/drv/mstsc-test.ps1" && make_iso "$S/drv-data.iso" RDPDATA "$S/drv/mstsc-test.ps1"
+    cp "$S/data.iso" "$S/data.iso.keep"; cp "$S/drv-data.iso" "$S/data.iso"
+    export DISK_IMG="$S/drv.qcow2"; : > "$S/serial.log"
+    launch 0 -drive "if=none,id=vio,media=cdrom,file=$VIRTIO,readonly=on" -device ide-cd,drive=vio,bus=ide.0
+    for i in $(seq 1 600); do running || break; sleep 1; (( i > 40 && i % 3 == 0 )) && ! grep -q 'DRIVERS done' "$S/serial.log" && mon "sendkey alt-y" >/dev/null || true; done
+    running && { stop_vm; mv "$S/data.iso.keep" "$S/data.iso"; die "driver installation timed out"; }
+    mv "$S/data.iso.keep" "$S/data.iso"
+    cat "$S/serial.log"
+    grep -q 'DRIVERS done' "$S/serial.log" && ! grep -q 'DRIVERS .*FAILED' "$S/serial.log" && grep -q 'DRIVERS .*ADDED' "$S/serial.log" \
+      || { rm -f "$S/drv.qcow2"; die "drivers not installed (see above)"; }
+    qemu-img commit -q "$S/drv.qcow2" && rm -f "$S/drv.qcow2" "$S/snapshot.sha" "$S/overlay.qcow2"
+    echo "drivers installed in base.qcow2" ;;
   snapshot) take_snapshot ;;
   test) # test HOST:PORT USER [TIMEOUT_S]: restores the snapshot, swaps the data CD (params only), waits for the
         # guest script to report END on the serial port, checks the tone recorded from the guest audio output.
@@ -138,8 +167,8 @@ case "${1:-}" in
     running && die "already running"
     addr="${2:?HOST:PORT}"; : "${3:?USER}"
     [[ -f "$S/overlay.qcow2" && "$(snapshot_key)" == "$(cat "$S/snapshot.sha" 2>/dev/null)" ]] || take_snapshot
-    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\n' \
-      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" > "$S/params.txt"
+    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\n' \
+      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" > "$S/params.txt"
     make_iso "$S/test-data.iso" RDPDATA "$S/params.txt"; rm -f "$S/params.txt" "$S/audio.wav"
     export DISK_IMG="$S/overlay.qcow2"
     : > "$S/serial.log"; launch 0 -loadvm ready

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::contract::*;
 use crate::report::Report;
-use crate::session::{Frame, Session};
+use crate::session::{Frame, MonitorRequest, Session};
 use crate::stats::percentile;
 
 pub struct Config {
@@ -13,6 +13,10 @@ pub struct Config {
     pub key_samples: usize,
     pub max_key_latency_ms: f64,
     pub timeout: Duration,
+    /// Runs the `multi_resize` scenario (dynamic number of monitors through Display Control).
+    pub multi_resize: bool,
+    /// `multi_resize` also looks for the synthetic identity blocks (not on a real desktop).
+    pub identity_blocks: bool,
     /// How long to retry connecting after a connection loss.
     pub reconnect_timeout: Duration,
 }
@@ -23,6 +27,8 @@ impl Default for Config {
             width: 1920,
             height: 1080,
             outputs: 1,
+            multi_resize: false,
+            identity_blocks: true,
             key_samples: 20,
             max_key_latency_ms: 250.0,
             timeout: Duration::from_secs(10),
@@ -83,8 +89,88 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
     audio_tone(s, cfg, r);
+    if cfg.multi_resize {
+        multi_resize(s, cfg, r);
+    }
     reconnect(s, cfg, r);
     s.close();
+}
+
+/// Monitors side by side, the first one primary; sizes are `(width, height)` per monitor.
+fn row(sizes: &[(u32, u32)]) -> Vec<MonitorRequest> {
+    let mut x = 0;
+    sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &(width, height))| {
+            let m = MonitorRequest {
+                x,
+                y: 0,
+                width,
+                height,
+                primary: i == 0,
+            };
+            x += width as i32;
+            m
+        })
+        .collect()
+}
+
+/// Changes the number and sizes of the monitors (2 → 3 → 1 → 2 outputs): after each Display Control layout the
+/// desktop must take the bounding box and the screens k ≥ 1 must show their identity block (`PALETTE[k]` at
+/// (64, 0) of their own area) at the requested position.
+fn multi_resize(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    // The last step restores the configured layout: the server keeps the last one across connections.
+    let configured = vec![(cfg.width, cfg.height); cfg.outputs.max(1) as usize];
+    let steps = [
+        ("multi_resize_two", row(&[(800, 600), (640, 480)])),
+        (
+            "multi_resize_add_third",
+            row(&[(800, 600), (640, 480), (1024, 576)]),
+        ),
+        ("multi_resize_remove_to_one", row(&[(1024, 576)])),
+        ("multi_resize_add_again", row(&[(1024, 576), (800, 600)])),
+        ("multi_resize_restore", row(&configured)),
+    ];
+    for (name, monitors) in steps {
+        let width = monitors
+            .iter()
+            .map(|m| m.x as u32 + m.width)
+            .max()
+            .unwrap_or(0);
+        let height = monitors.iter().map(|m| m.height).max().unwrap_or(0);
+        if let Err(e) = s.set_monitors(&monitors) {
+            r.check(name, false, e);
+            continue;
+        }
+        let start = Instant::now();
+        let mut detail = String::from("no frame");
+        let mut ok = false;
+        while !ok && start.elapsed() < cfg.timeout {
+            let Ok(f) = s.next_frame(cfg.timeout) else {
+                break;
+            };
+            let seen: Vec<Option<[u8; 3]>> = monitors
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(k, m)| {
+                    f.block_mean(m.x as u32 + 2 * BLOCK, m.y as u32, BLOCK)
+                        .filter(|&c| close_to(c, PALETTE[k % PALETTE.len()]))
+                })
+                .collect();
+            ok = (f.width, f.height) == (width, height)
+                && (!cfg.identity_blocks || seen.iter().all(Option::is_some));
+            detail = format!(
+                "desktop {}x{}, expected {width}x{height}, identity blocks matching: {}/{}",
+                f.width,
+                f.height,
+                seen.iter().filter(|m| m.is_some()).count(),
+                seen.len()
+            );
+        }
+        r.check(name, ok, detail);
+    }
 }
 
 fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Report) {
@@ -106,7 +192,7 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
     }
 }
 
-/// Each screen k displays `PALETTE[k]` at (64, 0) of its own frame of reference: the announced desktop must
+/// Each screen k ≥ 1 displays `PALETTE[k]` at (64, 0) of its own frame of reference: the announced desktop must
 /// juxtapose them at abscissa k·width.
 fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     let start = Instant::now();
@@ -115,13 +201,13 @@ fn multi_screen(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         let Ok(f) = s.next_frame(cfg.timeout) else {
             break;
         };
-        let seen: Vec<Option<[u8; 3]>> = (0..cfg.outputs)
+        let seen: Vec<Option<[u8; 3]>> = (1..cfg.outputs)
             .map(|k| f.block_mean(k * cfg.width + 2 * BLOCK, 0, BLOCK))
             .collect();
         if seen
             .iter()
             .enumerate()
-            .all(|(k, m)| m.is_some_and(|m| close_to(m, PALETTE[k % PALETTE.len()])))
+            .all(|(i, m)| m.is_some_and(|m| close_to(m, PALETTE[(i + 1) % PALETTE.len()])))
         {
             r.check(
                 "multi_screen",

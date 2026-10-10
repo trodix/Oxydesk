@@ -274,8 +274,12 @@ fn client(o: &TestOpts) -> Result<(), String> {
     } else {
         server.arg("--test-mode");
     }
+    // WIN_MONITORS=2: the guest uses both its monitors (multimon) and the server exposes two outputs.
+    let monitors = std::env::var("WIN_MONITORS").unwrap_or_else(|_| "1".into());
     let server = server
         .args(["--width", "1280", "--height", "720"])
+        .arg("--outputs")
+        .arg(&monitors)
         .arg("--listen")
         .arg(format!("0.0.0.0:{}", o.port))
         .arg("--state-dir")

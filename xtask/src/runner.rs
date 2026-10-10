@@ -144,6 +144,9 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     if o.outputs > 1 {
         client_cmd.push_str(&format!(" --outputs {}", o.outputs));
     }
+    if o.multi_resize {
+        client_cmd.push_str(" --multi-resize");
+    }
     if o.login {
         client_cmd.push_str(" --no-nla --user dev");
     }

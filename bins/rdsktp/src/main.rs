@@ -178,7 +178,29 @@ async fn main() -> anyhow::Result<()> {
                         .map(|c| Box::new(c) as Box<dyn rdsktp_core::ports::CaptureSource>)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let capture = rdsktp_capture::MultiCapture::new(sources);
+            // More outputs than the session started with (KWin 6.7): virtual outputs, which vanish with
+            // their capture; the session's own outputs are disabled and enabled again.
+            let factory_socket = socket.clone();
+            let capture =
+                rdsktp_capture::MultiCapture::new(sources).with_factory(Box::new(move |i, o| {
+                    let name = format!("Virtual-{i}");
+                    let capture = if i < outputs as usize {
+                        rdsktp_capture::KwinCapture::start_named(
+                            Some(&factory_socket),
+                            &name,
+                            dmabuf,
+                        )
+                    } else {
+                        rdsktp_capture::KwinCapture::start_virtual(
+                            Some(&factory_socket),
+                            &name,
+                            o.width,
+                            o.height,
+                            dmabuf,
+                        )
+                    };
+                    capture.map(|c| Box::new(c) as Box<dyn rdsktp_core::ports::CaptureSource>)
+                }));
             let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
             let clipboard: Box<dyn rdsktp_core::ports::ClipboardBackend> =
                 match rdsktp_clipboard::WaylandClipboard::connect(Some(&socket)) {
@@ -195,8 +217,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(not(feature = "kwin"))]
         anyhow::bail!("binary built without the `kwin` feature");
     } else {
-        anyhow::ensure!(outputs == 1, "--outputs > 1 requires --session kwin");
-        let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
+        let desktop = SyntheticDesktop::with_outputs(outputs, u32::from(width), u32::from(height));
         // Test mode: the synthetic "desktop" echoes back the received text.
         (
             Box::new(desktop.clone()),
@@ -207,6 +228,10 @@ async fn main() -> anyhow::Result<()> {
     let ports = Ports {
         capture,
         encoders,
+        make_encoder: Some(Box::new(move |_| {
+            Box::new(AutoEncoder::new(choice, fps, 8_000_000))
+                as Box<dyn rdsktp_core::ports::FrameEncoder>
+        })),
         input,
         clipboard,
         audio,

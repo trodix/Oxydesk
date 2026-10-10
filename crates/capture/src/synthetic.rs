@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
-use rdsktp_core::layout::OutputId;
+use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink};
 
 // Contract with bins/rdp-test-client (src/contract.rs): keep both in sync.
@@ -20,6 +20,8 @@ pub const PALETTE: [[u8; 3]; 8] = [
     [255, 128, 0],
     [128, 0, 255],
 ];
+/// Identity block of the outputs after the first: color `PALETTE[output rank % 8]`.
+pub const IDENTITY_POS: (u32, u32) = (64, 0);
 /// Block in the bottom-right corner: shows the actual desktop size on the client side.
 pub const CORNER_COLOR: [u8; 3] = [255, 0, 255];
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
@@ -33,6 +35,8 @@ pub struct SyntheticSource {
     tick: u64,
     marker: Option<usize>,
     noise: bool,
+    /// Rank of the output: outputs after the first carry an identity block (`IDENTITY_POS`).
+    index: u32,
 }
 
 impl SyntheticSource {
@@ -49,7 +53,14 @@ impl SyntheticSource {
             tick: 0,
             marker: None,
             noise: false,
+            index: 0,
         }
+    }
+
+    /// Rank of the output this source renders (frames carry it; rank > 0 adds an identity block).
+    pub fn with_index(mut self, index: u32) -> Self {
+        self.index = index;
+        self
     }
 
     /// Worst case for the encoder: pseudo-random noise over the whole background (changes every frame).
@@ -112,6 +123,14 @@ impl SyntheticSource {
             HEARTBEAT_OFF
         };
         fill(&mut px, w, HEARTBEAT_POS, beat);
+        if self.index > 0 {
+            fill(
+                &mut px,
+                w,
+                IDENTITY_POS,
+                PALETTE[self.index as usize % PALETTE.len()],
+            );
+        }
         fill(
             &mut px,
             w,
@@ -119,7 +138,7 @@ impl SyntheticSource {
             CORNER_COLOR,
         );
         Frame {
-            output: OutputId(0),
+            output: OutputId(self.index),
             width: self.width,
             height: self.height,
             stride: self.width * 4,
@@ -155,15 +174,23 @@ pub struct SyntheticDesktop {
 }
 
 struct DesktopState {
-    source: SyntheticSource,
+    /// One source per output, in layout order.
+    sources: Vec<SyntheticSource>,
     echo: Option<String>,
 }
 
 impl SyntheticDesktop {
     pub fn new(width: u32, height: u32) -> Self {
+        Self::with_outputs(1, width, height)
+    }
+
+    /// `n` outputs of the same size.
+    pub fn with_outputs(n: u32, width: u32, height: u32) -> Self {
         Self {
             inner: Arc::new(Mutex::new(DesktopState {
-                source: SyntheticSource::new(width, height),
+                sources: (0..n)
+                    .map(|i| SyntheticSource::new(width, height).with_index(i))
+                    .collect(),
                 echo: None,
             })),
         }
@@ -175,11 +202,44 @@ impl SyntheticDesktop {
 }
 
 impl CaptureSource for SyntheticDesktop {
-    fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
-        Ok(Some(self.state().source.render()))
+    fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
+        self.state()
+            .sources
+            .get_mut(output.0 as usize)
+            .map(|s| Some(s.render()))
+            .ok_or_else(|| CaptureError::Unavailable(format!("unknown output {}", output.0)))
     }
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
-        self.state().source.resize(width, height)
+        match self.state().sources.as_mut_slice() {
+            [single] => single.resize(width, height),
+            _ => Err(CaptureError::ResizeUnsupported),
+        }
+    }
+    fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
+        let mut st = self.state();
+        // All or nothing: validate the sizes on scratch sources first.
+        let mut sources: Vec<SyntheticSource> = Vec::new();
+        for (i, o) in layout.outputs.iter().enumerate() {
+            sources.push(match st.sources.get(i) {
+                Some(old) => {
+                    let mut s = SyntheticSource {
+                        marker: old.marker,
+                        tick: old.tick,
+                        ..SyntheticSource::new(old.width, old.height).with_index(i as u32)
+                    };
+                    s.resize(o.width, o.height)?;
+                    s
+                }
+                None => {
+                    SyntheticSource::new(o.width.max(96), o.height.max(BLOCK)).with_index(i as u32)
+                }
+            });
+        }
+        if sources.is_empty() {
+            return Err(CaptureError::Unavailable("empty layout".into()));
+        }
+        st.sources = sources;
+        Ok(())
     }
 }
 
@@ -187,7 +247,10 @@ impl InputSink for SyntheticDesktop {
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
         if pressed {
             if let Some(i) = KEYS.iter().position(|&k| k == scancode) {
-                self.state().source.set_marker(i);
+                self.state()
+                    .sources
+                    .iter_mut()
+                    .for_each(|s| s.set_marker(i));
             }
         }
         Ok(())
@@ -229,6 +292,36 @@ mod tests {
         assert!(s.resize(40, 200).is_err());
         assert_eq!(s.render().width, 512, "a refused resize changes nothing");
         assert_eq!(pixel(&f, 512 - 4, 200 - 4), CORNER_COLOR);
+    }
+
+    #[test]
+    fn apply_layout_adds_resizes_and_removes_outputs() {
+        use rdsktp_core::layout::MonitorSpec;
+        let spec = |x, w| MonitorSpec {
+            x,
+            y: 0,
+            width: w,
+            height: 200,
+            primary: x == 0,
+        };
+        let mut d = SyntheticDesktop::new(256, 128);
+        assert!(d.recv_latest(OutputId(1)).is_err());
+        let two = Layout::from_monitors(&[spec(0, 300), spec(300, 400)]).unwrap();
+        d.apply_layout(&two).unwrap();
+        let f1 = d.recv_latest(OutputId(1)).unwrap().unwrap();
+        assert_eq!((f1.output, f1.width, f1.height), (OutputId(1), 400, 200));
+        assert_eq!(pixel(&f1, IDENTITY_POS.0 as usize, 0), PALETTE[1]);
+        let one = Layout::from_monitors(&[spec(0, 500)]).unwrap();
+        d.apply_layout(&one).unwrap();
+        assert!(d.recv_latest(OutputId(1)).is_err());
+        assert_eq!(d.recv_latest(OutputId(0)).unwrap().unwrap().width, 500);
+        let bad = Layout::from_monitors(&[spec(0, 20)]).unwrap();
+        assert!(d.apply_layout(&bad).is_err());
+        assert_eq!(
+            d.recv_latest(OutputId(0)).unwrap().unwrap().width,
+            500,
+            "refused: unchanged"
+        );
     }
 
     #[test]

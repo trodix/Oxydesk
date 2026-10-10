@@ -8,6 +8,7 @@ pub const HELP: &str = "cargo xtask vm-test [options]
   --build-cmd <cmd>     build command (env XTASK_BUILD_CMD, default: testapp release + cargo deb -p rdsktp)
   --client-cmd <cmd>    client command, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
   --outputs N                 number of screens (with --session kwin; default 1)
+  --multi-resize        client scenario: dynamic number of monitors (Display Control; needs --outputs >= 2)
   --session <synthetic|kwin|login>  desktop source on the server side (default synthetic; kwin = real virtual KWin;
                                                           login = remote PAM login + agent, requires RDP_TEST_PASSWORD)
   --timeout <s>         client step timeout (default 600)
@@ -30,6 +31,7 @@ pub struct Opts {
     pub login: bool,
     /// Number of screens (kwin session only).
     pub outputs: u32,
+    pub multi_resize: bool,
     pub deb: Option<String>,
     pub build_cmd: String,
     pub client_cmd: String,
@@ -52,6 +54,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         kwin: false,
         login: false,
         outputs: 1,
+        multi_resize: false,
         deb: None,
         build_cmd: env("XTASK_BUILD_CMD").unwrap_or_else(|| DEFAULT_BUILD_CMD.into()),
         client_cmd: env("XTASK_CLIENT_CMD").unwrap_or_else(|| DEFAULT_CLIENT_CMD.into()),
@@ -88,6 +91,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .filter(|n| (1..=16).contains(n))
                     .ok_or("--outputs invalid (1 to 16)")?
             }
+            "--multi-resize" => o.multi_resize = true,
             "--deb" => o.deb = Some(val("--deb")?),
             "--build-cmd" => o.build_cmd = val("--build-cmd")?,
             "--client-cmd" => o.client_cmd = val("--client-cmd")?,

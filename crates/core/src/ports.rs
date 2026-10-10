@@ -14,6 +14,22 @@ pub trait CaptureSource: Send {
     fn resize(&mut self, _width: u32, _height: u32) -> Result<(), CaptureError> {
         Err(CaptureError::ResizeUnsupported)
     }
+    /// This source is dropped from the layout: its output is no longer wanted (a compositor output that
+    /// cannot be destroyed is disabled). Dropping the source itself releases the rest.
+    fn retire(&mut self) {}
+    /// Moves this source's output to `(x, y)` in the desktop. Sources without a position (single
+    /// output, synthetic) ignore it.
+    fn place(&mut self, _x: i32, _y: i32) -> Result<(), CaptureError> {
+        Ok(())
+    }
+    /// Applies a whole layout (number, sizes and positions of the outputs). By default only a
+    /// single-output layout is supported, through `resize`.
+    fn apply_layout(&mut self, layout: &crate::layout::Layout) -> Result<(), CaptureError> {
+        match layout.outputs.as_slice() {
+            [o] => self.resize(o.width, o.height),
+            _ => Err(CaptureError::ResizeUnsupported),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,11 +103,16 @@ pub trait AudioProvider: Send + Sync {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError>;
 }
 
+/// Creates the encoder of an output added by a layout change.
+pub type EncoderFactory = Box<dyn Fn(crate::layout::OutputId) -> Box<dyn FrameEncoder> + Send>;
+
 /// Ports of a remote desktop opened for a user.
 pub struct DesktopPorts {
     pub capture: Box<dyn CaptureSource>,
     /// One encoder per output, in layout order.
     pub encoders: Vec<Box<dyn FrameEncoder>>,
+    /// Encoders for outputs added later; without it the number of outputs cannot change.
+    pub make_encoder: Option<EncoderFactory>,
     pub input: Box<dyn InputSink>,
     pub clipboard: Box<dyn ClipboardBackend>,
     pub audio: Option<std::sync::Arc<dyn AudioProvider>>,

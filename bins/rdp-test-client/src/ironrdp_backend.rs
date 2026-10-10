@@ -16,11 +16,16 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context as _};
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrClient;
+use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::sspi::network_client::NetworkClient;
-use ironrdp_connector::{ClientConnector, Config, Credentials, DesktopSize};
+use ironrdp_connector::{ClientConnector, Config, Credentials, DesktopSize, Sequence as _};
 use ironrdp_core::{decode_cursor, impl_as_any, ReadCursor};
-use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor};
+use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_displaycontrol::pdu::{
+    DisplayControlMonitorLayout, DisplayControlPdu, MonitorLayoutEntry,
+};
+use ironrdp_dvc::{encode_dvc_messages, DrdynvcClient, DvcMessage, DvcProcessor};
 use ironrdp_egfx::client::{
     BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface,
 };
@@ -36,12 +41,13 @@ use ironrdp_rdpsnd::client::{Rdpsnd, RdpsndClientHandler};
 use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_svc::ChannelFlags;
 use rdsktp_rdp::clipboard::{announce, LocalText, SendFn};
 use rdsktp_rdp::TextClipboard;
 use rustls::pki_types::ServerName;
 use tracing::debug;
 
-use crate::session::{Frame, Session};
+use crate::session::{Frame, MonitorRequest, Session};
 
 /// Connection parameters.
 #[derive(Debug, Clone)]
@@ -85,6 +91,7 @@ impl Shared {
 enum Command {
     Key(u16, bool),
     Clipboard(String),
+    Monitors(Vec<MonitorRequest>),
     Close,
     /// Drops the socket without the RDP shutdown sequence.
     Abort,
@@ -229,6 +236,10 @@ impl Session for IronRdpSession {
         }
     }
 
+    fn set_monitors(&mut self, monitors: &[MonitorRequest]) -> Result<(), String> {
+        self.send(Command::Monitors(monitors.to_vec()))
+    }
+
     fn close(&mut self) {
         self.stop(Command::Close);
     }
@@ -332,7 +343,7 @@ impl H264Decoder for PerSurfaceDecoder {
             .pop_front()
             .unwrap_or(0);
         if let std::collections::hash_map::Entry::Vacant(v) = self.decoders.entry(id) {
-            v.insert(OpenH264Decoder::new().map_err(|e| DecoderError::msg(&e.to_string()))?);
+            v.insert(OpenH264Decoder::new().map_err(|e| DecoderError::msg(e.to_string()))?);
         }
         self.decoders.get_mut(&id).expect("inserted").decode(data)
     }
@@ -690,7 +701,11 @@ fn run_worker(
         zgfx: zgfx::Decompressor::new(),
         buf: Vec::new(),
     };
-    connector.attach_static_channel(DrdynvcClient::new().with_dynamic_channel(gfx));
+    connector.attach_static_channel(
+        DrdynvcClient::new()
+            .with_dynamic_channel(gfx)
+            .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+    );
     connector.attach_static_channel(Rdpsnd::new(Box::new(AudioSink::new(shared.clone()))));
     connector.attach_static_channel(CliprdrClient::new(Box::new(TextClipboard::new(
         send.clone(),
@@ -781,6 +796,10 @@ fn run_worker(
                     write_outputs(&mut framed, outs)?;
                 }
                 Command::Clipboard(text) => announce(&send, &local, text),
+                Command::Monitors(monitors) => {
+                    let frame = encode_monitor_layout(&mut stage, &monitors)?;
+                    framed.write_all(&frame)?;
+                }
             }
         }
         // Outgoing CLIPRDR messages.
@@ -798,6 +817,12 @@ fn run_worker(
                 for out in outs {
                     match out {
                         ActiveStageOutput::ResponseFrame(f) => framed.write_all(&f)?,
+                        ActiveStageOutput::DeactivateAll => reactivate(
+                            &mut framed,
+                            &result.activation_factory,
+                            &mut stage,
+                            &mut image,
+                        )?,
                         ActiveStageOutput::Terminate(r) => {
                             return Err(anyhow!("session terminated by the server: {r:?}"))
                         }
@@ -807,6 +832,101 @@ fn run_worker(
             }
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(e) => return Err(anyhow!(e).context("network read")),
+        }
+    }
+}
+
+/// Display Control layout of several monitors, ready to be written on the wire.
+fn encode_monitor_layout(
+    stage: &mut ActiveStage,
+    monitors: &[MonitorRequest],
+) -> anyhow::Result<Vec<u8>> {
+    let entries = monitors
+        .iter()
+        .map(|m| {
+            let (w, h) = MonitorLayoutEntry::adjust_display_size(m.width, m.height);
+            let entry = if m.primary {
+                MonitorLayoutEntry::new_primary(w, h)
+            } else {
+                MonitorLayoutEntry::new_secondary(w, h)
+            };
+            entry.and_then(|e| e.with_position(m.x, m.y))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow!("monitor layout: {e}"))?;
+    let pdu: DisplayControlPdu = DisplayControlMonitorLayout::new(&entries)
+        .map_err(|e| anyhow!("monitor layout: {e}"))?
+        .into();
+    let channel_id = stage
+        .get_dvc::<DisplayControlClient>()
+        .and_then(|dvc| dvc.channel_id())
+        .context("Display Control channel not open")?;
+    let messages = encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
+        .map_err(|e| anyhow!("{e}"))?;
+    stage
+        .encode_dvc_messages(messages)
+        .map_err(|e| anyhow!("{e}"))
+}
+
+/// Deactivation-reactivation: replays capabilities and finalization, then resizes the decoded image.
+fn reactivate(
+    framed: &mut ironrdp_blocking::Framed<Tls>,
+    factory: &ironrdp_connector::connection_activation::ConnectionActivationFactory,
+    stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+) -> anyhow::Result<()> {
+    let mut sequence = factory.create();
+    let mut buf = ironrdp_core::WriteBuf::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        buf.clear();
+        let written = match sequence.next_pdu_hint() {
+            Some(hint) => {
+                let pdu = loop {
+                    match framed.read_by_hint(hint) {
+                        Ok(pdu) => break pdu,
+                        Err(e)
+                            if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                                && Instant::now() < deadline => {}
+                        Err(e) => return Err(anyhow!(e).context("reactivation read")),
+                    }
+                };
+                sequence.step(&pdu, &mut buf).map_err(|e| anyhow!("{e}"))?
+            }
+            None => sequence
+                .step_no_input(&mut buf)
+                .map_err(|e| anyhow!("{e}"))?,
+        };
+        if let Some(n) = written.size() {
+            framed.write_all(&buf[..n])?;
+        }
+        if let ConnectionActivationState::Finalized {
+            desktop_size,
+            share_id,
+            enable_server_pointer,
+            pointer_software_rendering,
+        } = sequence.connection_activation_state()
+        {
+            debug!(?desktop_size, "reactivated");
+            *image = DecodedImage::new(
+                ironrdp_graphics::image_processing::PixelFormat::RgbA32,
+                desktop_size.width,
+                desktop_size.height,
+            );
+            stage.set_fastpath_processor(
+                ironrdp_session::fast_path::ProcessorBuilder {
+                    io_channel_id: sequence.io_channel_id(),
+                    user_channel_id: sequence.user_channel_id(),
+                    share_id,
+                    enable_server_pointer,
+                    pointer_software_rendering,
+                    bulk_decompressor: None,
+                }
+                .build(),
+            );
+            stage.set_share_id(share_id);
+            stage.set_enable_server_pointer(enable_server_pointer);
+            return Ok(());
         }
     }
 }

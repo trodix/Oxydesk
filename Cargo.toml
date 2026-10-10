@@ -46,3 +46,9 @@ rdsktp-encode = { path = "crates/encode" }
 rdsktp-scaling = { path = "crates/scaling" }
 rdsktp-session = { path = "crates/session" }
 rdsktp-rdp = { path = "crates/rdp" }
+
+# IronRDP patched locally (third_party/): the Monitor Layout PDU announces the real monitors (multi-monitor
+# mstsc) and the client's GCC monitors are exposed. See docs/decisions/011-multi-ecran-dynamique.md.
+[patch.crates-io]
+ironrdp-acceptor = { path = "third_party/ironrdp-acceptor" }
+ironrdp-server = { path = "third_party/ironrdp-server" }

@@ -56,6 +56,60 @@ Emit "BEGIN $(Get-Date -Format o) server=$($p.server):$($p.port)"
 $w = [int]$p.width; $h = [int]$p.height
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Emit ('SCREENS ' + (([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.DeviceName)=$($_.Bounds)" }) -join ' '))
+if ($p.monitors -eq '2') {
+  # Multi-monitor run: the stock mstsc.exe in full screen over both local monitors (the ActiveX control cannot
+  # do full screen multimon without a container). Observed through screenshots of the whole virtual screen.
+  $script:vb = [System.Windows.Forms.SystemInformation]::VirtualScreen
+  function ScreenBmp {
+    $bmp = New-Object System.Drawing.Bitmap $script:vb.Width, $script:vb.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($script:vb.Location, [System.Drawing.Point]::Empty, $script:vb.Size); $g.Dispose()
+    return $bmp
+  }
+  function ShotMulti([string]$tag) {
+    $bmp = ScreenBmp
+    $small = New-Object System.Drawing.Bitmap ([int]($bmp.Width / 4)), ([int]($bmp.Height / 4))
+    $gs = [System.Drawing.Graphics]::FromImage($small); $gs.DrawImage($bmp, 0, 0, $small.Width, $small.Height); $gs.Dispose()
+    $pm = New-Object System.IO.MemoryStream; $small.Save($pm, [System.Drawing.Imaging.ImageFormat]::Png); $small.Dispose(); $bmp.Dispose()
+    Emit ("SHOT $tag " + [Convert]::ToBase64String($pm.ToArray()))
+  }
+  cmdkey /generic:"TERMSRV/$($p.server)" /user:$($p.user) /pass:$($p.password) | Out-Null
+  # Default.rdp (base of every command-line launch): no "unknown publisher" consent dialog as for a .rdp argument.
+  @('screen mode id:i:2', 'use multimon:i:1', 'authentication level:i:0', 'prompt for credentials:i:0',
+    'redirectclipboard:i:0', 'audiomode:i:2', "username:s:$($p.user)", 'dynamic resolution:i:1') |
+    Set-Content (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Default.rdp') -Encoding ascii -Force
+  Attrib -S -H (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Default.rdp') 2>$null
+  $mstsc = Start-Process mstsc.exe -ArgumentList "/v:$($p.server):$($p.port)", '/f', '/multimon' -PassThru
+  Start-Sleep -Seconds 12
+  ShotMulti 't12'
+  Start-Sleep -Seconds 4
+  ShotMulti 't16'
+  # Each local monitor must show its own remote output: the synthetic desktop draws a heartbeat block at (32,0) of every
+  # output and, after the first, an identity block at (64,0) with PALETTE[rank] (second output: green).
+  $bmp = ScreenBmp
+  $scr = [System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }
+  function Near($c, $r, $g, $b) { [math]::Abs($c.R - $r) -lt 70 -and [math]::Abs($c.G - $g) -lt 70 -and [math]::Abs($c.B - $b) -lt 70 }  # H.264 shifts colours
+  $ids = @(foreach ($sc in $scr) { $c = $bmp.GetPixel($sc.Bounds.X - $script:vb.X + 80, $sc.Bounds.Y - $script:vb.Y + 16); "$($c.R),$($c.G),$($c.B)" })
+  $bmp.Dispose()
+  Check 'multi_connect' (-not $mstsc.HasExited) "mstsc running=$(-not $mstsc.HasExited)"
+  $second = $ids.Count -ge 2 -and ($ids[1] -match '^(\d+),(\d+),(\d+)$') -and (Near ([pscustomobject]@{ R = [int]$Matches[1]; G = [int]$Matches[2]; B = [int]$Matches[3] }) 0 255 0)
+  Check 'multi_second_output_on_second_monitor' ([bool]$second) "identity pixel (80,16) of each monitor: $($ids -join ' | ') (second output expected green 0,255,0 on the second monitor)"
+
+  # The server was started with other sizes than the guest monitors: it must have adopted the monitors announced by
+  # the client at connection (each output ends with a magenta block in its bottom-right corner).
+  $bmp = ScreenBmp
+  $corners = @(foreach ($sc in $scr) {
+    $c = $bmp.GetPixel($sc.Bounds.X - $script:vb.X + $sc.Bounds.Width - 16, $sc.Bounds.Y - $script:vb.Y + $sc.Bounds.Height - 16)
+    [pscustomobject]@{ R = $c.R; G = $c.G; B = $c.B; Sz = "$($sc.Bounds.Width)x$($sc.Bounds.Height)" }
+  })
+  $bmp.Dispose()
+  $allMagenta = ($corners.Count -ge 2) -and -not ($corners | Where-Object { -not ($_.R -gt 180 -and $_.G -lt 90 -and $_.B -gt 180) })
+  Check 'multi_layout_follows_client_monitors' ([bool]$allMagenta) "corner pixel of each monitor: $(($corners | ForEach-Object { "$($_.Sz) $($_.R),$($_.G),$($_.B)" }) -join ' | ') (magenta expected)"
+  try { Stop-Process -Id $mstsc.Id -Force } catch { }
+  Finish
+}
+Emit ('SCREENS ' + (([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.DeviceName)=$($_.Bounds)" }) -join ' ') +
+  ' ADAPTERS ' + ((Get-CimInstance Win32_VideoController | ForEach-Object { "$($_.Name):$($_.Status)" }) -join ' ; '))
 # Newest "NotSafeForScripting" flavour of the control (it exposes ClearTextPassword).
 $type = $null
 foreach ($v in 12..6) {
@@ -77,7 +131,16 @@ interface IMsTscNonScriptable {
   [System.Runtime.InteropServices.PreserveSig]
   int put_ClearTextPassword([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string p);
 }
+[System.Runtime.InteropServices.ComImport,
+ System.Runtime.InteropServices.Guid("302D8188-0052-4807-806A-362B628F9AC5"),
+ System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+interface IMsRdpExtendedSettings {
+  void set_Property([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string name, [System.Runtime.InteropServices.In] ref object value);
+  object get_Property([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string name);
+}
 public class RdpHost : System.Windows.Forms.AxHost {
+  public void SetExt(string name, object v) { ((IMsRdpExtendedSettings)GetOcx()).set_Property(name, ref v); }
+  public object GetExt(string name) { return ((IMsRdpExtendedSettings)GetOcx()).get_Property(name); }
   public RdpHost(string clsid) : base(clsid) {}
   public object Ocx { get { return GetOcx(); } }
   public int SetPassword(string p) { return ((IMsTscNonScriptable)GetOcx()).put_ClearTextPassword(p); }

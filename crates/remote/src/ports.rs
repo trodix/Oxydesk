@@ -21,6 +21,15 @@ pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
                 }) as Box<dyn FrameEncoder>
             })
             .collect(),
+        make_encoder: Some(Box::new({
+            let link = link.clone();
+            move |output| {
+                Box::new(PassthroughEncoder {
+                    link: link.clone(),
+                    output,
+                }) as Box<dyn FrameEncoder>
+            }
+        })),
         input: Box::new(RemoteInput(link.clone())),
         clipboard: Box::new(RemoteClipboard(link.clone())),
         audio: Some(Arc::new(RemoteAudio(link))),
