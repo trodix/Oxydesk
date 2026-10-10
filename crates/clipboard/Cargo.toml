@@ -1,0 +1,17 @@
+[package]
+name = "rdsktp-clipboard"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Presse-papiers texte via zwlr_data_control_manager_v1 (exposé par KWin aux clients non privilégiés).
+wayland = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
+
+[dependencies]
+rdsktp-core.workspace = true
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", optional = true }
+wayland-scanner = { version = "0.31", optional = true }

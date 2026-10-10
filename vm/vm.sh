@@ -207,7 +207,7 @@ ProtectSystem=full
 PrivateTmp=no
 Environment=XDG_RUNTIME_DIR=$uid_run
 ExecStart=
-ExecStart=/usr/bin/rdsktp --session kwin --session-app "plasmashell" --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+ExecStart=/usr/bin/rdsktp --session kwin --session-app "plasmashell" --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
 EOF
   vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
 }

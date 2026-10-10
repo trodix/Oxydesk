@@ -127,10 +127,25 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
 
 fn main() {
     let (mut width, mut height) = (1920u32, 1080u32);
-    let args: Vec<String> = std::env::args().collect();
+    let echo = std::env::args().any(|a| a == "--clipboard-echo");
+    let args: Vec<String> = std::env::args().filter(|a| a != "--clipboard-echo").collect();
     if args.len() == 3 {
         width = args[1].parse().expect("largeur");
         height = args[2].parse().expect("hauteur");
+    }
+    if echo {
+        // Oracle déterministe du presse-papiers : recopie toute sélection texte reçue, comme le
+        // ferait une application. Instance MIME distincte de celle de rdsktp (pas de boucle).
+        std::thread::spawn(|| {
+            use rdsktp_core::ports::ClipboardBackend;
+            let mut cb = rdsktp_clipboard::WaylandClipboard::connect(None).expect("presse-papiers Wayland");
+            loop {
+                if let Ok(Some(text)) = cb.poll_text() {
+                    let _ = cb.set_text(&text);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
     }
     let conn = Connection::connect_to_env().expect("connexion Wayland (WAYLAND_DISPLAY)");
     let mut queue = conn.new_event_queue::<App>();

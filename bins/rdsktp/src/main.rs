@@ -82,11 +82,13 @@ async fn main() -> anyhow::Result<()> {
         fps,
         ..Default::default()
     })?;
-    // Presse-papiers : écho en mémoire jusqu'à M4.
-    let echo = SyntheticDesktop::new(u32::from(width), u32::from(height));
     #[cfg(feature = "kwin")]
     let mut _session = None;
-    let (capture, input): (Box<dyn rdsktp_core::ports::CaptureSource>, Box<dyn rdsktp_core::ports::InputSink>) =
+    let (capture, input, clipboard): (
+        Box<dyn rdsktp_core::ports::CaptureSource>,
+        Box<dyn rdsktp_core::ports::InputSink>,
+        Box<dyn rdsktp_core::ports::ClipboardBackend>,
+    ) =
         if kwin_mode {
             #[cfg(feature = "kwin")]
             {
@@ -107,19 +109,21 @@ async fn main() -> anyhow::Result<()> {
                 _session = Some(session);
                 let capture = rdsktp_capture::KwinCapture::start(Some(&socket), 0)?;
                 let input = rdsktp_input::KwinFakeInput::connect(Some(&socket))?;
-                (Box::new(capture), Box::new(input))
+                let clipboard = rdsktp_clipboard::WaylandClipboard::connect(Some(&socket))?;
+                (Box::new(capture), Box::new(input), Box::new(clipboard))
             }
             #[cfg(not(feature = "kwin"))]
             anyhow::bail!("binaire compilé sans la feature `kwin`");
         } else {
             let desktop = SyntheticDesktop::new(u32::from(width), u32::from(height));
-            (Box::new(desktop.clone()), Box::new(desktop))
+            // Mode test : le « bureau » synthétique renvoie en écho le texte reçu.
+            (Box::new(desktop.clone()), Box::new(desktop.clone()), Box::new(desktop))
         };
     let ports = Ports {
         capture,
         encoder: Box::new(encoder),
         input,
-        clipboard: Box::new(echo),
+        clipboard,
     };
     let config = ServerConfig {
         addr,

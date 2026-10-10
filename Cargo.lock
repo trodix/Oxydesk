@@ -2611,6 +2611,7 @@ dependencies = [
  "anyhow",
  "rcgen",
  "rdsktp-capture",
+ "rdsktp-clipboard",
  "rdsktp-core",
  "rdsktp-encode",
  "rdsktp-input",
@@ -2626,6 +2627,16 @@ name = "rdsktp-capture"
 version = "0.1.0"
 dependencies = [
  "pipewire",
+ "rdsktp-core",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "rdsktp-clipboard"
+version = "0.1.0"
+dependencies = [
  "rdsktp-core",
  "wayland-backend",
  "wayland-client",
@@ -2687,6 +2698,8 @@ name = "rdsktp-testapp"
 version = "0.1.0"
 dependencies = [
  "rdsktp-capture",
+ "rdsktp-clipboard",
+ "rdsktp-core",
  "wayland-client",
  "wayland-protocols",
 ]

@@ -51,7 +51,17 @@ pub fn announce(send: &SendFn, local: &LocalText, text: String) {
     ]));
 }
 
-/// Décode un CF_UNICODETEXT (UTF-16LE terminé par NUL).
+/// Fins de ligne locales (LF) -> CF_UNICODETEXT (CRLF), sans doubler les CRLF déjà présents.
+pub fn to_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// CF_UNICODETEXT (CRLF) -> fins de ligne locales (LF).
+pub fn from_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Décode un CF_UNICODETEXT (UTF-16LE terminé par NUL), fins de ligne en LF.
 pub fn decode_unicode_text(data: &[u8]) -> String {
     let units: Vec<u16> = data
         .as_chunks::<2>()
@@ -60,7 +70,7 @@ pub fn decode_unicode_text(data: &[u8]) -> String {
         .map(|&c| u16::from_le_bytes(c))
         .collect();
     let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-    String::from_utf16_lossy(&units[..end])
+    from_crlf(&String::from_utf16_lossy(&units[..end]))
 }
 
 impl CliprdrBackend for TextClipboard {
@@ -104,7 +114,7 @@ impl CliprdrBackend for TextClipboard {
         let text = self.local.lock().expect("clipboard mutex").clone();
         let response = match text {
             Some(t) if request.format == ClipboardFormatId::CF_UNICODETEXT => {
-                FormatDataResponse::new_unicode_string(&t)
+                FormatDataResponse::new_unicode_string(&to_crlf(&t))
             }
             _ => FormatDataResponse::new_error(),
         };
@@ -128,6 +138,13 @@ impl CliprdrBackend for TextClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_roundtrip_without_doubling() {
+        assert_eq!(to_crlf("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert_eq!(from_crlf("a\r\nb\nc"), "a\nb\nc");
+        assert_eq!(from_crlf(&to_crlf("l1\nl2\n")), "l1\nl2\n");
+    }
 
     #[test]
     fn decodes_utf16_with_emoji_and_nul() {

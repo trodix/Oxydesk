@@ -9,10 +9,11 @@ publish.workspace = true
 [features]
 default = []
 # Session KWin réelle : capture PipeWire + entrées fake_input (nécessite libpipewire-dev et libclang).
-kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "dep:rdsktp-session", "dep:rdsktp-input"]
+kwin = ["rdsktp-capture/kwin", "rdsktp-input/kwin", "rdsktp-clipboard/wayland", "dep:rdsktp-session", "dep:rdsktp-input", "dep:rdsktp-clipboard"]
 
 [dependencies]
 rdsktp-input = { workspace = true, optional = true }
+rdsktp-clipboard = { workspace = true, optional = true }
 rdsktp-session = { workspace = true, optional = true }
 rdsktp-core.workspace = true
 rdsktp-capture.workspace = true
