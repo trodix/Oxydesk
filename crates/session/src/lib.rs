@@ -108,6 +108,19 @@ impl SessionProvider for KwinSession {
         }
         self.kwin = Some(child);
 
+        // Les services activés par D-Bus (kactivitymanagerd, kded…) héritent de l'environnement
+        // du bus, pas du nôtre : sans WAYLAND_DISPLAY ils démarrent en xcb et plasmashell abandonne.
+        for extra in [&["--systemd"][..], &[][..]] {
+            let mut cmd = Command::new("dbus-update-activation-environment");
+            Self::session_env(&mut cmd, &runtime, &self.cfg.socket);
+            cmd.args(extra).args([
+                "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_MENU_PREFIX", "QT_QPA_PLATFORM",
+            ]);
+            if cmd.status().map(|s| s.success()).unwrap_or(false) {
+                break;
+            }
+        }
+
         for argv in &self.cfg.programs {
             let Some((prog, args)) = argv.split_first() else { continue };
             let mut cmd = Command::new(prog);
