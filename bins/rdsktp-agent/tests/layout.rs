@@ -38,6 +38,9 @@ fn read_until<T>(s: &mut UnixStream, mut done: impl FnMut(FromAgent) -> Option<T
         assert!(Instant::now() < deadline, "timed out");
         match read_msg::<_, FromAgent>(s).expect("protocol (read timeout: the agent went quiet)") {
             Some(m) => {
+                if let FromAgent::Fatal(e) = &m {
+                    panic!("fatal error of the agent: {e}");
+                }
                 if let Some(v) = done(m) {
                     return v;
                 }
@@ -79,7 +82,10 @@ fn set_layout_changes_the_number_of_outputs() {
         Some(FromAgent::Hello { outputs: 2, .. })
     ));
 
-    // 2 -> 3 outputs of different sizes: answer first, then a keyframe of the right size per output.
+    // Uncompressed frames: the test must not depend on an H.264 encoder library being installed.
+    write_msg(&mut s, &ToAgent::SetPixels { raw: true }).unwrap();
+
+    // 2 -> 3 outputs of different sizes: answer first, then a frame of the right size per output.
     let layout = vec![rect(0, 320, 240), rect(320, 256, 192), rect(576, 400, 300)];
     write_msg(&mut s, &ToAgent::SetLayout { outputs: layout }).unwrap();
     read_until(&mut s, |m| match m {
@@ -91,9 +97,8 @@ fn set_layout_changes_the_number_of_outputs() {
     });
     let mut seen = [None; 3];
     read_until(&mut s, |m| {
-        if let FromAgent::Video {
+        if let FromAgent::VideoRaw {
             output,
-            keyframe: true,
             width,
             height,
             ..
@@ -121,9 +126,8 @@ fn set_layout_changes_the_number_of_outputs() {
         _ => None,
     });
     let (w, h) = read_until(&mut s, |m| match m {
-        FromAgent::Video {
+        FromAgent::VideoRaw {
             output,
-            keyframe: true,
             width,
             height,
             ..
