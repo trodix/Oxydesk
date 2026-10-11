@@ -45,6 +45,16 @@ fn ensure_cert(dir: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
     Ok((cert, key))
 }
 
+/// Ctrl-C or SIGTERM (service stop): returning lets the KWin session and its applications be stopped.
+async fn shutdown_signal() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -107,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
-            _ = tokio::signal::ctrl_c() => { tracing::info!("shutdown"); Ok(()) }
+            _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
         };
     }
 
@@ -228,6 +238,6 @@ async fn main() -> anyhow::Result<()> {
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
-        _ = tokio::signal::ctrl_c() => { tracing::info!("shutdown"); Ok(()) }
+        _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
     }
 }

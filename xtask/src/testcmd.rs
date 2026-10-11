@@ -16,7 +16,9 @@ pub const HELP: &str = "cargo xtask test [options]
                    `cargo xtask vm-test --session kwin|login`)
   --client         then the CLIENT integration test, with the stock Windows RDP client (mstsc engine) in a QEMU
                    Windows 11 VM against a local test server (slow: connect, frames, clipboard, audio, dynamic resize)
-  --integration    both --server and --client
+  --freerdp        then the FreeRDP compatibility test (ci/freerdp-test.sh: sdl-freerdp, the engine of xfreerdp and
+                   Remmina, runs headless against a local server; `FREERDP_SESSION=kwin` uses a real KWin session)
+  --integration    --server, --client and --freerdp
   --skip-unit      do not run the unit tests (needs one of the above)
   --out <dir>      client test logs folder (default artifacts/win-test)
   --help           this help
@@ -45,6 +47,7 @@ const SEED_TOOLS: [&str; 3] = ["cloud-localds", "genisoimage", "xorriso"];
 pub struct TestOpts {
     pub server: bool,
     pub client: bool,
+    pub freerdp: bool,
     pub skip_unit: bool,
     pub port: u16,
     pub out: PathBuf,
@@ -63,6 +66,7 @@ pub fn parse(
     let mut o = TestOpts {
         server: false,
         client: false,
+        freerdp: false,
         skip_unit: false,
         port: match env("WIN_RDP_PORT") {
             Some(p) => p
@@ -78,18 +82,21 @@ pub fn parse(
             "--help" | "-h" => return Ok(TestParsed::Help),
             "--server" => o.server = true,
             "--client" => o.client = true,
+            "--freerdp" => o.freerdp = true,
             "--integration" => {
                 o.server = true;
                 o.client = true;
+                o.freerdp = true;
             }
             "--skip-unit" => o.skip_unit = true,
             "--out" => o.out = PathBuf::from(it.next().ok_or("--out expects a value")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    if o.skip_unit && !o.server && !o.client {
+    if o.skip_unit && !o.server && !o.client && !o.freerdp {
         return Err(
-            "--skip-unit needs --server, --client or --integration (nothing would run)".into(),
+            "--skip-unit needs --server, --client, --freerdp or --integration (nothing would run)"
+                .into(),
         );
     }
     Ok(TestParsed::Run(o))
@@ -353,6 +360,19 @@ pub fn run(o: &TestOpts) -> ExitCode {
             }
         }
     }
+    if o.freerdp {
+        let ok = Command::new("bash")
+            .arg("ci/freerdp-test.sh")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("== freerdp: passed");
+        } else {
+            eprintln!("FreeRDP compatibility test failed (logs in artifacts/freerdp-test)");
+            failed = true;
+        }
+    }
     if failed {
         ExitCode::from(1)
     } else {
@@ -403,7 +423,15 @@ mod tests {
         let TestParsed::Run(o) = p(&["--integration"], &[]).unwrap() else {
             panic!()
         };
-        assert!(o.server && o.client);
+        assert!(o.server && o.client && o.freerdp);
+    }
+
+    #[test]
+    fn freerdp_is_independent_and_enough_with_skip_unit() {
+        let TestParsed::Run(o) = p(&["--freerdp", "--skip-unit"], &[]).unwrap() else {
+            panic!()
+        };
+        assert!(o.freerdp && !o.server && !o.client && o.skip_unit);
     }
 
     #[test]

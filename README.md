@@ -31,14 +31,22 @@ Serveur RDP (IronRDP 0.13, H.264 via EGFX) pour KDE Plasma Wayland headless, en 
 - **NLA en mode login** impossible avec des comptes dynamiques (limite d'IronRDP) : TLS seul.
 - **Patch IronRDP local** (`third_party/`) à réexaminer à chaque montée de version.
 
+### Compatibilité FreeRDP (test automatisé, `sdl-freerdp` 3.32)
+Validé : TLS, EGFX V8.1/V10.7 avec AVC420 (≈ 45 trames en 6 s en synthétique, ≈ 28 sur KWin réel), canal audio, 2 écrans (bureau 3840×1080, 2 surfaces), reconnexion, NLA avec bon mot de passe accepté et mauvais refusé.
+Défauts trouvés, non corrigés :
+- **Le serveur ignore `AVC_DISABLED`** : un client qui déclare ne pas vouloir de H.264 reçoit quand même du H.264 (FreeRDP le décode car il en a un ; un client sans décodeur H.264 afficherait n'importe quoi).
+- **Pas de repli sans GFX** : avec `/network:modem` (GFX désactivé), le client ne reçoit aucune trame. Un client dont GFX est désactivé (profil réseau lent, réglage de Remmina) n'affiche rien. Seul le chemin EGFX/H.264 existe.
+- Corrigé au passage : `rdsktp` ne s'arrêtait proprement que sur Ctrl-C ; sur SIGTERM (arrêt de service) la session KWin et ses applications restaient orphelines.
+
 ### Non couvert ou non vérifié
-Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; clients autres que mstsc et IronRDP (FreeRDP, Remmina, mobiles) ; curseur distant ; coût CPU de N encodeurs logiciels ; paquet Debian.
+Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseur distant ; coût CPU de N encodeurs logiciels ; paquet Debian.
 
 ## Plan priorisé
 Efforts estimés, pas mesurés.
 
 **P0 — bloquants pour un usage réel**
-1. Tests avec FreeRDP et Remmina (connexion, image, clavier, souris, presse-papiers, audio, redimensionnement ; `--login` et `--session kwin`). Effort faible.
+1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. Reste : clavier, souris, presse-papiers et redimensionnement (il faut un client qui pilote un affichage), le mode `--login` sur la VM, et Remmina lui-même (non installé ici ; il repose sur libfreerdp, donc la pile testée est la même).
+1bis. **Repli sans H.264 / sans GFX** (trouvé par ce test) : voir « Compatibilité FreeRDP ». Effort moyen à élevé.
 2. Verrouillage de session et SDDM : verrouiller, se reconnecter, déverrouiller sans perdre la session. Effort moyen.
 3. Durcissement du mode login : limitation des essais par IP et par compte, journalisation des échecs. Effort moyen.
 
@@ -60,7 +68,8 @@ Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 
 
 ## Commandes
 - `cargo test --workspace` — tests unitaires (core, client de test + mock, xtask).
-- `cargo xtask test` — tests unitaires seulement (rapide) ; `--server` ajoute le test serveur (VM Debian 13, `vm-test`), `--client` le test client (client Windows mstsc, lent : snapshot QEMU Windows 11, session RDP avec le moteur du client Microsoft : connexion, images, presse-papiers, audio, demande de redimensionnement). `--integration` lance les deux, indépendants. Prérequis : KVM, qemu ; VM Debian créée une fois (`bash vm/vm.sh create`), VM Windows installée une fois (`bash vm/win11.sh install`, avec swtpm).
+- `cargo xtask test` — tests unitaires seulement (rapide) ; `--server` ajoute le test serveur (VM Debian 13, `vm-test`), `--client` le test client (client Windows mstsc, lent : snapshot QEMU Windows 11, session RDP avec le moteur du client Microsoft : connexion, images, presse-papiers, audio, demande de redimensionnement). `--freerdp` le test de compatibilité FreeRDP (voir plus bas). `--integration` lance les trois, indépendants. Prérequis : KVM, qemu ; VM Debian créée une fois (`bash vm/vm.sh create`), VM Windows installée une fois (`bash vm/win11.sh install`, avec swtpm).
+- `bash ci/freerdp-test.sh` — compatibilité FreeRDP (`sdl-freerdp` sans affichage, `FREERDP_SESSION=kwin` pour une vraie session KWin) : connexion TLS, EGFX/H.264, 2 écrans, audio, reconnexion, NLA accepté/refusé. Journaux dans `artifacts/freerdp-test/`.
 - `cargo run -p rdp-test-client -- --mock --out /tmp/out` — client de test contre le mock.
 - `bash vm/vm.sh create` — télécharge/provisionne la VM Debian 13 (une fois, état dans `vm/state/`).
 - `cargo xtask vm-test` — cycle complet build → VM → client → rapport (`artifacts/vm-test/latest.json`).
