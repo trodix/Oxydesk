@@ -17,7 +17,7 @@ pub const HELP: &str = "cargo xtask vm-test [options]
 env: VM_RDP_PORT (default 3390)
 exit code: 0 all pass, 1 failure, 2 arguments";
 
-pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp -p rdsktp-authd && cargo build --release -p rdsktp-agent --features kwin && cargo deb -p rdsktp";
+pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp -p rdsktp-authd -p rdsktp-cups-backend && cargo build --release -p rdsktp-agent --features kwin && cargo deb -p rdsktp";
 pub const DEFAULT_CLIENT_CMD: &str =
     "cargo run --quiet --release -p rdp-test-client --features ironrdp -- --host {host} --port {port} --out {out}";
 

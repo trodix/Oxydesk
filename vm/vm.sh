@@ -190,7 +190,7 @@ cmd_deploy() {
   log "deploying $deb"
   # shellcheck disable=SC2046
   scp $(ssh_opts | sed 's/-p /-P /') "$deb" "$VM_USER@127.0.0.1:/tmp/deploy.deb"
-  vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb'
+  vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb cups cups-filters'
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
@@ -209,6 +209,7 @@ PrivateTmp=no
 NoNewPrivileges=no
 Environment=XDG_RUNTIME_DIR=$uid_run
 Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
+Environment=RDSKTP_ECHO_FILES=copy
 ExecStart=
 ExecStart=/usr/bin/rdsktp --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
 EOF
@@ -221,8 +222,11 @@ cmd_login_config() {
   [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
   printf '%s:%s\n' "$VM_USER" "$RDP_TEST_PASSWORD" | vm_ssh 'sudo chpasswd'
   vm_ssh 'sudo mkdir -p /etc/rdsktp /etc/systemd/system/rdsktp.service.d && sudo rm -f /etc/systemd/system/rdsktp.service.d/kwin.conf'
+  # The print queues of the redirected printers are made by the user: lpadmin needs the administration group of CUPS.
+  vm_ssh "sudo usermod -aG lpadmin $VM_USER"
   vm_ssh 'sudo tee /etc/rdsktp/agent.conf >/dev/null' <<CONF
 RDSKTP_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone"
+RDSKTP_ECHO_FILES=copy
 CONF
   vm_ssh 'sudo tee /etc/systemd/system/rdsktp.service.d/login.conf >/dev/null' <<CONF
 [Unit]

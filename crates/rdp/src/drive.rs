@@ -611,29 +611,44 @@ impl RemoteDrive for RdpDrive {
 
 /// What the worker thread does for the host, in order.
 enum Command {
-    Added(String, Arc<dyn RemoteDrive>),
-    Removed(String),
-    PrinterAdded(String, PrinterInfo, Arc<dyn RemotePrinter>),
-    PrinterRemoved(String),
+    Added(Arc<dyn DriveHost>, String, Arc<dyn RemoteDrive>),
+    Removed(Arc<dyn DriveHost>, String),
+    PrinterAdded(
+        Arc<dyn PrinterHost>,
+        String,
+        PrinterInfo,
+        Arc<dyn RemotePrinter>,
+    ),
+    PrinterRemoved(Arc<dyn PrinterHost>, String),
 }
+
+/// Where the host of the session is found when the client announces a device: in broker mode the session (and its
+/// host) only exists once the login is accepted, which can be after this backend was built.
+type Source<T> = Arc<dyn Fn() -> Option<Arc<T>> + Send + Sync>;
 
 /// Handles the announcements of the client and the completions of the requests.
 pub struct DriveBackend {
     link: Arc<Link>,
-    host: Option<Arc<dyn DriveHost>>,
-    printer_host: Option<Arc<dyn PrinterHost>>,
-    /// Drive directory names, by device id.
-    drives: HashMap<u32, String>,
-    /// Printer names, by device id.
-    printers: HashMap<u32, String>,
-    commands: Option<Sender<Command>>,
+    host: Source<dyn DriveHost>,
+    printer_host: Source<dyn PrinterHost>,
+    /// Drive directory names (and the host that has them), by device id.
+    drives: HashMap<u32, (String, Arc<dyn DriveHost>)>,
+    /// Printer names (and the host that has them), by device id.
+    printers: HashMap<u32, (String, Arc<dyn PrinterHost>)>,
+    commands: Sender<Command>,
 }
 
 impl std::fmt::Debug for DriveBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DriveBackend")
-            .field("drives", &self.drives)
-            .field("printers", &self.printers)
+            .field(
+                "drives",
+                &self.drives.values().map(|(n, _)| n).collect::<Vec<_>>(),
+            )
+            .field(
+                "printers",
+                &self.printers.values().map(|(n, _)| n).collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -646,30 +661,36 @@ impl DriveBackend {
         host: Option<Arc<dyn DriveHost>>,
         printer_host: Option<Arc<dyn PrinterHost>>,
     ) -> Self {
-        let commands = (host.is_some() || printer_host.is_some()).then(|| {
-            let (tx, rx) = mpsc::channel::<Command>();
-            let (drive_host, print_host) = (host.clone(), printer_host.clone());
-            // Mounting can take a moment and must not stall the connection: a thread, in order.
-            std::thread::Builder::new()
-                .name("drive-host".into())
-                .spawn(move || {
-                    for command in rx {
-                        match (command, &drive_host, &print_host) {
-                            (Command::Added(name, drive), Some(host), _) => {
-                                host.added(&name, drive)
-                            }
-                            (Command::Removed(name), Some(host), _) => host.removed(&name),
-                            (Command::PrinterAdded(name, info, printer), _, Some(host)) => {
-                                host.added(&name, &info, printer)
-                            }
-                            (Command::PrinterRemoved(name), _, Some(host)) => host.removed(&name),
-                            _ => {}
+        Self::with_sources(
+            send,
+            Arc::new(move || host.clone()),
+            Arc::new(move || printer_host.clone()),
+        )
+    }
+
+    /// Like `new`, the hosts being looked up when a device is announced.
+    pub fn with_sources(
+        send: EventSender,
+        host: Source<dyn DriveHost>,
+        printer_host: Source<dyn PrinterHost>,
+    ) -> Self {
+        let (commands, rx) = mpsc::channel::<Command>();
+        // Mounting can take a moment and must not stall the connection: a thread, in order.
+        std::thread::Builder::new()
+            .name("drive-host".into())
+            .spawn(move || {
+                for command in rx {
+                    match command {
+                        Command::Added(host, name, drive) => host.added(&name, drive),
+                        Command::Removed(host, name) => host.removed(&name),
+                        Command::PrinterAdded(host, name, info, printer) => {
+                            host.added(&name, &info, printer)
                         }
+                        Command::PrinterRemoved(host, name) => host.removed(&name),
                     }
-                })
-                .ok();
-            tx
-        });
+                }
+            })
+            .ok();
         Self {
             link: Arc::new(Link {
                 send,
@@ -688,7 +709,7 @@ impl DriveBackend {
         let base = rdsktp_core::printer_name(wanted);
         let mut name = base.clone();
         let mut n = 2;
-        while self.printers.values().any(|p| *p == name) {
+        while self.printers.values().any(|(p, _)| *p == name) {
             name = format!("{base}-{n}");
             n += 1;
         }
@@ -696,9 +717,9 @@ impl DriveBackend {
     }
 
     fn announce_printer(&mut self, id: u32, device: &DeviceAnnounceHeader) -> bool {
-        if self.printer_host.is_none() {
+        let Some(host) = (self.printer_host)() else {
             return false;
-        }
+        };
         let Some(announce) = announced_printer(device) else {
             tracing::warn!(device = id, "printer announcement not understood");
             return false;
@@ -710,10 +731,13 @@ impl DriveBackend {
             link: self.link.clone(),
             device_id: id,
         }) as Arc<dyn RemotePrinter>;
-        if let Some(commands) = &self.commands {
-            let _ = commands.send(Command::PrinterAdded(name.clone(), info, printer));
-        }
-        self.printers.insert(id, name);
+        let _ = self.commands.send(Command::PrinterAdded(
+            host.clone(),
+            name.clone(),
+            info,
+            printer,
+        ));
+        self.printers.insert(id, (name, host));
         true
     }
 
@@ -721,7 +745,7 @@ impl DriveBackend {
         let base = rdsktp_core::drive::directory_name(wanted);
         let mut name = base.clone();
         let mut n = 2;
-        while self.drives.values().any(|d| *d == name) {
+        while self.drives.values().any(|(d, _)| *d == name) {
             name = format!("{base}-{n}");
             n += 1;
         }
@@ -765,13 +789,15 @@ fn drive_label(device: &DeviceAnnounceHeader) -> String {
 impl Drop for DriveBackend {
     fn drop(&mut self) {
         self.link.close();
-        if let Some(commands) = &self.commands {
-            for name in self.drives.values() {
-                let _ = commands.send(Command::Removed(name.clone()));
-            }
-            for name in self.printers.values() {
-                let _ = commands.send(Command::PrinterRemoved(name.clone()));
-            }
+        for (name, host) in self.drives.values() {
+            let _ = self
+                .commands
+                .send(Command::Removed(host.clone(), name.clone()));
+        }
+        for (name, host) in self.printers.values() {
+            let _ = self
+                .commands
+                .send(Command::PrinterRemoved(host.clone(), name.clone()));
         }
     }
 }
@@ -785,19 +811,22 @@ impl RdpdrServerBackend for DriveBackend {
                 if device.device_type() == DeviceType::Print {
                     return (id, self.announce_printer(id, device));
                 }
-                if device.device_type() != DeviceType::Filesystem || self.host.is_none() {
+                if device.device_type() != DeviceType::Filesystem {
                     return (id, false);
                 }
+                let Some(host) = (self.host)() else {
+                    return (id, false);
+                };
                 let name = self.unique_name(&drive_label(device));
                 tracing::info!(device = id, %name, "drive redirected by the client");
                 let drive = Arc::new(RdpDrive {
                     link: self.link.clone(),
                     device_id: id,
                 }) as Arc<dyn RemoteDrive>;
-                if let Some(commands) = &self.commands {
-                    let _ = commands.send(Command::Added(name.clone(), drive));
-                }
-                self.drives.insert(id, name);
+                let _ = self
+                    .commands
+                    .send(Command::Added(host.clone(), name.clone(), drive));
+                self.drives.insert(id, (name, host));
                 (id, true)
             })
             .collect()
@@ -805,11 +834,11 @@ impl RdpdrServerBackend for DriveBackend {
 
     fn on_device_remove(&mut self, device_ids: &[u32]) {
         for id in device_ids {
-            if let (Some(name), Some(commands)) = (self.drives.remove(id), &self.commands) {
-                let _ = commands.send(Command::Removed(name));
+            if let Some((name, host)) = self.drives.remove(id) {
+                let _ = self.commands.send(Command::Removed(host, name));
             }
-            if let (Some(name), Some(commands)) = (self.printers.remove(id), &self.commands) {
-                let _ = commands.send(Command::PrinterRemoved(name));
+            if let Some((name, host)) = self.printers.remove(id) {
+                let _ = self.commands.send(Command::PrinterRemoved(host, name));
             }
         }
     }
@@ -945,10 +974,11 @@ impl RdpdrServerFactory for DriveFactory {
                 .as_ref()
                 .is_some_and(|s| s.send(event).is_ok())
         });
-        Box::new(DriveBackend::new(
+        let (host, printers) = (self.host.clone(), self.printers.clone());
+        Box::new(DriveBackend::with_sources(
             send,
-            self.host.lock().expect("host mutex").clone(),
-            self.printers.lock().expect("printers mutex").clone(),
+            Arc::new(move || host.lock().expect("host mutex").clone()),
+            Arc::new(move || printers.lock().expect("printers mutex").clone()),
         ))
     }
 }

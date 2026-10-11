@@ -366,7 +366,7 @@ impl ClipboardBackend for SyntheticDesktop {
 }
 
 /// Test double: keeps a copy of the files of a list on disk (see `ClipboardBackend::set_files`).
-mod echo_copy {
+pub mod echo_copy {
     use std::fs;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::PathBuf;
@@ -398,6 +398,7 @@ mod echo_copy {
         }
     }
 
+    /// Copies the files of `list` to a temporary directory (removed with the returned list).
     pub fn materialize(list: &FileList) -> Result<FileList, ClipboardError> {
         let err = |e: std::io::Error| ClipboardError::Backend(e.to_string());
         let dir = std::env::temp_dir().join(format!(

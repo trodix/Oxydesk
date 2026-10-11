@@ -354,6 +354,19 @@ fn main() {
                     let _ = cb.set_image(&png);
                 }
                 if let Ok(Some(list)) = cb.poll_files() {
+                    // RDSKTP_ECHO_FILES=copy: the files are copied aside first (a client drops the contents of the
+                    // clipboard it no longer owns, like the synthetic desktop does).
+                    let list = if std::env::var("RDSKTP_ECHO_FILES").is_ok_and(|v| v == "copy") {
+                        match rdsktp_capture::echo_copy::materialize(&list) {
+                            Ok(copy) => copy,
+                            Err(e) => {
+                                eprintln!("file echo not copied: {e}");
+                                continue;
+                            }
+                        }
+                    } else {
+                        list
+                    };
                     let _ = cb.set_files(list);
                 }
                 std::thread::sleep(Duration::from_millis(10));

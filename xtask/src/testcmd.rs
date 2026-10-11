@@ -517,6 +517,49 @@ fn client(o: &TestOpts) -> Result<(), String> {
     }
 }
 
+/// `cargo xtask host-check --drives DIR --printers DIR [--within S]`: the host side of the mstsc drive and printer
+/// tests against a server that is not started by xtask (the login mode of the Debian VM: `ci/mstsc-login-test.sh`
+/// exposes its mount and its printer socket under these directories).
+pub fn host_check(args: Vec<String>) -> ExitCode {
+    let mut drives = None;
+    let mut printers = None;
+    let mut within = 240;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match (a.as_str(), it.next()) {
+            ("--drives", Some(v)) => drives = Some(PathBuf::from(v)),
+            ("--printers", Some(v)) => printers = Some(PathBuf::from(v)),
+            ("--within", Some(v)) => within = v.parse().unwrap_or(240),
+            _ => {
+                eprintln!("usage: cargo xtask host-check [--drives DIR] [--printers DIR] [--within SECONDS]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let within = Duration::from_secs(within);
+    let drives = drives.map(|d| std::thread::spawn(move || drives_host_check(&d, within)));
+    let printers = printers.map(|d| std::thread::spawn(move || printers_host_check(&d, within)));
+    let mut ok = true;
+    for (name, handle) in [("drives_host", drives), ("printers_host", printers)] {
+        let Some(handle) = handle else { continue };
+        match handle
+            .join()
+            .unwrap_or_else(|_| Err("check panicked".into()))
+        {
+            Ok(d) => println!("PASS {name} {d}"),
+            Err(e) => {
+                println!("FAIL {name} {e}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 pub fn run(o: &TestOpts) -> ExitCode {
     if !o.skip_unit {
         println!("== unit tests");

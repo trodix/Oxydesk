@@ -33,6 +33,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("host-check") => testcmd::host_check(args.collect()),
         _ => {
             eprintln!("{}\n\n{}", opts::HELP, testcmd::HELP);
             ExitCode::from(2)

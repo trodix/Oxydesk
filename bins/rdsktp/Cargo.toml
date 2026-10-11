@@ -41,6 +41,7 @@ extended-description = "Headless RDP server for KDE Plasma (Wayland)."
 section = "net"
 priority = "optional"
 depends = "$auto, libopenh264-8, libkscreen-bin, fuse3"
+recommends = "cups, cups-filters"
 assets = [
     ["target/release/rdsktp", "usr/bin/", "755"],
     ["target/release/rdsktp-testapp", "usr/lib/rdsktp/", "755"],
@@ -54,5 +55,6 @@ assets = [
     ["../../dist/pam/rdsktp", "etc/pam.d/", "644"],
     ["../../dist/pam/rdsktp-session", "etc/pam.d/", "644"],
     ["../../dist/sysusers/rdsktp.conf", "usr/lib/sysusers.d/", "644"],
+    ["target/release/rdsktp-cups-backend", "usr/lib/cups/backend/rdsktp", "700"],
 ]
 maintainer-scripts = "../../dist/debian/"
