@@ -469,6 +469,17 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             ToAgent::Key { scancode, pressed } => {
                 let _ = d.input.lock().expect("input mutex").key(scancode, pressed);
             }
+            ToAgent::KeyboardLayout { layout, variant } => {
+                let layout = rdsktp_core::XkbLayout { layout, variant };
+                if let Err(e) = d
+                    .input
+                    .lock()
+                    .expect("input mutex")
+                    .set_keyboard_layout(&layout)
+                {
+                    eprintln!("keyboard layout: {e}");
+                }
+            }
             ToAgent::PointerMove { x, y } => {
                 let _ = d.input.lock().expect("input mutex").pointer_move(x, y);
             }

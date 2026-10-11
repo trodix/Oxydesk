@@ -67,6 +67,10 @@ pub enum PointerButton {
 pub trait InputSink: Send {
     /// `scancode`: RDP scancode (set 1), prefix 0xE000 for extended keys.
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError>;
+    /// Layout announced by the client: the session adopts it so that the keys give the same characters.
+    fn set_keyboard_layout(&mut self, _layout: &crate::XkbLayout) -> Result<(), InputError> {
+        Ok(())
+    }
     /// Absolute position in the desktop virtual space.
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError>;
     fn pointer_button(&mut self, _button: PointerButton, _pressed: bool) -> Result<(), InputError> {

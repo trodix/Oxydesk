@@ -23,6 +23,10 @@ pub struct Config {
     pub reconnect_timeout: Duration,
     /// Size in MiB of the large file of the `clipboard_files_large` scenario (0: not run).
     pub large_file_mib: u64,
+    /// Windows keyboard layout announced at connection (KLID, `0`: none, `keyboard_layout` scenario not run).
+    pub keyboard_layout: u32,
+    /// `false`: the layout is announced but the desktop is a real one, without the synthetic marker.
+    pub layout_check: bool,
 }
 
 impl Default for Config {
@@ -39,6 +43,8 @@ impl Default for Config {
             timeout: Duration::from_secs(10),
             reconnect_timeout: Duration::from_secs(20),
             large_file_mib: 0,
+            keyboard_layout: 0,
+            layout_check: true,
         }
     }
 }
@@ -84,6 +90,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         ]
         .into_iter()
         .chain((cfg.outputs > 1).then_some("multi_screen"))
+        .chain((cfg.keyboard_layout != 0 && cfg.layout_check).then_some("keyboard_layout"))
         .chain((cfg.large_file_mib > 0).then_some("clipboard_files_large"))
         {
             r.check(n, false, "not run: connection failed");
@@ -91,6 +98,9 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         return;
     };
     first_frame(s, cfg, size, r);
+    if cfg.keyboard_layout != 0 && cfg.layout_check {
+        keyboard_layout(s, cfg, r);
+    }
     if cfg.outputs > 1 {
         multi_screen(s, cfg, r);
     }
@@ -209,6 +219,42 @@ fn first_frame(s: &mut dyn Session, cfg: &Config, size: (u32, u32), r: &mut Repo
             );
         }
     }
+}
+
+/// The synthetic desktop shows the layout it was given by the marker colour: `PALETTE[6]` for the French layout,
+/// `PALETTE[7]` for the German one (test hook, `SyntheticDesktop::set_keyboard_layout`).
+fn keyboard_layout(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    let expected = match cfg.keyboard_layout & 0xFFFF {
+        0x040C => [255, 128, 0],
+        0x0407 => [128, 0, 255],
+        other => {
+            r.check(
+                "keyboard_layout",
+                false,
+                format!("no marker defined for KLID {other:#06x}"),
+            );
+            return;
+        }
+    };
+    let start = Instant::now();
+    let mut seen = None;
+    while start.elapsed() < cfg.timeout {
+        let Ok(f) = s.next_frame(cfg.timeout) else {
+            break;
+        };
+        seen = marker(&f);
+        if seen.is_some_and(|m| close_to(m, expected)) {
+            break;
+        }
+    }
+    r.check(
+        "keyboard_layout",
+        seen.is_some_and(|m| close_to(m, expected)),
+        format!(
+            "KLID {:#06x}: marker {seen:?}, expected {expected:?}",
+            cfg.keyboard_layout & 0xFFFF
+        ),
+    );
 }
 
 /// Each screen k ≥ 1 displays `PALETTE[k]` at (64, 0) of its own frame of reference: the announced desktop must

@@ -199,6 +199,10 @@ impl InputSink for ScalingInput {
         self.inner.key(scancode, pressed)
     }
 
+    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+        self.inner.set_keyboard_layout(layout)
+    }
+
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
         let (x, y) = {
             let s = self.state.lock().expect("scaling mutex");

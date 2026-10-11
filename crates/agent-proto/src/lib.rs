@@ -116,6 +116,11 @@ pub enum ToAgent {
     SetPixels {
         raw: bool,
     },
+    /// XKB layout and variant of the session, from the client's keyboard layout.
+    KeyboardLayout {
+        layout: String,
+        variant: String,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -402,6 +407,10 @@ impl Message for ToAgent {
                 o.u8(u8::from(*raw));
                 11
             }
+            Self::KeyboardLayout { layout, variant } => {
+                o.bytes(format!("{layout}\n{variant}").as_bytes());
+                16
+            }
         };
         (tag, o.0)
     }
@@ -453,6 +462,16 @@ impl Message for ToAgent {
                 Self::SetLayout { outputs }
             }
             11 => Self::SetPixels { raw: i.bool()? },
+            16 => {
+                let text = i.string()?;
+                let (layout, variant) = text
+                    .split_once('\n')
+                    .ok_or(ProtoError::Invalid("layout without variant"))?;
+                Self::KeyboardLayout {
+                    layout: layout.into(),
+                    variant: variant.into(),
+                }
+            }
             12 => Self::ClipboardImageSet(i.rest()),
             13 => {
                 let (list_id, files) = i.files()?;
@@ -759,6 +778,10 @@ mod tests {
             height: 576,
         });
         roundtrip(FromAgent::Resized { ok: true });
+        roundtrip(ToAgent::KeyboardLayout {
+            layout: "ch".into(),
+            variant: "fr".into(),
+        });
         roundtrip(ToAgent::SetPixels { raw: true });
         roundtrip(ToAgent::SetPixels { raw: false });
         roundtrip(ToAgent::SetLayout {

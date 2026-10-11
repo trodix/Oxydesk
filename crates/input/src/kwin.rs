@@ -130,6 +130,10 @@ impl InputSink for KwinFakeInput {
         self.flush()
     }
 
+    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+        crate::xkb::apply(layout)
+    }
+
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
         let _g = self.order.lock().expect("ordre");
         self.fake

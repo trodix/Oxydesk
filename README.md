@@ -60,7 +60,7 @@ Efforts estimés, pas mesurés.
 5. HiDPI. Moyen.
 6. Curseur distant. **Fait** (voir « Curseur distant » ci-dessous).
 7. Plusieurs utilisateurs en parallèle. Moyen.
-8. Disposition du clavier : correspondance de la disposition annoncée par le client (AZERTY, QWERTZ…) avec celle de la session, touches mortes, AltGr, pavé numérique. Moyen.
+8. Disposition du clavier. **Fait** (voir « Disposition du clavier » ci-dessous) ; reste à essayer à la main avec mstsc : touches mortes, AltGr, pavé numérique. Moyen.
 9. Redirection de lecteurs (`rdpdr`) : dossier du client monté dans la session, accès continu. Élevé.
 
 **P2 — qualité et exploitation**
@@ -84,6 +84,11 @@ Les images se copient dans les deux sens, en plus du texte. Côté bureau, l'ada
 Les fichiers et dossiers se copient dans les deux sens (CLIPRDR : `FileGroupDescriptorW` et `FileContents`), sans limite de taille pratique : le contenu est lu **par blocs de 512 Kio à la demande**, jamais stocké ni mis en mémoire en entier. Côté bureau, une liste de fichiers venant du client est présentée par un système de fichiers FUSE en lecture seule (`fuser`, paquet `fuse3` requis) et publiée en `text/uri-list` ; les lectures de l'application déclenchent les `FileContentsRequest` vers le client. Dans l'autre sens, les fichiers copiés sur le bureau sont lus par plages quand le client colle. Chemins relatifs des dossiers conservés ; les liens symboliques vers des dossiers et les fichiers spéciaux sont ignorés. Une liste périmée échoue vite, une plage sans réponse expire après 60 s, et une erreur de presse-papiers n'interrompt plus la connexion. En mode `--login`, l'agent relaie les plages (`FilesSet`, `Files`, `FileRead`, `FileData`). Conception : [ADR 012](docs/decisions/012-fichiers-presse-papiers.md).
 
 Test : scénarios `clipboard_files*` du client de test (`--large-file-mib N` pour un gros fichier). Un fichier de 1,5 Gio revient identique en bureau synthétique, en session KWin et en mode `--login` sur la VM. Validé avec mstsc (dossier avec accent et fichier vide, puis un fichier de 128 Mio collé par l'Explorateur, comparaison SHA-256) et xfreerdp (5 fichiers dont 1,5 Mo, via FUSE). Remmina 1.4.39 ne gère pas les fichiers.
+
+## Disposition du clavier
+RDP envoie des touches physiques (scancodes) : le caractère obtenu dépend de la disposition de la session. À chaque connexion, le serveur lit l'identifiant de disposition Windows (KLID) annoncé par le client (patch `RdpServerInputHandler::keyboard_layout` dans `third_party/ironrdp-server`), le convertit en disposition XKB (`rdsktp_core::klid_to_xkb`, ~45 langues : `0x040C` → `fr`, `0x0807` → `ch(de)`…) et la session l'adopte. Adaptateur KWin : `kxkbrc` (groupe `Layout`) écrit par `kwriteconfig6`, puis signal D-Bus `org.kde.keyboard.reloadConfig` (celui du module clavier de KDE) ; en mode `--login`, l'ordre passe par l'agent (`ToAgent::KeyboardLayout`). Une disposition inconnue ou absente laisse celle de la session. `RDSKTP_KEYBOARD_LAYOUT=off` désactive l'adoption (à utiliser quand le serveur partage le bus D-Bus d'un vrai bureau : la disposition de l'utilisateur serait modifiée).
+
+Test : le client de test annonce `--keyboard-layout 0x40C` ; le bureau synthétique l'affiche par la couleur du marqueur (scénario `keyboard_layout`). Sur la VM Debian 13 (KWin 6.3, mode `--login`), `kxkbrc` contient `LayoutList=fr` et KWin répond `getLayoutsList` = `fr`. Non essayé : mstsc avec une disposition Windows non américaine, AltGr, touches mortes, pavé numérique.
 
 ## Verrouillage de session
 KWin n'est plus lancé avec `--no-lockscreen` : l'écran de verrouillage (`kscreenlocker_greet`) fait partie de la session, donc il apparaît dans l'image capturée, le clavier et la souris RDP l'atteignent, et le mot de passe tapé est vérifié par PAM. Le verrou survit à la déconnexion : le client qui revient retrouve le même KWin, toujours verrouillé, et le déverrouille avec le mot de passe du compte. Test (VM Debian 13, xfreerdp en conteneur) : `RDP_TEST_PASSWORD=... bash ci/lock-test.sh` (verrou affiché, persistance à la reconnexion avec le même KWin, mauvais mot de passe refusé, déverrouillage).

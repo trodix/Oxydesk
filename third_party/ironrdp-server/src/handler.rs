@@ -73,6 +73,10 @@ pub enum MouseEvent {
 pub trait RdpServerInputHandler: Send {
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
+
+    /// rdsktp patch: Windows keyboard layout identifier announced by the client (KLID, `0` when none),
+    /// called at each (re)connection so that the server can adopt a matching layout.
+    fn keyboard_layout(&mut self, _klid: u32) {}
 }
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {

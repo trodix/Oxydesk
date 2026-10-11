@@ -155,6 +155,12 @@ pub fn vm_test(o: &Opts) -> ExitCode {
             ));
         }
     }
+    // The client announces the French layout; the synthetic desktop shows it (marker), a KWin session adopts it.
+    client_cmd.push_str(if o.kwin {
+        " --keyboard-layout 0x40C --no-layout-check"
+    } else {
+        " --keyboard-layout 0x40C"
+    });
     if o.login {
         client_cmd.push_str(" --no-nla --user dev");
     }

@@ -1,6 +1,7 @@
 //! `InputSink` port adapters.
 
 pub mod scancode;
+pub mod xkb;
 
 #[cfg(feature = "kwin")]
 mod kwin;

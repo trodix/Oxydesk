@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -42,6 +42,12 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--max-monitors" => {
                 cfg.max_monitors = val(&a)?.parse().map_err(|_| "--max-monitors invalid")?
             }
+            "--keyboard-layout" => {
+                let v = val(&a)?;
+                cfg.keyboard_layout = u32::from_str_radix(v.trim_start_matches("0x"), 16)
+                    .map_err(|_| "--keyboard-layout invalid (KLID in hexadecimal, e.g. 0x40C)")?
+            }
+            "--no-layout-check" => cfg.layout_check = false,
             "--large-file-mib" => {
                 cfg.large_file_mib = val(&a)?.parse().map_err(|_| "--large-file-mib invalid")?
             }
@@ -91,6 +97,7 @@ fn real_session(args: &Args) -> Box<dyn Session> {
         no_nla: args.no_nla,
         width: (args.cfg.width * args.cfg.outputs) as u16,
         height: args.cfg.height as u16,
+        keyboard_layout: args.cfg.keyboard_layout,
     }))
 }
 

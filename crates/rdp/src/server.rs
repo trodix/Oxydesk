@@ -350,6 +350,20 @@ impl RdpServerInputHandler for Input {
             tracing::warn!("input: {e}");
         }
     }
+    fn keyboard_layout(&mut self, klid: u32) {
+        let Some(layout) = rdsktp_core::klid_to_xkb(klid) else {
+            tracing::debug!("keyboard layout {klid:#010x}: unknown, the session keeps its own");
+            return;
+        };
+        tracing::info!(
+            "keyboard layout {klid:#010x} -> {}({})",
+            layout.layout,
+            layout.variant
+        );
+        if let Some(Err(e)) = self.with(|i| i.set_keyboard_layout(&layout)) {
+            tracing::warn!("keyboard layout: {e}");
+        }
+    }
     fn mouse(&mut self, event: MouseEvent) {
         use rdsktp_core::ports::PointerButton as B;
         let r = self.with(|i| match event {

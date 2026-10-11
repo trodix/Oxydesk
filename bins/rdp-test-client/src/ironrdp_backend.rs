@@ -61,6 +61,8 @@ pub struct Options {
     pub no_nla: bool,
     pub width: u16,
     pub height: u16,
+    /// Windows keyboard layout announced to the server (KLID, `0`: none).
+    pub keyboard_layout: u32,
 }
 
 #[derive(Default)]
@@ -685,7 +687,7 @@ fn connector_config(opts: &Options) -> Config {
         enable_credssp: opts.password.is_some() && !opts.no_nla,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
-        keyboard_layout: 0,
+        keyboard_layout: opts.keyboard_layout,
         keyboard_functional_keys_count: 12,
         ime_file_name: String::new(),
         dig_product_id: String::new(),

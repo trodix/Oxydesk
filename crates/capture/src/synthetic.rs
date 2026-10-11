@@ -287,6 +287,20 @@ impl InputSink for SyntheticDesktop {
         Ok(())
     }
 
+    /// Test hook: the marker shows the layout received (French: `PALETTE[6]`, German: `PALETTE[7]`).
+    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+        let marker = match (layout.layout.as_str(), layout.variant.as_str()) {
+            ("fr", "") => 6,
+            ("de", "") => 7,
+            _ => return Ok(()),
+        };
+        self.state()
+            .sources
+            .iter_mut()
+            .for_each(|s| s.set_marker(marker));
+        Ok(())
+    }
+
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
         // The pointer lives on the first output (desktop coordinates of the first output).
         if let Some(s) = self.state().sources.first_mut() {

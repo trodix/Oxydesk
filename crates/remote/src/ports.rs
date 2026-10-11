@@ -137,6 +137,12 @@ impl InputSink for RemoteInput {
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
         self.send(ToAgent::Key { scancode, pressed })
     }
+    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+        self.send(ToAgent::KeyboardLayout {
+            layout: layout.layout.clone(),
+            variant: layout.variant.clone(),
+        })
+    }
     fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
         self.send(ToAgent::PointerMove { x, y })
     }
