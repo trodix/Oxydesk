@@ -42,6 +42,9 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--max-monitors" => {
                 cfg.max_monitors = val(&a)?.parse().map_err(|_| "--max-monitors invalid")?
             }
+            "--large-file-mib" => {
+                cfg.large_file_mib = val(&a)?.parse().map_err(|_| "--large-file-mib invalid")?
+            }
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalid")?,

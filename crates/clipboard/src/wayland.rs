@@ -10,6 +10,10 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
 use rdsktp_core::error::ClipboardError;
+use rdsktp_core::files::FileList;
+
+use crate::fuse::RemoteFiles;
+use crate::local_files::{format_uri_list, list_from_paths, parse_uri_list};
 use rdsktp_core::ports::ClipboardBackend;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
@@ -23,6 +27,10 @@ const TEXT_MIMES: &[&str] = &[
     "STRING",
 ];
 const IMAGE_MIME: &str = "image/png";
+const URI_LIST_MIME: &str = "text/uri-list";
+/// Marks a selection made by a file manager (KDE: cut flag; GNOME, Thunar, PCManFM: copied files).
+const KDE_CUT_MIME: &str = "application/x-kde-cutselection";
+const GNOME_FILES_MIME: &str = "x-special/gnome-copied-files";
 /// Read cap for a remote selection.
 const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -30,14 +38,23 @@ const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 struct Shared {
     incoming: Mutex<Option<String>>,
     incoming_image: Mutex<Option<Vec<u8>>>,
+    incoming_files: Mutex<Option<FileList>>,
+}
+
+/// What a received selection holds.
+#[derive(Clone, Copy)]
+enum Kind {
+    Text,
+    Image,
+    Files,
 }
 
 /// MIME types offered by an offer (filled by the `offer` events).
 #[derive(Default)]
 struct OfferMimes(Mutex<Vec<String>>);
 
-/// Bytes served by a source; one source = one `set_text` / `set_image`.
-struct SourceText(Vec<u8>);
+/// What a source serves, by MIME type; one source = one `set_selection`.
+struct SourceText(Vec<(String, Vec<u8>)>);
 
 /// Why a protocol could not be started.
 enum StartError {
@@ -47,20 +64,28 @@ enum StartError {
 
 /// Sends a text as the selection of the seat (implemented by each protocol).
 trait Backend: Send {
-    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
-    fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError>;
+    /// Offers `items` (MIME type, bytes) as the selection of the seat.
+    fn set_selection(&mut self, items: Vec<(String, Vec<u8>)>) -> Result<(), ClipboardError>;
 }
 
-/// Reads the received selection in a thread and stores it in `shared` (text, or PNG if `image`).
-fn read_selection(reader: std::io::PipeReader, shared: Arc<Shared>, image: bool) {
+/// Reads the received selection in a thread and stores it in `shared`.
+fn read_selection(reader: std::io::PipeReader, shared: Arc<Shared>, kind: Kind) {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        if reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-            if image {
-                *shared.incoming_image.lock().expect("incoming") = Some(bytes);
-            } else {
+        if !reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() || bytes.is_empty() {
+            return;
+        }
+        match kind {
+            Kind::Image => *shared.incoming_image.lock().expect("incoming") = Some(bytes),
+            Kind::Text => {
                 *shared.incoming.lock().expect("incoming") =
-                    Some(String::from_utf8_lossy(&bytes).into_owned());
+                    Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Kind::Files => {
+                let text = String::from_utf8_lossy(&bytes);
+                if let Some(list) = parse_uri_list(&text).and_then(|p| list_from_paths(&p)) {
+                    *shared.incoming_files.lock().expect("incoming") = Some(list);
+                }
             }
         }
     });
@@ -206,7 +231,11 @@ macro_rules! data_control {
                     _: &QueueHandle<Self>,
                 ) {
                     match event {
-                        source_ev::Event::Send { fd, .. } => serve_bytes(fd, data.0.clone()),
+                        source_ev::Event::Send { fd, mime_type } => {
+                            if let Some((_, bytes)) = data.0.iter().find(|(m, _)| *m == mime_type) {
+                                serve_bytes(fd, bytes.clone());
+                            }
+                        }
                         source_ev::Event::Cancelled => source.destroy(),
                     }
                 }
@@ -222,17 +251,20 @@ macro_rules! data_control {
                         offer.destroy(); // our own selection
                         return;
                     }
-                    // Text wins over an image (a copy from a page offers both).
-                    let (mime, image) = match TEXT_MIMES
-                        .iter()
-                        .find(|w| mimes.iter().any(|m| m == **w))
+                    let has = |w: &str| mimes.iter().any(|m| m == w);
+                    // Files (a file manager's copy also offers their paths as text), then text, then
+                    // an image (a copy from a page offers both).
+                    let (mime, kind) = if has(URI_LIST_MIME)
+                        && (has(KDE_CUT_MIME) || has(GNOME_FILES_MIME))
                     {
-                        Some(m) => (*m, false),
-                        None if mimes.iter().any(|m| m == IMAGE_MIME) => (IMAGE_MIME, true),
-                        None => {
-                            offer.destroy();
-                            return;
-                        }
+                        (URI_LIST_MIME, Kind::Files)
+                    } else if let Some(m) = TEXT_MIMES.iter().find(|w| has(w)) {
+                        (*m, Kind::Text)
+                    } else if has(IMAGE_MIME) {
+                        (IMAGE_MIME, Kind::Image)
+                    } else {
+                        offer.destroy();
+                        return;
                     };
                     let Ok((reader, writer)) = std::io::pipe() else {
                         offer.destroy();
@@ -242,7 +274,7 @@ macro_rules! data_control {
                     offer.destroy();
                     // The write descriptor is closed (drop) after sending: the reader sees the end of the stream.
                     let _ = self.conn.flush();
-                    read_selection(reader, self.shared.clone(), image);
+                    read_selection(reader, self.shared.clone(), kind);
                 }
             }
 
@@ -255,25 +287,16 @@ macro_rules! data_control {
             }
 
             impl Backend for Client {
-                fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+                fn set_selection(
+                    &mut self,
+                    items: Vec<(String, Vec<u8>)>,
+                ) -> Result<(), ClipboardError> {
                     let source = self
                         .manager
-                        .create_data_source(&self.qh, SourceText(text.as_bytes().to_vec()));
-                    for mime in TEXT_MIMES {
-                        source.offer((*mime).to_string());
+                        .create_data_source(&self.qh, SourceText(items.clone()));
+                    for (mime, _) in &items {
+                        source.offer(mime.clone());
                     }
-                    source.offer(self.instance_mime.clone());
-                    self.device.set_selection(Some(&source));
-                    self.conn
-                        .flush()
-                        .map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
-                }
-
-                fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
-                    let source = self
-                        .manager
-                        .create_data_source(&self.qh, SourceText(png.to_vec()));
-                    source.offer(IMAGE_MIME.to_string());
                     source.offer(self.instance_mime.clone());
                     self.device.set_selection(Some(&source));
                     self.conn
@@ -353,6 +376,35 @@ data_control!(
 pub struct WaylandClipboard {
     backend: Box<dyn Backend>,
     shared: Arc<Shared>,
+    /// Mounted when the first remote file list arrives.
+    files: Option<RemoteFiles>,
+}
+
+/// `$XDG_RUNTIME_DIR/rdsktp-files-<pid>`: one mount per process.
+const MOUNT_PREFIX: &str = "rdsktp-files-";
+
+/// Unmounts and removes the mount directories left by processes that no longer exist.
+fn clean_stale_mounts(runtime: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(runtime) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name
+            .strip_prefix(MOUNT_PREFIX)
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::process::Command::new("fusermount3")
+                .args(["-u", "-z"])
+                .arg(entry.path())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = std::fs::remove_dir(entry.path());
+        }
+    }
 }
 
 impl WaylandClipboard {
@@ -384,7 +436,13 @@ impl WaylandClipboard {
         let mut missing = Vec::new();
         for start in [ext::start, wlr::start] {
             match start(&conn, &instance_mime, &shared) {
-                Ok(backend) => return Ok(Self { backend, shared }),
+                Ok(backend) => {
+                    return Ok(Self {
+                        backend,
+                        shared,
+                        files: None,
+                    })
+                }
                 Err(StartError::NotAnnounced(global)) => missing.push(global),
                 Err(StartError::Failed(m)) => return Err(err(m)),
             }
@@ -396,9 +454,28 @@ impl WaylandClipboard {
     }
 }
 
+impl WaylandClipboard {
+    /// Offers real local files as the selection, as a file manager does after a copy.
+    pub fn set_uri_list(&mut self, paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
+        let uris = format_uri_list(paths);
+        let gnome = format!("copy\n{}", uris.lines().collect::<Vec<_>>().join("\n"));
+        self.backend.set_selection(vec![
+            (URI_LIST_MIME.into(), uris.into_bytes()),
+            (GNOME_FILES_MIME.into(), gnome.into_bytes()),
+            (KDE_CUT_MIME.into(), b"0".to_vec()),
+        ])
+    }
+}
+
 impl ClipboardBackend for WaylandClipboard {
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        self.backend.set_text(text)
+        let bytes = text.as_bytes().to_vec();
+        self.backend.set_selection(
+            TEXT_MIMES
+                .iter()
+                .map(|m| ((*m).to_string(), bytes.clone()))
+                .collect(),
+        )
     }
 
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
@@ -406,10 +483,32 @@ impl ClipboardBackend for WaylandClipboard {
     }
 
     fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
-        self.backend.set_image(png)
+        self.backend
+            .set_selection(vec![(IMAGE_MIME.into(), png.to_vec())])
     }
 
     fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
         Ok(self.shared.incoming_image.lock().expect("incoming").take())
+    }
+
+    fn set_files(&mut self, list: FileList) -> Result<(), ClipboardError> {
+        if self.files.is_none() {
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| ClipboardError::Backend("XDG_RUNTIME_DIR missing".into()))?;
+            clean_stale_mounts(&runtime);
+            let dir = runtime.join(format!("{MOUNT_PREFIX}{}", std::process::id()));
+            self.files = Some(RemoteFiles::mount(&dir).map_err(|e| {
+                ClipboardError::Backend(format!(
+                    "mounting the file system of remote files (is fuse3 installed?): {e}"
+                ))
+            })?);
+        }
+        let roots = self.files.as_ref().expect("mounted").publish(&list);
+        self.set_uri_list(&roots)
+    }
+
+    fn poll_files(&mut self) -> Result<Option<FileList>, ClipboardError> {
+        Ok(self.shared.incoming_files.lock().expect("incoming").take())
     }
 }

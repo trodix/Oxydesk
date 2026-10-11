@@ -11,12 +11,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rdsktp_agent_proto::{read_msg, write_msg, CursorImage, FromAgent, ToAgent, MAX_OUTPUTS};
+use rdsktp_agent_proto::{
+    read_msg, write_msg, CursorImage, FileInfo, FileRange, FromAgent, ToAgent, MAX_OUTPUTS,
+};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
     PointerButton,
 };
+use rdsktp_core::{FileEntry, FileExchange, RangeRequest, RangeSender};
 use rdsktp_encode::{AutoEncoder, EncoderChoice};
 
 const AUDIO_PACKET_MS: u32 = 20;
@@ -354,6 +357,26 @@ fn audio_loop(
     }
 }
 
+fn to_info(e: &FileEntry) -> FileInfo {
+    FileInfo {
+        path: e.path.clone(),
+        size: e.size,
+        is_dir: e.is_dir,
+        modified: e.modified,
+        read_only: e.read_only,
+    }
+}
+
+fn from_info(i: FileInfo) -> FileEntry {
+    FileEntry {
+        path: i.path,
+        size: i.size,
+        is_dir: i.is_dir,
+        modified: i.modified,
+        read_only: i.read_only,
+    }
+}
+
 fn serve(d: Arc<Desktop>, stream: UnixStream) {
     let writer: Writer = match stream.try_clone() {
         Ok(s) => Arc::new(Mutex::new(s)),
@@ -375,6 +398,8 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     // The agent outlives the connections: every server starts with the H.264 stream.
     d.raw.store(false, Ordering::SeqCst);
     let stop = Arc::new(AtomicBool::new(false));
+    // Ranges of the file lists exchanged with the server (the lists die with the connection).
+    let files = Arc::new(FileExchange::default());
     let keyframes: Arc<Vec<AtomicBool>> =
         Arc::new((0..MAX_OUTPUTS).map(|_| AtomicBool::new(true)).collect());
     let mut threads = vec![{
@@ -382,14 +407,31 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
         std::thread::spawn(move || video_loop(d, w, stop, kf))
     }];
     threads.push({
-        let (d, w, stop) = (d.clone(), writer.clone(), stop.clone());
+        let (d, w, stop, files) = (d.clone(), writer.clone(), stop.clone(), files.clone());
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
-                let (text, image) = {
+                let (text, image, selection) = {
                     let mut c = d.clipboard.lock().expect("clipboard mutex");
-                    (c.poll_text(), c.poll_image())
+                    (c.poll_text(), c.poll_image(), c.poll_files())
                 };
+                match selection {
+                    Ok(Some(list)) => {
+                        let infos = list.entries.iter().map(to_info).collect();
+                        let list_id = files.serve(list);
+                        if !send(
+                            &w,
+                            &FromAgent::Files {
+                                list_id,
+                                files: infos,
+                            },
+                        ) {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("clipboard: {e}"),
+                }
                 match text {
                     Ok(Some(t)) => {
                         if !send(&w, &FromAgent::ClipboardText(t)) {
@@ -516,6 +558,49 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     tracing::warn!("clipboard: {e}");
                 }
             }
+            ToAgent::FilesSet {
+                list_id,
+                files: infos,
+            } => {
+                let w = writer.clone();
+                let send_range: RangeSender = Arc::new(move |r: RangeRequest| {
+                    send(
+                        &w,
+                        &FromAgent::FileRead(FileRange {
+                            req_id: r.req_id,
+                            list_id: r.list_id,
+                            index: r.index,
+                            offset: r.offset,
+                            len: r.len,
+                        }),
+                    )
+                });
+                let list = files.remote_list(
+                    list_id,
+                    infos.into_iter().map(from_info).collect(),
+                    send_range,
+                );
+                if let Err(e) = d.clipboard.lock().expect("clipboard mutex").set_files(list) {
+                    tracing::warn!("clipboard: {e}");
+                }
+            }
+            ToAgent::FileRead(r) => {
+                // Off the reader thread: the answer may take a while (disk), and the answers to our own
+                // requests arrive through this thread.
+                let (files, w) = (files.clone(), writer.clone());
+                std::thread::spawn(move || {
+                    let data = files.read_served(r.list_id, r.index, r.offset, r.len);
+                    send(
+                        &w,
+                        &FromAgent::FileData {
+                            req_id: r.req_id,
+                            ok: data.is_some(),
+                            data: data.unwrap_or_default(),
+                        },
+                    );
+                });
+            }
+            ToAgent::FileData { req_id, ok, data } => files.complete(req_id, ok.then_some(data)),
             ToAgent::AudioOpen {
                 sample_rate,
                 channels,
@@ -554,6 +639,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
         }
     }
     stop.store(true, Ordering::Relaxed);
+    files.fail_all();
     if let Some(s) = audio_stop {
         s.store(true, Ordering::Relaxed);
     }

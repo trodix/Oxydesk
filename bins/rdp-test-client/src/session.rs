@@ -54,6 +54,17 @@ pub trait Session {
     fn next_clipboard_image(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, String> {
         Err("image clipboard not supported by this backend".into())
     }
+    /// Puts files on the client's clipboard (their contents are read by range when the server pastes).
+    fn set_clipboard_files(&mut self, _list: rdsktp_core::FileList) -> Result<(), String> {
+        Err("file clipboard not supported by this backend".into())
+    }
+    /// Files received from the server's clipboard.
+    fn next_clipboard_files(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<Option<rdsktp_core::FileList>, String> {
+        Err("file clipboard not supported by this backend".into())
+    }
     /// Next audio packet (`None` if nothing before the timeout).
     fn next_audio(
         &mut self,

@@ -205,6 +205,8 @@ DynamicUser=no
 ProtectHome=no
 ProtectSystem=full
 PrivateTmp=no
+# fusermount3 (clipboard files) is setuid: it needs privileges the base unit forbids.
+NoNewPrivileges=no
 Environment=XDG_RUNTIME_DIR=$uid_run
 Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
 ExecStart=

@@ -37,6 +37,7 @@ pub struct MockSession {
     beat: bool,
     clip: VecDeque<String>,
     clip_images: VecDeque<Vec<u8>>,
+    clip_files: VecDeque<rdsktp_core::FileList>,
     audio_pos: u64,
     connections: u32,
     monitors: Vec<MonitorRequest>,
@@ -51,6 +52,7 @@ impl MockSession {
             beat: false,
             clip: VecDeque::new(),
             clip_images: VecDeque::new(),
+            clip_files: VecDeque::new(),
             audio_pos: 0,
             connections: 0,
             monitors: Vec::new(),
@@ -180,6 +182,23 @@ impl Session for MockSession {
         Ok(())
     }
 
+    fn set_clipboard_files(&mut self, list: rdsktp_core::FileList) -> Result<(), String> {
+        let echoed = if self.faults.broken_clipboard {
+            crate::files::corrupt(&list)
+        } else {
+            list
+        };
+        self.clip_files.push_back(echoed);
+        Ok(())
+    }
+
+    fn next_clipboard_files(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<Option<rdsktp_core::FileList>, String> {
+        Ok(self.clip_files.pop_front())
+    }
+
     fn next_clipboard_image(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, String> {
         Ok(self.clip_images.pop_front())
     }
@@ -219,9 +238,9 @@ mod tests {
     }
 
     #[test]
-    fn healthy_server_passes_all_ten() {
+    fn healthy_server_passes_all_eleven() {
         let r = run(MockFaults::default(), fast());
-        assert_eq!(r.checks.len(), 10);
+        assert_eq!(r.checks.len(), 11);
         assert!(failed(&r).is_empty(), "{:?}", r.checks);
     }
 
@@ -256,7 +275,8 @@ mod tests {
                 "clipboard_roundtrip",
                 "clipboard_roundtrip_large",
                 "clipboard_image_roundtrip",
-                "clipboard_image_large"
+                "clipboard_image_large",
+                "clipboard_files"
             ]
         );
     }

@@ -32,6 +32,30 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// Most entries of a file list.
+pub const MAX_FILES: usize = 100_000;
+
+/// One file or directory of a file list (path relative to the copied collection, `/`-separated).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileInfo {
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+    /// Seconds since the Unix epoch.
+    pub modified: i64,
+    pub read_only: bool,
+}
+
+/// A range of a file of a list, asked to the other end; answered by `FileData` with the same `req_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRange {
+    pub req_id: u32,
+    pub list_id: u32,
+    pub index: u32,
+    pub offset: u64,
+    pub len: u32,
+}
+
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
@@ -73,6 +97,20 @@ pub enum ToAgent {
     SetLayout {
         outputs: Vec<Rect>,
     },
+    /// Files copied on the remote side, to offer as the desktop selection; their contents are read with
+    /// `FromAgent::FileRead`.
+    FilesSet {
+        list_id: u32,
+        files: Vec<FileInfo>,
+    },
+    /// A range of a file of a list the agent offered (`FromAgent::Files`).
+    FileRead(FileRange),
+    /// Answer to `FromAgent::FileRead`; `ok: false` if the range cannot be read.
+    FileData {
+        req_id: u32,
+        ok: bool,
+        data: Vec<u8>,
+    },
     /// `true`: send the frames as uncompressed pixels (`FromAgent::VideoRaw`) instead of H.264, for a client that
     /// cannot decode H.264. Back to `false`: restarts from keyframes.
     SetPixels {
@@ -96,6 +134,19 @@ pub enum FromAgent {
         data: Vec<u8>,
     },
     ClipboardText(String),
+    /// New file selection of the desktop; the server reads the contents with `ToAgent::FileRead`.
+    Files {
+        list_id: u32,
+        files: Vec<FileInfo>,
+    },
+    /// A range of a file of a list the server offered (`ToAgent::FilesSet`).
+    FileRead(FileRange),
+    /// Answer to `ToAgent::FileRead`; `ok: false` if the range cannot be read.
+    FileData {
+        req_id: u32,
+        ok: bool,
+        data: Vec<u8>,
+    },
     /// New image selection of the desktop (PNG file).
     ClipboardImage(Vec<u8>),
     Audio(Vec<u8>),
@@ -147,6 +198,30 @@ impl Out {
     fn i32(&mut self, v: i32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
+    fn u64(&mut self, v: u64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn files(&mut self, list_id: u32, files: &[FileInfo]) {
+        self.u32(list_id);
+        self.u32(files.len() as u32);
+        for f in files {
+            self.u16(f.path.len().min(u16::MAX as usize) as u16);
+            self.bytes(&f.path.as_bytes()[..f.path.len().min(u16::MAX as usize)]);
+            self.u64(f.size);
+            self.u8(u8::from(f.is_dir) | u8::from(f.read_only) << 1);
+            self.i64(f.modified);
+        }
+    }
+    fn range(&mut self, r: &FileRange) {
+        self.u32(r.req_id);
+        self.u32(r.list_id);
+        self.u32(r.index);
+        self.u64(r.offset);
+        self.u32(r.len);
+    }
     fn bytes(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);
     }
@@ -183,6 +258,50 @@ impl<'a> In<'a> {
         Ok(i32::from_be_bytes(
             self.take(4)?.try_into().expect("4 bytes"),
         ))
+    }
+    fn u64(&mut self) -> Result<u64, ProtoError> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+    fn i64(&mut self) -> Result<i64, ProtoError> {
+        Ok(i64::from_be_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+    fn files(&mut self) -> Result<(u32, Vec<FileInfo>), ProtoError> {
+        let list_id = self.u32()?;
+        let n = self.u32()? as usize;
+        if n > MAX_FILES {
+            return Err(ProtoError::Invalid("too many files"));
+        }
+        // Each entry takes at least 19 bytes: a lying count cannot trigger a big allocation.
+        let mut files = Vec::with_capacity(n.min(self.0.len() / 19));
+        for _ in 0..n {
+            let len = usize::from(self.u16()?);
+            let path = String::from_utf8(self.take(len)?.to_vec())
+                .map_err(|_| ProtoError::Invalid("path is not UTF-8"))?;
+            let size = self.u64()?;
+            let flags = self.u8()?;
+            let modified = self.i64()?;
+            files.push(FileInfo {
+                path,
+                size,
+                is_dir: flags & 1 != 0,
+                modified,
+                read_only: flags & 2 != 0,
+            });
+        }
+        Ok((list_id, files))
+    }
+    fn range(&mut self) -> Result<FileRange, ProtoError> {
+        Ok(FileRange {
+            req_id: self.u32()?,
+            list_id: self.u32()?,
+            index: self.u32()?,
+            offset: self.u64()?,
+            len: self.u32()?,
+        })
     }
     fn rest(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.0).to_vec()
@@ -240,6 +359,20 @@ impl Message for ToAgent {
             Self::ClipboardImageSet(d) => {
                 o.bytes(d);
                 12
+            }
+            Self::FilesSet { list_id, files } => {
+                o.files(*list_id, files);
+                13
+            }
+            Self::FileRead(r) => {
+                o.range(r);
+                14
+            }
+            Self::FileData { req_id, ok, data } => {
+                o.u32(*req_id);
+                o.u8(u8::from(*ok));
+                o.bytes(data);
+                15
             }
             Self::AudioOpen {
                 sample_rate,
@@ -321,6 +454,16 @@ impl Message for ToAgent {
             }
             11 => Self::SetPixels { raw: i.bool()? },
             12 => Self::ClipboardImageSet(i.rest()),
+            13 => {
+                let (list_id, files) = i.files()?;
+                Self::FilesSet { list_id, files }
+            }
+            14 => Self::FileRead(i.range()?),
+            15 => Self::FileData {
+                req_id: i.u32()?,
+                ok: i.bool()?,
+                data: i.rest(),
+            },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
@@ -363,6 +506,20 @@ impl Message for FromAgent {
             Self::ClipboardImage(d) => {
                 o.bytes(d);
                 10
+            }
+            Self::Files { list_id, files } => {
+                o.files(*list_id, files);
+                11
+            }
+            Self::FileRead(r) => {
+                o.range(r);
+                12
+            }
+            Self::FileData { req_id, ok, data } => {
+                o.u32(*req_id);
+                o.u8(u8::from(*ok));
+                o.bytes(data);
+                13
             }
             Self::Audio(d) => {
                 o.bytes(d);
@@ -432,6 +589,21 @@ impl Message for FromAgent {
             3 => Self::ClipboardText(i.string()?),
             4 => Self::Audio(i.rest()),
             10 => Self::ClipboardImage(i.rest()),
+            11 => {
+                let (list_id, files) = i.files()?;
+                i.end()?;
+                Self::Files { list_id, files }
+            }
+            12 => {
+                let r = i.range()?;
+                i.end()?;
+                Self::FileRead(r)
+            }
+            13 => Self::FileData {
+                req_id: i.u32()?,
+                ok: i.bool()?,
+                data: i.rest(),
+            },
             5 => Self::Fatal(i.string()?),
             6 => Self::Resized { ok: i.bool()? },
             7 => Self::LayoutApplied {
@@ -511,6 +683,47 @@ mod tests {
         assert_eq!(back, m);
     }
 
+    fn sample_files() -> Vec<FileInfo> {
+        vec![
+            FileInfo {
+                path: "dossier".into(),
+                size: 0,
+                is_dir: true,
+                modified: 1_700_000_000,
+                read_only: false,
+            },
+            FileInfo {
+                path: "dossier/é😀.bin".into(),
+                size: 5_000_000_000,
+                is_dir: false,
+                modified: -5,
+                read_only: true,
+            },
+        ]
+    }
+
+    fn sample_range() -> FileRange {
+        FileRange {
+            req_id: 7,
+            list_id: 2,
+            index: 1,
+            offset: 4_999_999_999,
+            len: 65536,
+        }
+    }
+
+    #[test]
+    fn a_lying_file_count_is_refused_without_allocating() {
+        let mut o = Out(Vec::new());
+        o.u32(1);
+        o.u32(u32::MAX);
+        assert!(ToAgent::decode(13, &o.0).is_err());
+        let mut o = Out(Vec::new());
+        o.u32(1);
+        o.u32(50_000);
+        assert!(ToAgent::decode(13, &o.0).is_err());
+    }
+
     #[test]
     fn all_messages_roundtrip() {
         roundtrip(ToAgent::Key {
@@ -526,6 +739,16 @@ mod tests {
         roundtrip(ToAgent::RequestKeyframe { output: 1 });
         roundtrip(ToAgent::ClipboardSet("Café 😀 日本".into()));
         roundtrip(ToAgent::ClipboardImageSet(vec![137, 80, 78, 71]));
+        roundtrip(ToAgent::FilesSet {
+            list_id: 3,
+            files: sample_files(),
+        });
+        roundtrip(ToAgent::FileRead(sample_range()));
+        roundtrip(ToAgent::FileData {
+            req_id: 9,
+            ok: true,
+            data: vec![0, 1, 2],
+        });
         roundtrip(ToAgent::AudioOpen {
             sample_rate: 48_000,
             channels: 2,
@@ -586,6 +809,16 @@ mod tests {
         })));
         roundtrip(FromAgent::ClipboardText("x".into()));
         roundtrip(FromAgent::ClipboardImage(vec![1, 2, 3]));
+        roundtrip(FromAgent::Files {
+            list_id: 4,
+            files: sample_files(),
+        });
+        roundtrip(FromAgent::FileRead(sample_range()));
+        roundtrip(FromAgent::FileData {
+            req_id: 1,
+            ok: false,
+            data: vec![],
+        });
         roundtrip(FromAgent::Audio(vec![1, 2, 3, 4]));
         roundtrip(FromAgent::Fatal("boom".into()));
     }

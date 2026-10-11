@@ -201,6 +201,9 @@ struct DesktopState {
     /// One source per output, in layout order.
     sources: Vec<SyntheticSource>,
     echo: Option<String>,
+    /// Files copied by the client, echoed back as the desktop selection.
+    image_echo: Option<Vec<u8>>,
+    files_echo: Option<rdsktp_core::FileList>,
 }
 
 impl SyntheticDesktop {
@@ -216,6 +219,8 @@ impl SyntheticDesktop {
                     .map(|i| SyntheticSource::new(width, height).with_index(i))
                     .collect(),
                 echo: None,
+                image_echo: None,
+                files_echo: None,
             })),
         }
     }
@@ -315,6 +320,24 @@ impl ClipboardBackend for SyntheticDesktop {
 
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
         Ok(self.state().echo.take())
+    }
+
+    fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
+        self.state().image_echo = Some(png.to_vec());
+        Ok(())
+    }
+
+    fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
+        Ok(self.state().image_echo.take())
+    }
+
+    fn set_files(&mut self, list: rdsktp_core::FileList) -> Result<(), ClipboardError> {
+        self.state().files_echo = Some(list);
+        Ok(())
+    }
+
+    fn poll_files(&mut self) -> Result<Option<rdsktp_core::FileList>, ClipboardError> {
+        Ok(self.state().files_echo.take())
     }
 }
 

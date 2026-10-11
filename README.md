@@ -19,7 +19,7 @@ Serveur RDP (IronRDP 0.13, H.264 via EGFX) pour KDE Plasma Wayland headless, en 
 | Mode login distant | PAM (`authd`), un agent par utilisateur, vraie session logind. Validé sur Debian 13 (KWin 6.3). |
 | Clavier et souris | Entrées par `fake_input` de KWin. |
 | Forme du curseur | Le client dessine lui-même le curseur (pas de latence) ; le serveur lui envoie la forme (PDU pointeur RDP) à chaque changement : flèche, texte, main, redimensionnement… Vérifié avec xfreerdp contre KWin 6.7. |
-| Presse-papiers | Texte seul, bidirectionnel, accents et `€`, plus de 64 Kio. |
+| Presse-papiers | Texte, images et fichiers (plus de 1 Gio), bidirectionnel, accents et `€`, plus de 64 Kio. |
 | Audio | Sortie son (tonalité 440 Hz contrôlée). |
 | Reconnexion | Reprise après coupure ou fermeture ; la session survit aux déconnexions. |
 | Multi-écran | Jusqu'à 16 écrans ; mstsc à 2 moniteurs contre le bureau synthétique et KWin réel (patch local d'IronRDP). |
@@ -28,7 +28,7 @@ Serveur RDP (IronRDP 0.13, H.264 via EGFX) pour KDE Plasma Wayland headless, en 
 ### Limites connues
 - **KWin 6.3** : nombre de sorties figé par `--outputs`, redimensionnement par mise à l'échelle (bandes noires), disposition refusée tant qu'une sortie n'a pas envoyé de trame.
 - **Bureau statique sous KWin** : KWin n'envoie une trame que sur dommage ; après un redimensionnement l'écran peut rester vide tant que rien ne bouge.
-- **Presse-papiers** : ni images, ni fichiers, ni sélection primaire ; non testé avec Klipper.
+- **Presse-papiers** : pas de sélection primaire ; non testé avec Klipper.
 - **NLA en mode login** impossible avec des comptes dynamiques (limite d'IronRDP) : TLS seul.
 - **Patch IronRDP local** (`third_party/`) à réexaminer à chaque montée de version.
 
@@ -42,7 +42,7 @@ Défauts trouvés puis corrigés :
 Limites des replis (derniers recours, bien plus lourds que H.264) : en mode `--login` l'agent n'envoie que du H.264, donc ces clients n'ont rien tant que l'agent n'envoie pas de pixels bruts ; la justesse des pixels n'est pas contrôlée (le test vérifie la réception sans erreur, pas l'image) ; débit élevé (≈ 8 Mo par image en 1080p), régulé par la contre-pression EGFX.
 
 ### Non couvert ou non vérifié
-Transfert de fichiers (et copie d'images avec de vrais clients), imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
+Copie d'images et de fichiers avec de vrais clients (mstsc, xfreerdp, Remmina), imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
 
 ## Plan priorisé
 Efforts estimés, pas mesurés.
@@ -54,7 +54,7 @@ Efforts estimés, pas mesurés.
 3. Durcissement du mode login : **fait** (voir « Limitation des essais » ci-dessous).
 
 **P1 — fonctions de base manquantes**
-4. Presse-papiers d'images : **fait** (voir « Presse-papiers d'images » ci-dessous). Reste : les fichiers. Moyen.
+4. Presse-papiers d'images : **fait** (voir « Presse-papiers d'images » ci-dessous). Les fichiers : **fait** (voir « Presse-papiers de fichiers »).
 5. HiDPI. Moyen.
 6. Curseur distant. **Fait** (voir « Curseur distant » ci-dessous).
 7. Plusieurs utilisateurs en parallèle. Moyen.
@@ -71,6 +71,11 @@ Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 
 
 ## Presse-papiers d'images
 Les images se copient dans les deux sens, en plus du texte. Côté bureau, l'adaptateur Wayland échange du PNG (`image/png`, via data-control) ; côté RDP, le format est CF_DIB (24 bits, ligne par ligne du bas vers le haut), converti par `crates/rdp/src/dib.rs`. Le texte l'emporte quand une application offre les deux ; la dernière copie gagne. La transparence est aplatie sur du blanc vers Windows (les applications ne s'accordent pas sur l'alpha d'un DIB) ; en sens inverse, les DIB 24 et 32 bits non compressés sont lus (masques BGR(A) usuels), les autres formats (palette, RLE, 16 bits) sont ignorés avec un avertissement. Plafond : 64 Mio de pixels décodés. En mode `--login`, l'image passe par l'agent (`ToAgent::ClipboardImageSet`, `FromAgent::ClipboardImage`). Test : les scénarios `clipboard_image_roundtrip` (37×23, largeur impaire pour le remplissage des lignes) et `clipboard_image_large` (1920×1080 de pixels pseudo-aléatoires, soit un PNG de 6 Mo et un DIB de 6 Mo) du client de test passe par le client RDP, le serveur, la sélection Wayland et l'application de test, et revient identique (vérifié sur la VM avec `cargo xtask vm-test --session login`). Non essayé : mstsc, xfreerdp et Remmina avec de vraies images (le format CF_DIB est celui qu'ils annoncent d'ordinaire, mais certains n'offrent que « PNG » ou CF_DIBV5).
+
+## Presse-papiers de fichiers
+Les fichiers et dossiers se copient dans les deux sens (CLIPRDR : `FileGroupDescriptorW` et `FileContents`), sans limite de taille pratique : le contenu est lu **par blocs de 512 Kio à la demande**, jamais stocké ni mis en mémoire en entier. Côté bureau, une liste de fichiers venant du client est présentée par un système de fichiers FUSE en lecture seule (`fuser`, paquet `fuse3` requis) et publiée en `text/uri-list` ; les lectures de l'application déclenchent les `FileContentsRequest` vers le client. Dans l'autre sens, les fichiers copiés sur le bureau sont lus par plages quand le client colle. Chemins relatifs des dossiers conservés ; les liens symboliques vers des dossiers et les fichiers spéciaux sont ignorés. Une liste périmée échoue vite, une plage sans réponse expire après 60 s, et une erreur de presse-papiers n'interrompt plus la connexion. En mode `--login`, l'agent relaie les plages (`FilesSet`, `Files`, `FileRead`, `FileData`). Conception : [ADR 012](docs/decisions/012-fichiers-presse-papiers.md).
+
+Test : scénarios `clipboard_files*` du client de test (`--large-file-mib N` pour un gros fichier). Un fichier de 1,5 Gio revient identique en bureau synthétique, en session KWin et en mode `--login` sur la VM. Non essayé : mstsc, xfreerdp et Remmina avec de vrais fichiers.
 
 ## Verrouillage de session
 KWin n'est plus lancé avec `--no-lockscreen` : l'écran de verrouillage (`kscreenlocker_greet`) fait partie de la session, donc il apparaît dans l'image capturée, le clavier et la souris RDP l'atteignent, et le mot de passe tapé est vérifié par PAM. Le verrou survit à la déconnexion : le client qui revient retrouve le même KWin, toujours verrouillé, et le déverrouille avec le mot de passe du compte. Test (VM Debian 13, xfreerdp en conteneur) : `RDP_TEST_PASSWORD=... bash ci/lock-test.sh` (verrou affiché, persistance à la reconnexion avec le même KWin, mauvais mot de passe refusé, déverrouillage).

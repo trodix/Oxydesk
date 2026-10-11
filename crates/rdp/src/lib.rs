@@ -2,6 +2,7 @@
 //! The only crate that knows IronRDP on the server side.
 
 pub mod clipboard;
+mod clipfiles;
 pub mod dib;
 mod pump;
 mod raw;

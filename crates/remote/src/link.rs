@@ -4,12 +4,15 @@
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, Rect, ToAgent, MAX_OUTPUTS};
+use rdsktp_agent_proto::{
+    read_msg, write_msg, FileInfo, FileRange, FromAgent, Rect, ToAgent, MAX_OUTPUTS,
+};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
+use rdsktp_core::{FileEntry, FileExchange, FileList, RangeRequest, RangeSender};
 
 /// Pending frames per output. H.264 frames are inter-dependent: one cannot keep only
 /// the last one, they are all delivered in order as long as the queue stays short.
@@ -36,6 +39,9 @@ pub struct AgentLink {
     video: RwLock<Vec<Mutex<Mailbox>>>,
     clipboard: Mutex<Option<String>>,
     clipboard_image: Mutex<Option<Vec<u8>>>,
+    /// File selection of the desktop not yet taken, and the bookkeeping of the ranges exchanged with the agent.
+    clipboard_files: Mutex<Option<FileList>>,
+    files: Arc<FileExchange>,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
@@ -48,6 +54,26 @@ pub struct AgentLink {
     layout_cv: Condvar,
     dead: AtomicBool,
     waker: Mutex<Option<Arc<rdsktp_core::wake::Wake>>>,
+}
+
+fn to_info(e: &FileEntry) -> FileInfo {
+    FileInfo {
+        path: e.path.clone(),
+        size: e.size,
+        is_dir: e.is_dir,
+        modified: e.modified,
+        read_only: e.read_only,
+    }
+}
+
+fn from_info(i: FileInfo) -> FileEntry {
+    FileEntry {
+        path: i.path,
+        size: i.size,
+        is_dir: i.is_dir,
+        modified: i.modified,
+        read_only: i.read_only,
+    }
 }
 
 impl AgentLink {
@@ -82,6 +108,8 @@ impl AgentLink {
             ),
             clipboard: Mutex::new(None),
             clipboard_image: Mutex::new(None),
+            clipboard_files: Mutex::new(None),
+            files: Arc::new(FileExchange::default()),
             cursor: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
@@ -98,7 +126,7 @@ impl AgentLink {
             .spawn(move || {
                 loop {
                     match read_msg::<_, FromAgent>(&mut reader) {
-                        Ok(Some(m)) => l.dispatch(m),
+                        Ok(Some(m)) => l.dispatch(&l, m),
                         Ok(None) => break,
                         Err(e) => {
                             tracing::warn!("agent: {e}");
@@ -107,6 +135,7 @@ impl AgentLink {
                     }
                 }
                 l.dead.store(true, Ordering::Relaxed);
+                l.files.fail_all();
                 l.audio_cv.notify_all();
                 l.resize_cv.notify_all();
                 l.layout_cv.notify_all();
@@ -131,7 +160,7 @@ impl AgentLink {
         Ok(link)
     }
 
-    fn dispatch(&self, msg: FromAgent) {
+    fn dispatch(&self, this: &Arc<Self>, msg: FromAgent) {
         match msg {
             FromAgent::Hello { .. } => {}
             FromAgent::Video {
@@ -220,6 +249,38 @@ impl AgentLink {
             }
             FromAgent::ClipboardImage(d) => {
                 *self.clipboard_image.lock().expect("clipboard mutex") = Some(d)
+            }
+            FromAgent::Files { list_id, files } => {
+                let weak: Weak<AgentLink> = Arc::downgrade(this);
+                let send: RangeSender = Arc::new(move |r: RangeRequest| {
+                    weak.upgrade().is_some_and(|l| {
+                        l.send(&ToAgent::FileRead(FileRange {
+                            req_id: r.req_id,
+                            list_id: r.list_id,
+                            index: r.index,
+                            offset: r.offset,
+                            len: r.len,
+                        }))
+                    })
+                });
+                let entries = files.into_iter().map(from_info).collect();
+                let list = self.files.remote_list(list_id, entries, send);
+                *self.clipboard_files.lock().expect("clipboard mutex") = Some(list);
+            }
+            FromAgent::FileRead(r) => {
+                // Reading a disk must not stall the reader thread.
+                let this = this.clone();
+                std::thread::spawn(move || {
+                    let data = this.files.read_served(r.list_id, r.index, r.offset, r.len);
+                    this.send(&ToAgent::FileData {
+                        req_id: r.req_id,
+                        ok: data.is_some(),
+                        data: data.unwrap_or_default(),
+                    });
+                });
+            }
+            FromAgent::FileData { req_id, ok, data } => {
+                self.files.complete(req_id, ok.then_some(data));
             }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
@@ -363,6 +424,17 @@ impl AgentLink {
 
     pub fn take_clipboard_image(&self) -> Option<Vec<u8>> {
         self.clipboard_image.lock().expect("clipboard mutex").take()
+    }
+
+    pub fn take_clipboard_files(&self) -> Option<FileList> {
+        self.clipboard_files.lock().expect("clipboard mutex").take()
+    }
+
+    /// Offers files copied on the remote side to the agent (read back by range as they are pasted).
+    pub fn set_clipboard_files(&self, list: FileList) -> bool {
+        let files = list.entries.iter().map(to_info).collect();
+        let list_id = self.files.serve(list);
+        self.send(&ToAgent::FilesSet { list_id, files })
     }
 
     pub fn open_audio(&self, sample_rate: u32, channels: u16) {
@@ -660,6 +732,110 @@ mod tests {
         drop(agent);
         wait_for(|| link.is_dead().then_some(()));
         assert!(!link.read_audio(&mut buf));
+    }
+
+    #[test]
+    fn files_flow_both_ways_by_range() {
+        use rdsktp_agent_proto::read_msg;
+        let (link, mut agent) = pair();
+        let data: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let info = |path: &str, size| FileInfo {
+            path: path.into(),
+            size,
+            is_dir: false,
+            modified: 0,
+            read_only: false,
+        };
+
+        // Desktop -> server: the agent announces a list; the server reads a range through the agent.
+        write_msg(
+            &mut agent,
+            &FromAgent::Files {
+                list_id: 5,
+                files: vec![info("a.bin", 3000)],
+            },
+        )
+        .unwrap();
+        let list = wait_for(|| link.take_clipboard_files());
+        assert_eq!(list.entries[0].path, "a.bin");
+        let source = list.source.clone();
+        let reader = std::thread::spawn(move || source.read(0, 1000, 500).unwrap());
+        let Some(ToAgent::FileRead(r)) = read_msg::<_, ToAgent>(&mut agent).unwrap() else {
+            panic!("FileRead expected")
+        };
+        assert_eq!((r.list_id, r.index, r.offset, r.len), (5, 0, 1000, 500));
+        write_msg(
+            &mut agent,
+            &FromAgent::FileData {
+                req_id: r.req_id,
+                ok: true,
+                data: data[1000..1500].to_vec(),
+            },
+        )
+        .unwrap();
+        assert_eq!(reader.join().unwrap(), data[1000..1500]);
+
+        // Server -> desktop: the server offers a list; the agent reads a range, served by the server.
+        struct Mem(Vec<u8>);
+        impl rdsktp_core::FileSource for Mem {
+            fn read(
+                &self,
+                _: u32,
+                offset: u64,
+                len: u32,
+            ) -> Result<Vec<u8>, rdsktp_core::error::ClipboardError> {
+                let s = (offset as usize).min(self.0.len());
+                Ok(self.0[s..(s + len as usize).min(self.0.len())].to_vec())
+            }
+        }
+        let entry = from_info(info("b.bin", 3000));
+        assert!(link.set_clipboard_files(FileList {
+            entries: vec![entry],
+            source: Arc::new(Mem(data.clone())),
+        }));
+        let Some(ToAgent::FilesSet { list_id, files }) =
+            read_msg::<_, ToAgent>(&mut agent).unwrap()
+        else {
+            panic!("FilesSet expected")
+        };
+        assert_eq!(files[0].path, "b.bin");
+        write_msg(
+            &mut agent,
+            &FromAgent::FileRead(FileRange {
+                req_id: 11,
+                list_id,
+                index: 0,
+                offset: 2900,
+                len: 500,
+            }),
+        )
+        .unwrap();
+        let Some(ToAgent::FileData {
+            req_id,
+            ok,
+            data: got,
+        }) = read_msg::<_, ToAgent>(&mut agent).unwrap()
+        else {
+            panic!("FileData expected")
+        };
+        assert_eq!((req_id, ok), (11, true));
+        assert_eq!(got, data[2900..]);
+        // Unknown list: refused.
+        write_msg(
+            &mut agent,
+            &FromAgent::FileRead(FileRange {
+                req_id: 12,
+                list_id: list_id + 9,
+                index: 0,
+                offset: 0,
+                len: 1,
+            }),
+        )
+        .unwrap();
+        let Some(ToAgent::FileData { ok, .. }) = read_msg::<_, ToAgent>(&mut agent).unwrap() else {
+            panic!("FileData expected")
+        };
+        assert!(!ok);
     }
 
     /// Agent answering `SetLayout` with `LayoutApplied`, then one keyframe per output.

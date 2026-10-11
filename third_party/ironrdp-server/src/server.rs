@@ -1165,8 +1165,16 @@ impl RdpServer {
                             error!(?error, "Handling clipboard event");
                             continue;
                         }
-                    }
-                    .context("failed to send clipboard event")?;
+                    };
+                    // rdsktp patch: a clipboard request the channel refuses (a file range of a list the
+                    // client has replaced meanwhile, for instance) must not end the connection.
+                    let msgs = match msgs {
+                        Ok(msgs) => msgs,
+                        Err(error) => {
+                            warn!(%error, "clipboard event refused");
+                            continue;
+                        }
+                    };
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
                         .context("SVC channel not found")?;

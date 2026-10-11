@@ -353,6 +353,9 @@ fn main() {
                 if let Ok(Some(png)) = cb.poll_image() {
                     let _ = cb.set_image(&png);
                 }
+                if let Ok(Some(list)) = cb.poll_files() {
+                    let _ = cb.set_files(list);
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
         });

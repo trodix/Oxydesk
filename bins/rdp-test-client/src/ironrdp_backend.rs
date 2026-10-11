@@ -69,6 +69,7 @@ struct State {
     seq: u64,
     clip_inbox: VecDeque<String>,
     clip_images: VecDeque<Vec<u8>>,
+    clip_files: VecDeque<rdsktp_core::FileList>,
     audio_inbox: VecDeque<crate::audio::AudioChunk>,
     error: Option<String>,
 }
@@ -93,6 +94,7 @@ enum Command {
     Key(u16, bool),
     Clipboard(String),
     ClipboardImage(Vec<u8>),
+    ClipboardFiles(rdsktp_core::FileList),
     Monitors(Vec<MonitorRequest>),
     Close,
     /// Drops the socket without the RDP shutdown sequence.
@@ -217,6 +219,36 @@ impl Session for IronRdpSession {
 
     fn set_clipboard_image(&mut self, png: &[u8]) -> Result<(), String> {
         self.send(Command::ClipboardImage(png.to_vec()))
+    }
+
+    fn set_clipboard_files(&mut self, list: rdsktp_core::FileList) -> Result<(), String> {
+        self.send(Command::ClipboardFiles(list))
+    }
+
+    fn next_clipboard_files(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<rdsktp_core::FileList>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.shared.lock();
+        loop {
+            if let Some(l) = s.clip_files.pop_front() {
+                return Ok(Some(l));
+            }
+            if let Some(e) = &s.error {
+                return Err(e.clone());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            s = self
+                .shared
+                .cond
+                .wait_timeout(s, left)
+                .expect("client state")
+                .0;
+        }
     }
 
     fn next_clipboard_image(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
@@ -704,13 +736,14 @@ fn run_worker(
     let send: SendFn = Arc::new(move |m| {
         let _ = clip_tx.lock().expect("clip_tx").send(m);
     });
-    let local: LocalContent = Arc::new(Mutex::new(None));
+    let local: LocalContent = LocalContent::default();
     let on_content = {
         let shared = shared.clone();
         Arc::new(move |c: Content| {
             match c {
                 Content::Text(t) => shared.lock().clip_inbox.push_back(t),
                 Content::Image(png) => shared.lock().clip_images.push_back(png),
+                Content::Files(list) => shared.lock().clip_files.push_back(list),
             }
             shared.cond.notify_all();
         })
@@ -829,6 +862,7 @@ fn run_worker(
                 }
                 Command::Clipboard(text) => announce(&send, &local, Content::Text(text)),
                 Command::ClipboardImage(png) => announce(&send, &local, Content::Image(png)),
+                Command::ClipboardFiles(list) => announce(&send, &local, Content::Files(list)),
                 Command::Monitors(monitors) => {
                     let frame = encode_monitor_layout(&mut stage, &monitors)?;
                     framed.write_all(&frame)?;
@@ -986,6 +1020,7 @@ fn encode_clipboard(
         };
         match msg {
             ClipboardMessage::SendFormatData(resp) => cliprdr.submit_format_data(resp),
+            ClipboardMessage::SendFileContentsResponse(resp) => cliprdr.submit_file_contents(resp),
             other => {
                 let cliprdr = stage
                     .get_svc_processor_mut::<CliprdrClient>()
@@ -993,6 +1028,12 @@ fn encode_clipboard(
                 match other {
                     ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
                     ClipboardMessage::SendInitiatePaste(id) => cliprdr.initiate_paste(id),
+                    ClipboardMessage::SendInitiateFileCopy(files) => {
+                        cliprdr.initiate_file_copy(files)
+                    }
+                    ClipboardMessage::SendFileContentsRequest(req) => {
+                        cliprdr.request_file_contents(req)
+                    }
                     _ => return Ok(None),
                 }
             }

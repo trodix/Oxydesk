@@ -305,9 +305,10 @@ impl CliprdrBackendFactory for ClipFactory {
         let clipboard = self.clipboard.clone();
         let on_content = Arc::new(move |content: Content| {
             if let Some(backend) = clipboard.lock().expect("clipboard mutex").as_mut() {
-                let result = match &content {
-                    Content::Text(t) => backend.set_text(t),
-                    Content::Image(png) => backend.set_image(png),
+                let result = match content {
+                    Content::Text(t) => backend.set_text(&t),
+                    Content::Image(png) => backend.set_image(&png),
+                    Content::Files(list) => backend.set_files(list),
                 };
                 if let Err(e) = result {
                     tracing::warn!("clipboard: {e}");
@@ -508,7 +509,7 @@ async fn serve(
     let guard = LoginGuard::new(config.throttle);
     let has_broker = broker.is_some();
     let shared = Arc::new(Shared::default());
-    let local: LocalContent = Arc::new(Mutex::new(None));
+    let local: LocalContent = LocalContent::default();
     let slot = SessionSlot::new(shared.clone());
     let clipboard = slot.clipboard.clone();
     // The audio channel is announced as soon as the server can offer one: always in login mode, otherwise depending on the port.
@@ -588,8 +589,9 @@ async fn serve(
         .spawn(move || {
             while !poller_shared.stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
-                let (text, image) = match clipboard.lock().expect("clipboard mutex").as_mut() {
-                    Some(c) => (c.poll_text(), c.poll_image()),
+                let (text, image, files) = match clipboard.lock().expect("clipboard mutex").as_mut()
+                {
+                    Some(c) => (c.poll_text(), c.poll_image(), c.poll_files()),
                     None => continue,
                 };
                 match text {
@@ -599,6 +601,11 @@ async fn serve(
                 }
                 match image {
                     Ok(Some(png)) => announce(&send, &local, Content::Image(png)),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("clipboard: {e}"),
+                }
+                match files {
+                    Ok(Some(list)) => announce(&send, &local, Content::Files(list)),
                     Ok(None) => {}
                     Err(e) => tracing::warn!("clipboard: {e}"),
                 }

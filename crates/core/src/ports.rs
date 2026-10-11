@@ -1,6 +1,7 @@
 //! Outgoing ports (hexagonal). Adapters live in other crates.
 
 use crate::error::*;
+use crate::files::FileList;
 use crate::frame::Frame;
 use crate::layout::{Layout, OutputId};
 
@@ -86,6 +87,15 @@ pub trait ClipboardBackend: Send {
     }
     /// New image selection of the desktop (PNG file), if any.
     fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
+        Ok(None)
+    }
+    /// Files copied on the remote side, to be offered as the desktop selection (pasted on demand:
+    /// the contents are read through the list's source only when an application reads them).
+    fn set_files(&mut self, _list: FileList) -> Result<(), ClipboardError> {
+        Ok(())
+    }
+    /// New file selection of the desktop (files copied in a file manager), if any.
+    fn poll_files(&mut self) -> Result<Option<FileList>, ClipboardError> {
         Ok(None)
     }
 }

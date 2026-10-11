@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod contract;
+pub mod files;
 #[cfg(feature = "ironrdp")]
 pub mod ironrdp_backend;
 pub mod mock;

@@ -8,10 +8,12 @@ publish.workspace = true
 [features]
 default = []
 # Text and image clipboard through ext_data_control_manager_v1 (KWin 6.4+) or zwlr_data_control_manager_v1 (exposed to unprivileged clients).
-wayland = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
+wayland = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner", "dep:fuser", "dep:tracing"]
 
 [dependencies]
 rdsktp-core.workspace = true
 wayland-client = { version = "0.31", optional = true }
 wayland-backend = { version = "0.3", optional = true }
 wayland-scanner = { version = "0.31", optional = true }
+fuser = { version = "0.18", default-features = false, optional = true }
+tracing = { version = "0.1", optional = true }

@@ -21,6 +21,8 @@ pub struct Config {
     pub max_monitors: usize,
     /// How long to retry connecting after a connection loss.
     pub reconnect_timeout: Duration,
+    /// Size in MiB of the large file of the `clipboard_files_large` scenario (0: not run).
+    pub large_file_mib: u64,
 }
 
 impl Default for Config {
@@ -36,6 +38,7 @@ impl Default for Config {
             max_key_latency_ms: 250.0,
             timeout: Duration::from_secs(10),
             reconnect_timeout: Duration::from_secs(20),
+            large_file_mib: 0,
         }
     }
 }
@@ -75,11 +78,13 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "clipboard_roundtrip_large",
             "clipboard_image_roundtrip",
             "clipboard_image_large",
+            "clipboard_files",
             "audio_tone",
             "reconnect",
         ]
         .into_iter()
         .chain((cfg.outputs > 1).then_some("multi_screen"))
+        .chain((cfg.large_file_mib > 0).then_some("clipboard_files_large"))
         {
             r.check(n, false, "not run: connection failed");
         }
@@ -95,6 +100,10 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
     clipboard_image(s, cfg, "clipboard_image_roundtrip", 37, 23, r);
     clipboard_image(s, cfg, "clipboard_image_large", 1920, 1080, r);
+    clipboard_files(s, cfg, "clipboard_files", 0, r);
+    if cfg.large_file_mib > 0 {
+        clipboard_files(s, cfg, "clipboard_files_large", cfg.large_file_mib << 20, r);
+    }
     audio_tone(s, cfg, r);
     if cfg.multi_resize {
         multi_resize(s, cfg, r);
@@ -477,6 +486,42 @@ fn clipboard_image(s: &mut dyn Session, cfg: &Config, name: &str, w: u32, h: u32
             None => r.check(name, false, "unreadable image received"),
         },
         Ok(None) => r.check(name, false, "no image received before the timeout"),
+        Err(e) => r.check(name, false, e),
+    }
+}
+
+/// The files go through the clipboard of the server and come back (the test application copies them
+/// back): same list, every byte as generated. `big`: size of an additional large file, streamed.
+fn clipboard_files(s: &mut dyn Session, cfg: &Config, name: &str, big: u64, r: &mut Report) {
+    let list = if big > 0 {
+        crate::files::big_list(big)
+    } else {
+        crate::files::test_list()
+    };
+    let start = Instant::now();
+    if let Err(e) = s.set_clipboard_files(list.clone()) {
+        r.check(name, false, e);
+        return;
+    }
+    // A long transfer: the timeout applies to the arrival of the list, not to the streaming.
+    match s.next_clipboard_files(cfg.timeout) {
+        Ok(Some(got)) => match crate::files::verify(&got, &list) {
+            Ok(bytes) => {
+                let secs = start.elapsed().as_secs_f64().max(0.001);
+                r.check(
+                    name,
+                    true,
+                    format!(
+                        "{} entries, {:.1} MiB identical ({:.0} MiB/s)",
+                        got.entries.len(),
+                        bytes as f64 / 1_048_576.0,
+                        bytes as f64 / 1_048_576.0 / secs
+                    ),
+                )
+            }
+            Err(e) => r.check(name, false, e),
+        },
+        Ok(None) => r.check(name, false, "no files received before the timeout"),
         Err(e) => r.check(name, false, e),
     }
 }

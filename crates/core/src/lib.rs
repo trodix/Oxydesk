@@ -4,6 +4,7 @@
 pub mod cursor;
 pub mod dmabuf;
 pub mod error;
+pub mod files;
 pub mod frame;
 pub mod layout;
 pub mod pixels;
@@ -14,6 +15,7 @@ pub mod wake;
 
 pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
 pub use error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError, LoginError};
+pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};
 pub use scale::ScaleMap;
