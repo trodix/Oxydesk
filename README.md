@@ -51,7 +51,7 @@ Efforts estimés, pas mesurés.
 1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. **Fait** : clavier, souris, presse-papiers, redimensionnement, xfreerdp et Remmina via `ci/clients-test.sh` (conteneur Docker ou Podman, Xvfb + xdotool). Mode `--login` sur la VM : `ci/freerdp-login-test.sh` (voir plus bas).
 1bis. **Repli sans H.264 / sans GFX** : fait en synthétique et en session KWin (voir « Compatibilité FreeRDP »). **Fait aussi en mode `--login`** : l'agent envoie des pixels bruts (`ToAgent::SetPixels`, `FromAgent::VideoRaw`) quand le client ne sait pas décoder le H.264, et revient au flux H.264 ensuite ; ils partent en EGFX non compressé ou en bitmaps selon le client. Reste : le contrôle des pixels reçus par ces replis (les clients ne sont comptés que par leurs traces) et les écrans 4K (une trame brute dépasse les 32 Mo du protocole agent).
 2. Verrouillage de session et SDDM : verrouiller, se reconnecter, déverrouiller sans perdre la session. Effort moyen.
-3. Durcissement du mode login : limitation des essais par IP et par compte, journalisation des échecs. Effort moyen.
+3. Durcissement du mode login : **fait** (voir « Limitation des essais » ci-dessous).
 
 **P1 — fonctions de base manquantes**
 4. Presse-papiers d'images, puis fichiers. Moyen.
@@ -68,6 +68,9 @@ Efforts estimés, pas mesurés.
 **P3 — facultatif** : fichiers partagés, imprimantes, microphone, USB, cartes à puce ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
 
 Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 7, le reste selon l'usage.
+
+## Limitation des essais (mode `--login`)
+Après `--max-login-failures` (5 par défaut) mots de passe refusés depuis une même adresse, ou `--max-user-failures` (10) contre un même compte, en moins de 5 minutes, l'adresse ou le compte est bloqué `--login-lockout-secs` (300 s). Une adresse bloquée est coupée dès l'acceptation TCP ; un compte bloqué est refusé sans interroger PAM, même avec le bon mot de passe. Un succès remet les compteurs à zéro. Les échecs, blocages et connexions réussies sont journalisés avec l'adresse et le compte (échappé). Les tables sont bornées (4096 entrées). Le seuil par compte est plus haut car il permet à quiconque connaît un nom de verrouiller son titulaire ; derrière un proxy ou un NAT, toutes les connexions partagent une même adresse. Logique dans `crates/core/src/throttle.rs`, branchement dans `crates/rdp/src/server.rs`. Les compteurs sont en mémoire : un redémarrage les efface. Test : `ci/freerdp-login-test.sh`.
 
 ## Curseur distant
 KWin dessine toujours son propre curseur dans l'image capturée (backend virtuel), quel que soit le mode de pointeur du screencast : il doublerait celui du client RDP, avec une traînée. La session utilise donc un thème de curseur transparent (`crates/session/src/cursor_theme.rs`) où chaque nom de curseur (`left_ptr`, `text`, `pointer`…) est un fichier transparent dont la **largeur code le rang du nom**. Le screencast (mode `metadata`, `SPA_META_Cursor` de PipeWire) livre ce bitmap ; `ThemeResolver` y reconnaît le marqueur et le remplace par l'image du vrai thème de l'utilisateur (`cursorTheme` de `kcminputrc`, `XCURSOR_THEME`, sinon breeze/Adwaita, héritage compris, taille nominale proche de 32). Le résultat part en `DisplayUpdate::RGBAPointer` (ou `HidePointer`) ; en mode `--login`, l'agent l'envoie par `FromAgent::Cursor`.

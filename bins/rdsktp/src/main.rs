@@ -15,6 +15,7 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --login       remote login: PAM through rdsktp-authd, one session per user (TLS, no NLA)\n\
   --session kwin  starts kwin_wayland --virtual (+ --session-app programs) and captures it\n\
   --state-dir   self-signed TLS certificate generated if absent (default: /var/lib/rdsktp)\n\
+  --max-login-failures N   --login-lockout-secs S   --max-user-failures N   login mode: failed attempts before an address (default 5) or an account (default 10) is blocked, and for how long (default 300)\n\
   --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable
   --encoder     auto (default) | vaapi | openh264; auto uses the GPU when VA-API is usable
   --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)";
@@ -99,6 +100,19 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    let defaults = rdsktp_core::ThrottleConfig::default();
+    let throttle = rdsktp_core::ThrottleConfig {
+        max_ip_failures: arg(&args, "--max-login-failures").unwrap_or(defaults.max_ip_failures),
+        max_user_failures: arg(&args, "--max-user-failures").unwrap_or(defaults.max_user_failures),
+        window: defaults.window,
+        lockout: std::time::Duration::from_secs(
+            arg(&args, "--login-lockout-secs").unwrap_or(defaults.lockout.as_secs()),
+        ),
+    };
+    anyhow::ensure!(
+        throttle.max_ip_failures >= 1 && throttle.max_user_failures >= 1,
+        "login failure limits must be at least 1"
+    );
     if login_mode {
         anyhow::ensure!(
             nla.is_none(),
@@ -114,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
             tls_cert,
             tls_key,
             nla,
+            throttle,
         };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
@@ -235,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         tls_cert,
         tls_key,
         nla,
+        throttle,
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,

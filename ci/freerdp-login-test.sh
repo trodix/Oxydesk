@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FreeRDP against the login mode (PAM + per-user agent) of the Debian 13 test VM: H.264, clients without H.264
 # (uncompressed pixels through EGFX) and without EGFX (bitmap updates), back to H.264 on the same agent,
-# wrong password refused. The VM must be up and deployed in login mode:
+# wrong password refused, address blocked after repeated failures (the server is restarted at the end). The VM must be up and deployed in login mode:
 #   RDP_TEST_PASSWORD=... cargo xtask vm-test --session login --keep
 # usage: RDP_TEST_PASSWORD=... ci/freerdp-login-test.sh [out-dir]
 # env: FREERDP (default sdl-freerdp) VM_RDP_PORT (3390) VM_USER (dev) FREERDP_TEST_SECONDS (10)
@@ -45,6 +45,17 @@ check login_back_to_h264 "$([[ $n -ge 20 && $u -eq 0 ]] && echo 0 || echo 1)" "e
 
 client wrong "wrong-$RANDOM"; rc=$?
 check login_wrong_password "$([[ $rc -ne 124 && $(count wrong "Got GFX") -eq 0 ]] && echo 0 || echo 1)" "exit $rc, no frame"
+
+# Limit on failed logins: the wrong password above was the first failure; four more block the address (5), and
+# even the right password is then refused without PAM being asked.
+for i in 2 3 4 5; do SECS=6 client "wrong$i" "wrong-$RANDOM" >/dev/null; done
+SECS=6 client blocked "$RDP_TEST_PASSWORD"; rc=$?
+check login_blocked_after_failures "$([[ $rc -ne 124 && $(count blocked "Got GFX") -eq 0 ]] && echo 0 || echo 1)" "right password refused while blocked (exit $rc)"
+journal=$(bash vm/vm.sh logs journal rdsktp 2>&1)
+check login_failures_logged "$(grep -q "login failed" <<<"$journal"; echo $?)" "failures logged"
+check login_block_logged "$(grep -q -E "blocked after too many failures|dropped: too many failed logins" <<<"$journal"; echo $?)" "block logged"
+# The counters live in the server's memory: a restart releases the VM for the next run.
+bash vm/vm.sh ssh 'sudo systemctl restart rdsktp' >/dev/null 2>&1
 
 echo
 [[ $failed -eq 0 ]] && echo "freerdp-login: all checks passed" || echo "freerdp-login: failures (logs in $OUT)"

@@ -9,6 +9,7 @@ pub mod layout;
 pub mod pixels;
 pub mod ports;
 pub mod scale;
+pub mod throttle;
 pub mod wake;
 
 pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
@@ -16,3 +17,4 @@ pub use error::{AudioError, CaptureError, ClipboardError, EncodeError, InputErro
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};
 pub use scale::ScaleMap;
+pub use throttle::{LoginThrottle, ThrottleConfig};

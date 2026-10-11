@@ -38,6 +38,8 @@ pub struct ServerConfig {
     pub tls_key: PathBuf,
     /// NLA/CredSSP with preloaded credentials; otherwise TLS only.
     pub nla: Option<(String, String)>,
+    /// Failed-login limits (login mode).
+    pub throttle: rdsktp_core::ThrottleConfig,
 }
 
 /// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
@@ -91,10 +93,57 @@ impl AudioProvider for SlotAudio {
     }
 }
 
+/// Failed-login limits shared by the connection filter (which knows the peer) and the credential validator
+/// (which does not). Connections are served one at a time, so the peer of the last accepted connection is the
+/// one being validated.
+#[derive(Clone)]
+struct LoginGuard {
+    throttle: Arc<Mutex<rdsktp_core::LoginThrottle>>,
+    peer: Arc<Mutex<Option<std::net::IpAddr>>>,
+}
+
+impl LoginGuard {
+    fn new(cfg: rdsktp_core::ThrottleConfig) -> Self {
+        Self {
+            throttle: Arc::new(Mutex::new(rdsktp_core::LoginThrottle::new(cfg))),
+            peer: Arc::default(),
+        }
+    }
+
+    fn peer(&self) -> Option<std::net::IpAddr> {
+        *self.peer.lock().expect("peer mutex")
+    }
+}
+
+/// Drops the connections of blocked addresses before any protocol exchange.
+struct GuardHandler(LoginGuard);
+
+impl ironrdp_server::ConnectionHandler for GuardHandler {
+    fn on_accept(&mut self, peer: std::net::SocketAddr) -> bool {
+        let ip = peer.ip();
+        *self.0.peer.lock().expect("peer mutex") = Some(ip);
+        let now = std::time::Instant::now();
+        match self
+            .0
+            .throttle
+            .lock()
+            .expect("throttle mutex")
+            .ip_blocked(ip, now)
+        {
+            Some(left) => {
+                tracing::warn!(%ip, retry_in_secs = left.as_secs(), "connection dropped: too many failed logins");
+                false
+            }
+            None => true,
+        }
+    }
+}
+
 /// Validates the received credentials (TLS mode) by opening the user's session through the broker.
 struct BrokerValidator {
     broker: Arc<dyn SessionBroker>,
     slot: SessionSlot,
+    guard: LoginGuard,
 }
 
 #[async_trait::async_trait]
@@ -105,17 +154,40 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
     ) -> Result<ironrdp_server::CredentialDecision, ironrdp_server::CredentialValidationError> {
         use ironrdp_server::CredentialDecision;
         let (user, pass) = (credentials.username.clone(), credentials.password.clone());
+        let ip = self.guard.peer();
+        let blocked = self.guard.throttle.lock().expect("throttle mutex").blocked(
+            ip,
+            &user,
+            std::time::Instant::now(),
+        );
+        if let Some(left) = blocked {
+            // Not even tried: the broker (PAM) is not asked while the block lasts.
+            tracing::warn!(?ip, user = ?user, retry_in_secs = left.as_secs(), "login refused: blocked after too many failures");
+            return Ok(CredentialDecision::Reject);
+        }
         let broker = self.broker.clone();
         let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass))
             .await
             .map_err(ironrdp_server::CredentialValidationError::new)?;
         match outcome {
             Ok(ports) => {
+                self.guard
+                    .throttle
+                    .lock()
+                    .expect("throttle mutex")
+                    .record_success(ip, &credentials.username);
+                tracing::info!(?ip, user = ?credentials.username, "login accepted");
                 self.slot.install(ports);
                 Ok(CredentialDecision::Accept)
             }
             Err(LoginError::Denied) => {
-                tracing::warn!(user = %credentials.username, "connection refused");
+                let blocked = self
+                    .guard
+                    .throttle
+                    .lock()
+                    .expect("throttle mutex")
+                    .record_failure(ip, &credentials.username, std::time::Instant::now());
+                tracing::warn!(?ip, user = ?credentials.username, blocked, "login failed");
                 Ok(CredentialDecision::Reject)
             }
             Err(LoginError::Backend(e)) => {
@@ -429,6 +501,8 @@ async fn serve(
 ) -> anyhow::Result<()> {
     // ring AND aws-lc-rs are in the dependency tree: choose explicitly (already installed = ok).
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let guard = LoginGuard::new(config.throttle);
+    let has_broker = broker.is_some();
     let shared = Arc::new(Shared::default());
     let local: LocalText = Arc::new(Mutex::new(None));
     let slot = SessionSlot::new(shared.clone());
@@ -474,7 +548,11 @@ async fn serve(
             Arc::new(BrokerValidator {
                 broker,
                 slot: slot.clone(),
+                guard: guard.clone(),
             }) as Arc<dyn ironrdp_server::CredentialValidator>
+        }))
+        .with_connection_handler(has_broker.then(|| {
+            Box::new(GuardHandler(guard.clone())) as Box<dyn ironrdp_server::ConnectionHandler>
         }))
         .build();
     server.set_monitor_policy(Some(monitor_policy(
