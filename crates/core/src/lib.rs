@@ -5,6 +5,7 @@ pub mod dmabuf;
 pub mod error;
 pub mod frame;
 pub mod layout;
+pub mod pixels;
 pub mod ports;
 pub mod scale;
 pub mod wake;

@@ -71,6 +71,11 @@ pub enum ToAgent {
     SetLayout {
         outputs: Vec<Rect>,
     },
+    /// `true`: send the frames as uncompressed pixels (`FromAgent::VideoRaw`) instead of H.264, for a client that
+    /// cannot decode H.264. Back to `false`: restarts from keyframes.
+    SetPixels {
+        raw: bool,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -91,6 +96,13 @@ pub enum FromAgent {
     ClipboardText(String),
     Audio(Vec<u8>),
     Fatal(String),
+    /// Uncompressed frame (after `ToAgent::SetPixels { raw: true }`): compact BGRA rows, `width * 4` bytes each.
+    VideoRaw {
+        output: u32,
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
     /// Answer to `ToAgent::Resize`.
     Resized {
         ok: bool,
@@ -232,6 +244,10 @@ impl Message for ToAgent {
                 }
                 10
             }
+            Self::SetPixels { raw } => {
+                o.u8(u8::from(*raw));
+                11
+            }
         };
         (tag, o.0)
     }
@@ -282,6 +298,7 @@ impl Message for ToAgent {
                 }
                 Self::SetLayout { outputs }
             }
+            11 => Self::SetPixels { raw: i.bool()? },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
@@ -338,6 +355,18 @@ impl Message for FromAgent {
                 o.u32(*outputs);
                 7
             }
+            Self::VideoRaw {
+                output,
+                width,
+                height,
+                data,
+            } => {
+                o.u32(*output);
+                o.u32(*width);
+                o.u32(*height);
+                o.bytes(data);
+                8
+            }
         };
         (tag, o.0)
     }
@@ -368,6 +397,12 @@ impl Message for FromAgent {
             7 => Self::LayoutApplied {
                 ok: i.bool()?,
                 outputs: i.u32()?,
+            },
+            8 => Self::VideoRaw {
+                output: i.u32()?,
+                width: i.u32()?,
+                height: i.u32()?,
+                data: i.rest(),
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -442,6 +477,8 @@ mod tests {
             height: 576,
         });
         roundtrip(FromAgent::Resized { ok: true });
+        roundtrip(ToAgent::SetPixels { raw: true });
+        roundtrip(ToAgent::SetPixels { raw: false });
         roundtrip(ToAgent::SetLayout {
             outputs: vec![
                 Rect {
@@ -473,6 +510,12 @@ mod tests {
             width: 1920,
             height: 1080,
             data: vec![0, 0, 0, 1, 9],
+        });
+        roundtrip(FromAgent::VideoRaw {
+            output: 1,
+            width: 2,
+            height: 1,
+            data: vec![1, 2, 3, 4, 5, 6, 7, 8],
         });
         roundtrip(FromAgent::ClipboardText("x".into()));
         roundtrip(FromAgent::Audio(vec![1, 2, 3, 4]));

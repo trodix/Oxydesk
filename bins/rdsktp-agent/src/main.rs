@@ -40,6 +40,8 @@ struct Desktop {
     _session: Mutex<Box<dyn std::any::Any + Send>>,
     /// Set after a resize: the video loop drops its last (old size) frame and restarts from keyframes.
     resized: AtomicBool,
+    /// A client that cannot decode H.264: the frames go out as uncompressed pixels.
+    raw: AtomicBool,
     /// Held by the video loop during a round and by a layout change: after the answer, no frame of the old
     /// layout is sent any more.
     round: Mutex<()>,
@@ -104,6 +106,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
         _session: Mutex::new(keep),
         resized: AtomicBool::new(false),
+        raw: AtomicBool::new(false),
         round: Mutex::new(()),
     };
     match session.as_str() {
@@ -264,6 +267,27 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
                 }
                 continue;
             };
+            if d.raw.load(Ordering::Relaxed) {
+                let msg = match rdsktp_core::pixels::to_bgra(frame) {
+                    Ok(Some(data)) => FromAgent::VideoRaw {
+                        output: i as u32,
+                        width: frame.width,
+                        height: frame.height,
+                        data,
+                    },
+                    Ok(None) => continue,
+                    Err(e) => {
+                        send(&w, &FromAgent::Fatal(format!("pixels: {e}")));
+                        stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+                if !send(&w, &msg) {
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+                continue;
+            }
             let encoded = match encoders[i].encode(frame) {
                 Ok(e) => e,
                 Err(e) => {
@@ -331,6 +355,8 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     ) {
         return;
     }
+    // The agent outlives the connections: every server starts with the H.264 stream.
+    d.raw.store(false, Ordering::SeqCst);
     let stop = Arc::new(AtomicBool::new(false));
     let keyframes: Arc<Vec<AtomicBool>> =
         Arc::new((0..MAX_OUTPUTS).map(|_| AtomicBool::new(true)).collect());
@@ -436,6 +462,15 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     d.resized.store(true, Ordering::SeqCst);
                 }
                 send(&writer, &FromAgent::Resized { ok: result.is_ok() });
+            }
+            ToAgent::SetPixels { raw } => {
+                if d.raw.swap(raw, Ordering::SeqCst) != raw {
+                    tracing::info!(raw, "pixel mode");
+                    // Every output sends its last frame again in the new form (a static desktop sends nothing otherwise).
+                    keyframes
+                        .iter()
+                        .for_each(|k| k.store(true, Ordering::Relaxed));
+                }
             }
             ToAgent::RequestKeyframe { output } => {
                 if let Some(k) = keyframes.get(output as usize) {

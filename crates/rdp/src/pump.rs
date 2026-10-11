@@ -176,6 +176,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let (mut loops_seen, mut connected_at) = (0u64, Instant::now());
             let mut legacy_repeat = true;
             let mut warned_encoded = false;
+            // What the source was last asked for: uncompressed pixels (client without H.264) or its own stream.
+            let mut raw_requested = false;
             let mut repeat = false;
             let mut report = Instant::now();
             let (mut seen, mut drain) = (0u64, false);
@@ -206,6 +208,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         let mut c = new.capture;
                         c.set_waker(shared.wake.clone());
                         capture = Some(c);
+                        raw_requested = false; // a new source starts in its default mode
                         make_encoder = new.make_encoder;
                         outputs = new
                             .encoders
@@ -322,6 +325,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     continue;
                 };
                 if !handle.lock().expect("gfx handle mutex").is_ready() {
+                    if connected_at.elapsed() >= LEGACY_AFTER && !raw_requested {
+                        tracing::info!("no EGFX after {LEGACY_AFTER:?}: uncompressed pixels requested");
+                        capture_src.set_raw_pixels(true);
+                        raw_requested = true;
+                    }
                     if connected_at.elapsed() >= LEGACY_AFTER && loops > 0 {
                         let tx = shared.display.lock().expect("display mutex").clone();
                         if let Some(tx) = tx {
@@ -353,6 +361,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 {
                     let mut g = handle.lock().expect("gfx handle mutex");
                     h264 = g.supports_avc420();
+                    if raw_requested == h264 {
+                        tracing::info!(h264, "capture mode: {}", if h264 { "H.264 stream" } else { "uncompressed pixels" });
+                        capture_src.set_raw_pixels(!h264);
+                        raw_requested = !h264;
+                    }
                     if surfaces.is_empty() {
                         // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
                         if layout.outputs.len() > 1 || reset_graphics {

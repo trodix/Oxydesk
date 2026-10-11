@@ -10,6 +10,10 @@ pub trait CaptureSource: Send {
     /// The consumer may sleep on `wake` instead of polling: the source notifies it on every new
     /// frame. No effect by default (polled sources only).
     fn set_waker(&mut self, _wake: std::sync::Arc<crate::wake::Wake>) {}
+    /// The consumer wants uncompressed pixels (`true`) or can take the source's own compressed stream
+    /// (`false`, the default): a source that encodes by itself (the login agent) switches mode. No effect on
+    /// sources that always deliver pixels.
+    fn set_raw_pixels(&mut self, _raw: bool) {}
     /// Resizes the (single) captured desktop. Frames after the call have the new size.
     fn resize(&mut self, _width: u32, _height: u32) -> Result<(), CaptureError> {
         Err(CaptureError::ResizeUnsupported)

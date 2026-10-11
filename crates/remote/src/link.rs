@@ -170,6 +170,33 @@ impl AgentLink {
                 drop(video);
                 self.wake();
             }
+            FromAgent::VideoRaw {
+                output,
+                width,
+                height,
+                data,
+            } => {
+                let video = self.video.read().expect("video lock");
+                let Some(slot) = video.get(output as usize) else {
+                    return;
+                };
+                let mut mb = slot.lock().expect("mailbox mutex");
+                // Every raw frame is self-contained: only the latest one is worth keeping.
+                if !mb.wait_key {
+                    mb.queue.clear();
+                    mb.queue.push_back(Frame {
+                        output: OutputId(output),
+                        width,
+                        height,
+                        stride: width * 4,
+                        format: PixelFormat::Bgra8,
+                        data: FrameData::Shm(data),
+                    });
+                }
+                drop(mb);
+                drop(video);
+                self.wake();
+            }
             FromAgent::ClipboardText(t) => {
                 *self.clipboard.lock().expect("clipboard mutex") = Some(t)
             }
@@ -239,6 +266,17 @@ impl AgentLink {
             .expect("mailbox mutex")
             .queue
             .pop_front()
+    }
+
+    /// Asks the agent for uncompressed pixels (clients without H.264) or, with `false`, for its H.264 stream again.
+    pub fn set_raw_pixels(&self, raw: bool) {
+        self.send(&ToAgent::SetPixels { raw });
+        // Frames of the other kind still in the mailboxes are useless: wait for the agent's next ones.
+        for slot in self.video.read().expect("video lock").iter() {
+            let mut mb = slot.lock().expect("mailbox mutex");
+            mb.queue.clear();
+            mb.wait_key = !raw;
+        }
     }
 
     /// The next `take_frame` will only return a keyframe, requested from the agent.
@@ -460,6 +498,46 @@ mod tests {
         let (server, mut agent) = UnixStream::pair().unwrap();
         write_msg(&mut agent, &hello(0)).unwrap();
         assert!(AgentLink::connect(server, 1).is_err());
+    }
+
+    #[test]
+    fn raw_pixels_are_requested_and_only_the_latest_frame_is_kept() {
+        let (link, mut agent) = pair();
+        link.set_raw_pixels(true);
+        let req: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        assert_eq!(req, ToAgent::SetPixels { raw: true });
+        for t in [1u8, 2] {
+            let raw = FromAgent::VideoRaw {
+                output: 0,
+                width: 1,
+                height: 1,
+                data: vec![t, 0, 0, 255],
+            };
+            write_msg(&mut agent, &raw).unwrap();
+        }
+        let frame = wait_for(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            link.take_frame(OutputId(0))
+        });
+        let FrameData::Shm(px) = &frame.data else {
+            panic!("raw frame expected")
+        };
+        assert_eq!((frame.stride, px[0]), (4, 2));
+        assert!(link.take_frame(OutputId(0)).is_none());
+        // Back to H.264: raw frames still in flight are dropped until the keyframe.
+        link.set_raw_pixels(false);
+        write_msg(
+            &mut agent,
+            &FromAgent::VideoRaw {
+                output: 0,
+                width: 1,
+                height: 1,
+                data: vec![9, 0, 0, 255],
+            },
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(link.take_frame(OutputId(0)).is_none());
     }
 
     #[test]

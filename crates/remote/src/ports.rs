@@ -43,6 +43,10 @@ impl CaptureSource for RemoteCapture {
         self.0.set_waker(wake);
     }
 
+    fn set_raw_pixels(&mut self, raw: bool) {
+        self.0.set_raw_pixels(raw);
+    }
+
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
         if self
             .0
