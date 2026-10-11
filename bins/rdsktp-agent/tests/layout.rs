@@ -6,11 +6,17 @@ use std::time::{Duration, Instant};
 
 use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, Rect, ToAgent};
 
-struct Agent(Child);
+struct Agent(Child, std::path::PathBuf);
 impl Drop for Agent {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if std::thread::panicking() {
+            eprintln!(
+                "--- agent log ---\n{}",
+                std::fs::read_to_string(&self.1).unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -23,12 +29,14 @@ fn rect(x: i32, width: u32, height: u32) -> Rect {
     }
 }
 
-/// Reads until `done` accepts a message (others are skipped); fails after 20 s.
+/// Reads until `done` accepts a message (others are skipped); fails after 20 s. The socket has a read timeout:
+/// an agent that goes quiet fails the test (with its log) instead of blocking the CI runner for hours.
 fn read_until<T>(s: &mut UnixStream, mut done: impl FnMut(FromAgent) -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(20);
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     loop {
         assert!(Instant::now() < deadline, "timed out");
-        match read_msg::<_, FromAgent>(s).expect("protocol") {
+        match read_msg::<_, FromAgent>(s).expect("protocol (read timeout: the agent went quiet)") {
             Some(m) => {
                 if let Some(v) = done(m) {
                     return v;
@@ -51,9 +59,10 @@ fn set_layout_changes_the_number_of_outputs() {
             .arg(&socket)
             .env("XDG_RUNTIME_DIR", &dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(dir.join("agent.log")).unwrap())
             .spawn()
             .expect("agent"),
+        dir.join("agent.log"),
     );
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut s = loop {

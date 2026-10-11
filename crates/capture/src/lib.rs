@@ -1,5 +1,6 @@
 //! `CaptureSource` adapters. For now: synthetic source (test mode).
 
+#[cfg(feature = "kwin")]
 mod cursor_meta;
 mod synthetic;
 
