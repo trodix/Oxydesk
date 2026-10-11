@@ -22,7 +22,7 @@ write_files:
       apt-get install -y --no-install-recommends \
         kwin-wayland plasma-workspace plasma-desktop pipewire pipewire-bin pipewire-pulse pulseaudio-utils wireplumber \
         xdg-desktop-portal xdg-desktop-portal-kde dbus-user-session libpam-systemd \
-        libgl1-mesa-dri libegl1 libgbm1 curl jq ca-certificates || exit 1
+        breeze-cursor-theme libgl1-mesa-dri libegl1 libgbm1 curl jq ca-certificates || exit 1
       # Optional packages: one by one, no failure if absent.
       for p in kwin-wayland-backend-virtual libx264-164 libopenh264-8 libpam0g libpipewire-0.3-0t64; do
         apt-get install -y --no-install-recommends "$p" || echo "optional missing: $p"
