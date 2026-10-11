@@ -10,7 +10,10 @@ for e in podman docker; do [[ -n "$ENGINE" ]] || ! command -v "$e" >/dev/null ||
 [[ -n "$ENGINE" ]] || { echo "neither podman nor docker found (or set CONTAINER_ENGINE)" >&2; exit 2; }
 CLIENTS=("$@"); [[ ${#CLIENTS[@]} -gt 0 ]] || CLIENTS=(xfreerdp remmina)
 PORT="${CLIENTS_TEST_PORT:-34100}"
-ART=artifacts/clients-test; rm -rf "$ART"; mkdir -p "$ART"
+ART=artifacts/clients-test
+# Files written by a rootless Podman container may belong to a sub-uid: remove them from inside its user namespace.
+rm -rf "$ART" 2>/dev/null || { [[ "$ENGINE" == podman ]] && podman unshare rm -rf "$ART"; } || { echo "cannot clean $ART" >&2; exit 2; }
+mkdir -p "$ART"
 IMAGE=rdsktp-clients:dev
 
 echo "== engine: $ENGINE"

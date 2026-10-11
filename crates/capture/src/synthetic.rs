@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::{Layout, OutputId};
-use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink};
+use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink, PointerButton};
 
 // Contract with bins/rdp-test-client (src/contract.rs): keep both in sync.
 pub const BLOCK: u32 = 32;
@@ -24,6 +24,11 @@ pub const PALETTE: [[u8; 3]; 8] = [
 pub const IDENTITY_POS: (u32, u32) = (64, 0);
 /// Block in the bottom-right corner: shows the actual desktop size on the client side.
 pub const CORNER_COLOR: [u8; 3] = [255, 0, 255];
+/// Pointer block: 32x32 centred on the pointer once it has moved; orange, cyan while the left button is
+/// held, purple while the right one is.
+pub const POINTER_COLOR: [u8; 3] = [255, 128, 0];
+pub const POINTER_LEFT: [u8; 3] = [0, 255, 255];
+pub const POINTER_RIGHT: [u8; 3] = [128, 0, 255];
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
 const HEARTBEAT_OFF: [u8; 3] = [48, 48, 48];
 
@@ -37,6 +42,9 @@ pub struct SyntheticSource {
     noise: bool,
     /// Rank of the output: outputs after the first carry an identity block (`IDENTITY_POS`).
     index: u32,
+    /// Pointer position (desktop space) and held buttons (bit 0 left, bit 1 right).
+    pointer: Option<(i32, i32)>,
+    buttons: u8,
 }
 
 impl SyntheticSource {
@@ -54,6 +62,8 @@ impl SyntheticSource {
             marker: None,
             noise: false,
             index: 0,
+            pointer: None,
+            buttons: 0,
         }
     }
 
@@ -114,6 +124,20 @@ impl SyntheticSource {
                 p[1] = (state >> 8) as u8;
                 p[2] = (state >> 16) as u8;
             }
+        }
+        if let Some((x, y)) = self.pointer {
+            let max_x = (self.width - BLOCK) as i32;
+            let max_y = (self.height - BLOCK) as i32;
+            let pos = (
+                (x - 16).clamp(0, max_x) as u32,
+                (y - 16).clamp(0, max_y) as u32,
+            );
+            let color = match self.buttons {
+                b if b & 1 != 0 => POINTER_LEFT,
+                b if b & 2 != 0 => POINTER_RIGHT,
+                _ => POINTER_COLOR,
+            };
+            fill(&mut px, w, pos, color);
         }
         let marker = self.marker.map_or([0, 0, 0], |i| PALETTE[i]);
         fill(&mut px, w, MARKER_POS, marker);
@@ -225,6 +249,8 @@ impl CaptureSource for SyntheticDesktop {
                     let mut s = SyntheticSource {
                         marker: old.marker,
                         tick: old.tick,
+                        pointer: old.pointer,
+                        buttons: old.buttons,
                         ..SyntheticSource::new(old.width, old.height).with_index(i as u32)
                     };
                     s.resize(o.width, o.height)?;
@@ -256,7 +282,27 @@ impl InputSink for SyntheticDesktop {
         Ok(())
     }
 
-    fn pointer_move(&mut self, _x: i32, _y: i32) -> Result<(), InputError> {
+    fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
+        // The pointer lives on the first output (desktop coordinates of the first output).
+        if let Some(s) = self.state().sources.first_mut() {
+            s.pointer = Some((x, y));
+        }
+        Ok(())
+    }
+
+    fn pointer_button(&mut self, button: PointerButton, pressed: bool) -> Result<(), InputError> {
+        let bit = match button {
+            PointerButton::Left => 1,
+            PointerButton::Right => 2,
+            _ => return Ok(()),
+        };
+        if let Some(s) = self.state().sources.first_mut() {
+            if pressed {
+                s.buttons |= bit;
+            } else {
+                s.buttons &= !bit;
+            }
+        }
         Ok(())
     }
 }
@@ -321,6 +367,29 @@ mod tests {
             d.recv_latest(OutputId(0)).unwrap().unwrap().width,
             500,
             "refused: unchanged"
+        );
+    }
+
+    #[test]
+    fn pointer_block_follows_the_pointer_and_buttons() {
+        let mut d = SyntheticDesktop::new(640, 360);
+        let at = |d: &mut SyntheticDesktop, x, y| {
+            let f = d.recv_latest(OutputId(0)).unwrap().unwrap();
+            pixel(&f, x, y)
+        };
+        assert_ne!(at(&mut d, 300, 200), POINTER_COLOR);
+        d.pointer_move(300, 200).unwrap();
+        assert_eq!(at(&mut d, 300, 200), POINTER_COLOR);
+        d.pointer_button(PointerButton::Left, true).unwrap();
+        assert_eq!(at(&mut d, 300, 200), POINTER_LEFT);
+        d.pointer_button(PointerButton::Left, false).unwrap();
+        d.pointer_button(PointerButton::Right, true).unwrap();
+        assert_eq!(at(&mut d, 300, 200), POINTER_RIGHT);
+        d.pointer_move(5000, -9).unwrap();
+        assert_eq!(
+            at(&mut d, 640 - 5, 5),
+            POINTER_RIGHT,
+            "clamped inside the frame"
         );
     }
 
