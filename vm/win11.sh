@@ -167,14 +167,14 @@ case "${1:-}" in
     running && die "already running"
     addr="${2:?HOST:PORT}"; : "${3:?USER}"
     [[ -f "$S/overlay.qcow2" && "$(snapshot_key)" == "$(cat "$S/snapshot.sha" 2>/dev/null)" ]] || take_snapshot
-    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\n' \
-      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" > "$S/params.txt"
+    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\nbig_mib=%s\n' \
+      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" "${WIN_BIG_MIB:-128}" > "$S/params.txt"
     make_iso "$S/test-data.iso" RDPDATA "$S/params.txt"; rm -f "$S/params.txt" "$S/audio.wav"
     export DISK_IMG="$S/overlay.qcow2"
     : > "$S/serial.log"; launch 0 -loadvm ready
     for _ in $(seq 1 50); do [[ -S "$MON" ]] && break; sleep 0.2; done
     mon_wait "change dat $S/test-data.iso" >/dev/null || { stop_vm; die "cannot swap the data CD"; }
-    for _ in $(seq 1 "${4:-180}"); do grep -q '^END' "$S/serial.log" 2>/dev/null && break; running || break; sleep 1; done
+    for _ in $(seq 1 "${4:-600}"); do grep -q '^END' "$S/serial.log" 2>/dev/null && break; running || break; sleep 1; done
     grep -q '^END' "$S/serial.log" 2>/dev/null || echo "timeout or VM stopped before END" >&2
     stop_vm
     tr -d '\r' < "$S/serial.log" | grep -E '^(BEGIN|CHECK|RESULT|END|ERROR)' || true

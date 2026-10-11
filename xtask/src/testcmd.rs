@@ -290,6 +290,8 @@ fn client(o: &TestOpts) -> Result<(), String> {
     // WIN_MONITORS=2: the guest uses both its monitors (multimon) and the server exposes two outputs.
     let monitors = std::env::var("WIN_MONITORS").unwrap_or_else(|_| "1".into());
     let server = server
+        // Files echoed by the test desktop are copied aside: mstsc drops the contents of its old clipboard.
+        .env("RDSKTP_ECHO_FILES", "copy")
         .args(["--width", "1280", "--height", "720"])
         .arg("--outputs")
         .arg(&monitors)

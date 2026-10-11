@@ -54,6 +54,7 @@ $p = @{}
 foreach ($l in Get-Content $pf) { if ($l -match '^([^=#]+)=(.*)$') { $p[$Matches[1].Trim()] = $Matches[2].Trim() } }
 Emit "BEGIN $(Get-Date -Format o) server=$($p.server):$($p.port)"
 $w = [int]$p.width; $h = [int]$p.height
+if (-not $p.big_mib) { $p.big_mib = '128' }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Emit ('SCREENS ' + (([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.DeviceName)=$($_.Bounds)" }) -join ' '))
@@ -259,6 +260,117 @@ try {
   $large = New-Object System.Text.StringBuilder
   while ($large.Length -lt 64KB) { [void]$large.Append($unit) }
   ClipboardRoundTrip 'clipboard_roundtrip_large' $large.ToString()
+
+  # Child STA PowerShell (encoded command, no quoting issues) while this thread keeps pumping: the delayed
+  # rendering of the clipboard (text, image, files) is served by the RDP control of this thread.
+  function RunChild([string]$code, [int]$ms) {
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Add-Type -AssemblyName System.Windows.Forms, System.Drawing; `$ErrorActionPreference = 'Stop'; $code"))
+    $pr = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-STA', '-EncodedCommand', $enc
+    $null = Pump { $pr.HasExited } $ms
+    if (-not $pr.HasExited) { $pr.Kill(); return $false }
+    return $true
+  }
+  # Image round trip: a 64x48 bitmap with a known pattern; the echo comes back as a DIB, read pixel by pixel.
+  function ImageRoundTrip([string]$name, [int]$iw, [int]$ih) {
+    $bmp = New-Object System.Drawing.Bitmap $iw, $ih
+    for ($y = 0; $y -lt $ih; $y++) { for ($x = 0; $x -lt $iw; $x++) { $bmp.SetPixel($x, $y, [System.Drawing.Color]::FromArgb(($x * 4) % 256, ($y * 5) % 256, ($x * $y) % 256)) } }
+    [System.Windows.Forms.Clipboard]::SetImage($bmp)
+    $seq = [Win32Clip]::GetClipboardSequenceNumber()
+    $bumped = Pump { [Win32Clip]::GetClipboardSequenceNumber() -ne $seq } 10000
+    $detail = "echo announced=$bumped"
+    $ok = $false
+    if ($bumped) {
+      $out = 'C:\rdsktp\clipimg.txt'; Remove-Item $out -ErrorAction SilentlyContinue
+      $code = "`$i = [Windows.Forms.Clipboard]::GetImage(); if (`$i) { `$o = New-Object System.Collections.ArrayList; [void]`$o.Add(`"`$(`$i.Width)x`$(`$i.Height)`"); for (`$y = 0; `$y -lt `$i.Height; `$y++) { for (`$x = 0; `$x -lt `$i.Width; `$x++) { `$c = `$i.GetPixel(`$x, `$y); [void]`$o.Add(`"`$(`$c.R),`$(`$c.G),`$(`$c.B)`") } }; `$o -join ';' | Out-File '$out' -Encoding ascii }"
+      $done = RunChild $code 60000
+      if ($done -and (Test-Path $out)) {
+        $parts = (Get-Content $out -Raw).Trim().Split(';')
+        $bad = 0
+        if ($parts[0] -ne "${iw}x${ih}") { $bad = -1; $detail += ", size $($parts[0])" }
+        else {
+          for ($y = 0; $y -lt $ih; $y++) { for ($x = 0; $x -lt $iw; $x++) {
+            if ($parts[1 + $y * $iw + $x] -ne "$(($x * 4) % 256),$(($y * 5) % 256),$(($x * $y) % 256)") { $bad++ }
+          } }
+          $detail += ", $bad wrong pixels of $($iw * $ih)"
+        }
+        $ok = ($bad -eq 0)
+      } else { $detail += ", image not read (child done=$done)" }
+    }
+    $bmp.Dispose()
+    Check $name ([bool]($bumped -and $ok)) $detail
+  }
+  ImageRoundTrip 'clipboard_image_roundtrip' 37 23
+  ImageRoundTrip 'clipboard_image_roundtrip_64x48' 64 48
+
+  # File round trip: a folder (small files + a nested one) then one large file are put on the clipboard; the
+  # server echoes the list back (FileGroupDescriptorW), and an Explorer paste (the user path: it fetches
+  # the contents by ranges, FileContents) copies it into another folder; contents compared by SHA-256.
+  Add-Type -TypeDefinition @'
+public static class FileDiff {
+  // First difference, number of differing 64 KiB blocks and the offsets of the first few of them.
+  public static string Describe(string a, string b) {
+    using (var fa = System.IO.File.OpenRead(a)) using (var fb = System.IO.File.OpenRead(b)) {
+      var ba = new byte[65536]; var bb = new byte[65536]; long off = 0; int bad = 0; long first = -1; var list = new System.Text.StringBuilder();
+      while (true) {
+        int ra = fa.Read(ba, 0, ba.Length); int rb = fb.Read(bb, 0, bb.Length);
+        if (ra <= 0 && rb <= 0) break;
+        bool same = ra == rb; for (int i = 0; same && i < ra; i++) if (ba[i] != bb[i]) { same = false; if (first < 0) first = off + i; }
+        if (!same) { bad++; if (bad <= 6) list.Append(off.ToString("X") + " "); }
+        off += 65536;
+      }
+      return "first diff at " + first + ", " + bad + " bad 64K blocks, first at 0x " + list;
+    }
+  }
+}
+'@
+  # Explorer creates the destination at its final size at once: the copy is finished when the file can be opened exclusively.
+  function Unlocked([string]$f) { try { $h = [IO.File]::Open($f, 'Open', 'Read', 'None'); $h.Close(); return $true } catch { return $false } }
+  function FilesRoundTrip([string]$name, [string[]]$paths, [string]$check, [int]$ms) {
+    $dest = 'C:\rdsktp\paste'
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $dest | Out-Null
+    $sc = New-Object System.Collections.Specialized.StringCollection
+    foreach ($f in $paths) { [void]$sc.Add($f) }
+    [System.Windows.Forms.Clipboard]::SetFileDropList($sc)
+    $seq = [Win32Clip]::GetClipboardSequenceNumber()
+    $bumped = Pump { [Win32Clip]::GetClipboardSequenceNumber() -ne $seq } $ms
+    $detail = "echo announced=$bumped"
+    $ok = $false
+    if ($bumped) {
+      # The user path: an Explorer window on the destination folder, Ctrl+V. This thread keeps pumping messages
+      # (the RDP control serves the delayed rendering and the FileContents requests of Explorer from it).
+      Add-Type -AssemblyName Microsoft.VisualBasic
+      Start-Process explorer.exe -ArgumentList $dest
+      $null = Pump { $false } 5000
+      $activated = $true
+      try { [Microsoft.VisualBasic.Interaction]::AppActivate('paste') } catch { $activated = $false }
+      $null = Pump { $false } 1000
+      [System.Windows.Forms.SendKeys]::SendWait('^v')
+      $detail += ", explorer window activated=$activated"
+      $expected = $check.Split('|')
+      $null = Pump { $all = $true; foreach ($e in $expected) { $src, $dst = $e.Split('>'); if (-not (Test-Path (Join-Path $dest $dst)) -or (Get-Item (Join-Path $dest $dst)).Length -ne (Get-Item $src).Length -or -not (Unlocked (Join-Path $dest $dst))) { $all = $false } }; $all } $ms
+      $ok = $true
+      foreach ($e in $expected) {
+        $src, $dst = $e.Split('>'); $d = Join-Path $dest $dst
+        if (-not (Test-Path $d)) { $ok = $false; $detail += ", missing $dst"; continue }
+        $a = (Get-FileHash $src -Algorithm SHA256).Hash; $b = (Get-FileHash $d -Algorithm SHA256).Hash
+        if ($a -ne $b) { $ok = $false; $detail += ", $dst differs ($((Get-Item $d).Length) bytes of $((Get-Item $src).Length)): $([FileDiff]::Describe($src, $d))" } else { $detail += ", $dst ok ($((Get-Item $d).Length) bytes)" }
+      }
+    }
+    Check $name ([bool]($bumped -and $ok)) $detail
+  }
+  $fr = 'C:\rdsktp\files'
+  Remove-Item $fr -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory "$fr\tree\sub" | Out-Null
+  $rng = New-Object System.Random 42
+  $buf = New-Object byte[] 70001; $rng.NextBytes($buf); [IO.File]::WriteAllBytes("$fr\tree\a.bin", $buf)
+  [IO.File]::WriteAllText("$fr\tree\sub\caf" + [char]0xE9 + ".txt", "Na" + [char]0xEF + "ve " + [char]0x20AC + "`r`nline 2`r`n", [Text.Encoding]::UTF8)
+  [IO.File]::WriteAllBytes("$fr\tree\empty.dat", (New-Object byte[] 0))
+  FilesRoundTrip 'clipboard_files_roundtrip' @("$fr\tree") ("$fr\tree\a.bin>tree\a.bin|$fr\tree\sub\caf" + [char]0xE9 + ".txt>tree\sub\caf" + [char]0xE9 + ".txt|$fr\tree\empty.dat>tree\empty.dat") 90000
+  $big = "$fr\big.bin"
+  $fs = [IO.File]::Create($big); $chunk = New-Object byte[] (4MB)
+  for ($i = 0; $i -lt [int]$p.big_mib / 4; $i++) { $rng.NextBytes($chunk); $fs.Write($chunk, 0, $chunk.Length) }
+  $fs.Close()
+  FilesRoundTrip 'clipboard_files_large' @($big) "$big>big.bin" 240000
 
   $snd = @(Get-CimInstance Win32_SoundDevice | ForEach-Object { "$($_.Name) [$($_.Status)]" })
   $svc = (Get-Service Audiosrv).Status

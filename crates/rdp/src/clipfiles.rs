@@ -144,7 +144,17 @@ fn answer(req: &FileContentsRequest, list: &FileList) -> FileContentsResponse<'s
         return FileContentsResponse::new_size_response(id, entry.size);
     }
     match list.source.read(index, req.position, req.requested_size) {
-        Ok(data) => FileContentsResponse::new_data_response(id, data),
+        Ok(data) => {
+            tracing::trace!(
+                stream = id,
+                index,
+                position = req.position,
+                requested = req.requested_size,
+                sent = data.len(),
+                "file range answered"
+            );
+            FileContentsResponse::new_data_response(id, data)
+        }
         Err(e) => {
             tracing::warn!("file not read: {e}");
             FileContentsResponse::new_error(id)

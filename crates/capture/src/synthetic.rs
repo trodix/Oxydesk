@@ -332,12 +332,89 @@ impl ClipboardBackend for SyntheticDesktop {
     }
 
     fn set_files(&mut self, list: rdsktp_core::FileList) -> Result<(), ClipboardError> {
+        if std::env::var("RDSKTP_ECHO_FILES").is_ok_and(|v| v == "copy") {
+            // The echo must outlive the client's own copy (a real client drops the contents of the
+            // clipboard it no longer owns): copy the files aside first, without blocking the caller.
+            let desktop = self.clone();
+            std::thread::spawn(move || match echo_copy::materialize(&list) {
+                Ok(copy) => desktop.state().files_echo = Some(copy),
+                Err(e) => eprintln!("file echo not copied: {e}"),
+            });
+            return Ok(());
+        }
         self.state().files_echo = Some(list);
         Ok(())
     }
 
     fn poll_files(&mut self) -> Result<Option<rdsktp_core::FileList>, ClipboardError> {
         Ok(self.state().files_echo.take())
+    }
+}
+
+/// Test double: keeps a copy of the files of a list on disk (see `ClipboardBackend::set_files`).
+mod echo_copy {
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use rdsktp_core::error::ClipboardError;
+    use rdsktp_core::{FileList, FileSource};
+
+    const BLOCK: u32 = 512 * 1024;
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    struct DirSource(PathBuf);
+
+    impl FileSource for DirSource {
+        fn read(&self, index: u32, offset: u64, len: u32) -> Result<Vec<u8>, ClipboardError> {
+            let err = |e: std::io::Error| ClipboardError::Backend(e.to_string());
+            let mut f = fs::File::open(self.0.join(index.to_string())).map_err(err)?;
+            f.seek(SeekFrom::Start(offset)).map_err(err)?;
+            let mut buf = Vec::new();
+            f.take(u64::from(len)).read_to_end(&mut buf).map_err(err)?;
+            Ok(buf)
+        }
+    }
+
+    impl Drop for DirSource {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub fn materialize(list: &FileList) -> Result<FileList, ClipboardError> {
+        let err = |e: std::io::Error| ClipboardError::Backend(e.to_string());
+        let dir = std::env::temp_dir().join(format!(
+            "rdsktp-echo-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).map_err(err)?;
+        let source = DirSource(dir.clone());
+        for (i, e) in list.entries.iter().enumerate() {
+            if e.is_dir {
+                continue;
+            }
+            let mut out = fs::File::create(dir.join(i.to_string())).map_err(err)?;
+            let mut offset = 0u64;
+            while offset < e.size {
+                let want = (e.size - offset).min(u64::from(BLOCK)) as u32;
+                let data = list.source.read(i as u32, offset, want)?;
+                if data.is_empty() {
+                    return Err(ClipboardError::Backend(
+                        "file shorter than announced".into(),
+                    ));
+                }
+                out.write_all(&data).map_err(err)?;
+                offset += data.len() as u64;
+            }
+        }
+        Ok(FileList {
+            entries: list.entries.clone(),
+            source: Arc::new(source),
+        })
     }
 }
 

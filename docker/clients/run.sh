@@ -3,10 +3,12 @@
 # what it displays, like a user would: desktop size, live frames, keyboard (marker block colour), clipboard
 # round trip and dynamic resizing.
 # usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize
-# env: RDP_HOST (127.0.0.1) RDP_PORT (3389) OUT (/out) DESKTOP (1920x1080) HOST_UID HOST_GID
+#   fallback_nohh264 / fallback_nogfx: client without H.264 (uncompressed EGFX) / without EGFX (bitmap updates): pixels
+#   compared with what the synthetic desktop draws (probe.py integrity). clipboard_image / clipboard_files: round trips.
+# env: RDP_HOST (127.0.0.1) RDP_PORT (3389) RDP_USER (test) RDP_PASS (x) OUT (/out) DESKTOP (1920x1080) HOST_UID HOST_GID
 set -uo pipefail
 CLIENT="${1:?client: xfreerdp | remmina}"; shift
-SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -gt 0 ]] || SCENARIOS=(screen keyboard clipboard mouse resize)
+SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -gt 0 ]] || SCENARIOS=(screen keyboard clipboard clipboard_image clipboard_files mouse fallback_nohh264 fallback_nogfx resize)
 HOST="${RDP_HOST:-127.0.0.1}"; PORT="${RDP_PORT:-3389}"; OUT="${OUT:-/out}"
 DESKTOP="${DESKTOP:-1920x1080}"; DW="${DESKTOP%x*}"; DH="${DESKTOP#*x}"
 PROBE=/opt/clients/probe.py
@@ -33,7 +35,7 @@ start_client() { # scenario, extra xfreerdp args...
   case "$CLIENT" in
     xfreerdp)
       local bin; bin="$(command -v xfreerdp3 || command -v xfreerdp)"
-      "$bin" "/v:$HOST:$PORT" /u:test /p:x /cert:ignore /gfx:AVC420 +clipboard "$@" \
+      "$bin" "/v:$HOST:$PORT" "/u:${RDP_USER:-test}" "/p:${RDP_PASS:-x}" /cert:ignore ${GFX_ARG-/gfx:AVC420} +clipboard "$@" \
         >"$OUT/$CLIENT.$scenario.client.log" 2>&1 & ;;
     remmina)
       cat >"$OUT/remmina.remmina" <<R
@@ -41,14 +43,15 @@ start_client() { # scenario, extra xfreerdp args...
 name=rdsktp
 protocol=RDP
 server=$HOST:$PORT
-username=test
+username=${RDP_USER:-test}
 password=
 domain=
 resolution_mode=${RES_MODE:-2}
 resolution_width=$DW
 resolution_height=$DH
 colordepth=32
-gfx_h264=1
+gfx_h264=${GFX_H264:-1}
+network=${REMMINA_NETWORK:-7}
 cert_ignore=1
 ignore-tls-errors=1
 disableclipboard=0
@@ -58,7 +61,7 @@ R
       dbus-run-session -- remmina -c "$OUT/remmina.remmina" >"$OUT/$CLIENT.$scenario.client.log" 2>&1 &
       CLIENT_PID=$!
       # No stored password (Remmina keeps them encrypted): answer the credentials prompt like a user.
-      sleep 6; xdotool type --delay 50 x; xdotool key Return ;;
+      sleep 6; xdotool type --delay 50 "${RDP_PASS:-x}"; xdotool key Return ;;
   esac
   CLIENT_PID=${CLIENT_PID:-$!}
 }
@@ -200,6 +203,114 @@ scenario_resize() {
   fi
   if locate $target_w $target_h 20; then check resize 0 "desktop follows the window: 1000x600 at +$ORIGIN_X+$ORIGIN_Y"
   else check resize 1 "no 1000x600 desktop after resizing the window"; fi
+  stop_all
+}
+
+# Uncompressed fallbacks: what the client shows must be what the desktop draws, pixel for pixel (the background obeys
+# an invariant that holds in every frame, see probe.py integrity), not just "frames arrived".
+fallback_pixels() { # name, description
+  locate "$DW" "$DH" 40 || { check "$1" 1 "desktop not shown (screenshots in $OUT)"; stop_all; return; }
+  check "$1_shown" 0 "${DW}x${DH} desktop at +$ORIGIN_X+$ORIGIN_Y ($2)"
+  xdotool mousemove $((ORIGIN_X + 8)) $((ORIGIN_Y + 8)); sleep 1
+  local f res
+  f="$(shot "$1")"
+  res="$(python3 -W ignore "$PROBE" integrity "$f" "$ORIGIN_X" "$ORIGIN_Y" "$DW" "$DH")"
+  check "$1_pixels_exact" "$?" "$res"
+  # The corner block is exactly magenta (a lossy codec would shift it).
+  python3 -W ignore "$PROBE" match "$f" $((ORIGIN_X + DW - 16)) $((ORIGIN_Y + DH - 16)) 255 0 255 2 >/dev/null
+  check "$1_corner_exact" "$?" "corner block (255,0,255) +-2"
+  # Live frames, keyboard marker and heartbeat colours keep working on the fallback.
+  local on=0 off=0 v r
+  for _ in $(seq 20); do
+    f="$(shot beat)" && v="$(python3 -W ignore "$PROBE" pixel "$f" $((ORIGIN_X + 40)) $((ORIGIN_Y + 8)))"
+    read -r r _ _ <<<"$v"
+    [[ ${r:-0} -gt 250 ]] && on=1; [[ ${r:-255} -eq 48 ]] && off=1
+    [[ $on -eq 1 && $off -eq 1 ]] && break; sleep 0.2
+  done
+  check "$1_heartbeat_exact" "$([[ $on -eq 1 && $off -eq 1 ]]; echo $?)" "heartbeat blocks exactly white / grey 48 (on=$on off=$off)"
+  xdotool mousemove $((ORIGIN_X + 400)) $((ORIGIN_Y + 300)) click 1 2>/dev/null; sleep 1
+  local end=$((SECONDS + 8)) got=1
+  while [[ $SECONDS -lt $end ]]; do
+    xdotool key 2; f="$(shot key)" && python3 -W ignore "$PROBE" match "$f" $((ORIGIN_X + 12)) $((ORIGIN_Y + 12)) 0 255 0 2 >/dev/null && { got=0; break; }
+    sleep 0.3
+  done
+  check "$1_marker_exact" "$got" "marker block (0,255,0) +-2 after key 2"
+  stop_all
+}
+
+scenario_fallback_nohh264() {
+  start_x 2560 1440
+  GFX_ARG="/gfx:AVC420:off,AVC444:off" GFX_H264=0 start_client fallback_nohh264 /size:"${DW}x${DH}"
+  fallback_pixels fallback_nohh264 "EGFX without H.264, uncompressed"
+}
+
+scenario_fallback_nogfx() {
+  start_x 2560 1440
+  GFX_ARG="" REMMINA_NETWORK=1 GFX_H264=0 start_client fallback_nogfx /network:modem /size:"${DW}x${DH}"
+  fallback_pixels fallback_nogfx "no EGFX, bitmap updates"
+}
+
+png() { python3 -W ignore - "$@" <<'PY'
+import sys
+from PIL import Image
+w, h, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+im = Image.new("RGB", (w, h))
+im.putdata([((x * 255) // (w - 1), (y * 255) // (h - 1), (x * 7 + y * 13) % 256) for y in range(h) for x in range(w)])
+im.save(out)
+PY
+}
+
+scenario_clipboard_image() {
+  start_x 2560 1440
+  start_client clipboard_image /size:"${DW}x${DH}"
+  locate "$DW" "$DH" 30 || { check clipboard_image 1 "desktop not shown"; stop_all; return; }
+  # FreeRDP's X11 client only exposes the DIB-based image targets (image/bmp...), not image/png.
+  png 301 77 "$OUT/$CLIENT.image.sent.png"   # odd width: row padding of the DIB
+  python3 -W ignore -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])' "$OUT/$CLIENT.image.sent.png" "$OUT/$CLIENT.image.sent.bmp"
+  xclip -selection clipboard -t image/bmp -i "$OUT/$CLIENT.image.sent.bmp"
+  sleep 3
+  pkill -x xclip; sleep 3
+  xclip -selection clipboard -t image/bmp -o >"$OUT/$CLIENT.image.got.bmp" 2>/dev/null
+  local d; d="$(python3 -W ignore "$PROBE" imgdiff "$OUT/$CLIENT.image.sent.png" "$OUT/$CLIENT.image.got.bmp" 2>&1 | tail -1)"
+  check clipboard_image_roundtrip "$([[ "$d" == 0 ]]; echo $?)" "301x77 image sent and read back, max channel difference '${d}' (0 = identical)"
+  stop_all
+}
+
+scenario_clipboard_files() {
+  # Remmina 1.4.39 (rdp plugin) has no file clipboard: no FileGroupDescriptorW/FileContents in the plugin.
+  [[ "$CLIENT" == remmina ]] && { echo "SKIP  $CLIENT/clipboard_files_roundtrip  not supported by this client (no file clipboard in the rdp plugin)"; return; }
+  start_x 2560 1440
+  start_client clipboard_files /size:"${DW}x${DH}"
+  locate "$DW" "$DH" 30 || { check clipboard_files 1 "desktop not shown"; stop_all; return; }
+  local src="$OUT/files-sent/rdsktp-files"
+  rm -rf "$OUT/files-sent" "$OUT/files-got"; mkdir -p "$src/sub/deeper"
+  : >"$src/empty.txt"; printf 'hello\n' >"$src/hello.txt"
+  head -c 1500001 /dev/urandom >"$src/sub/big.bin"; head -c 524288 /dev/urandom >"$src/sub/deeper/block.bin"
+  printf 'caf\xc3\xa9' >"$src/sub/café.txt"
+  (cd "$OUT/files-sent" && sha256sum $(find rdsktp-files -type f | sort)) >"$OUT/files.sent.sha"
+  local uris="file://$PWD/$src"
+  uris="file://$(realpath "$src")"
+  # One owner only (a second xclip would take the selection from the first); FreeRDP reads the list from
+  # text/uri-list (empty answer otherwise). -loops: xclip otherwise exits after a few requests (TARGETS counts).
+  printf '%s\r\n' "$uris" | xclip -selection clipboard -loops 100 -t text/uri-list -i &
+  sleep 3
+  local targets; targets="$(xclip -selection clipboard -o -t TARGETS 2>/dev/null | tr '\n' ' ')"
+  echo "targets after our copy: $targets"
+  pkill -x xclip; sleep 4
+  targets="$(xclip -selection clipboard -o -t TARGETS 2>/dev/null | tr '\n' ' ')"
+  echo "targets after the echo: $targets"
+  local list; list="$(xclip -selection clipboard -o -t text/uri-list 2>/dev/null | tr -d '\r')"
+  echo "$list" >"$OUT/files.uris"
+  local root; root="$(head -1 <<<"$list" | sed 's|^file://||')"
+  if [[ -z "$root" || ! -e "$root" ]]; then
+    check clipboard_files_roundtrip 1 "no file list echoed back (targets: $targets)"; stop_all; return
+  fi
+  mkdir -p "$OUT/files-got"
+  timeout 120 cp -r "$root" "$OUT/files-got/" 2>"$OUT/files.cp.log"
+  local cprc=$?
+  (cd "$OUT/files-got" && sha256sum $(find "$(basename "$root")" -type f | sort | sed 's|^|./|') 2>/dev/null | sed 's| \./| |') >"$OUT/files.got.sha"
+  sed 's|rdsktp-files|X|' "$OUT/files.sent.sha" >"$OUT/files.sent.norm"; sed "s|$(basename "$root")|X|" "$OUT/files.got.sha" >"$OUT/files.got.norm"
+  check clipboard_files_roundtrip "$([[ $cprc -eq 0 ]] && diff -q "$OUT/files.sent.norm" "$OUT/files.got.norm" >/dev/null; echo $?)" "$(wc -l <"$OUT/files.sent.sha") files incl. folders, empty file, 1.5 MB file, accent; copy exit $cprc"
   stop_all
 }
 
