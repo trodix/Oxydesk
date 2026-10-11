@@ -7,15 +7,17 @@ use std::sync::{Arc, Mutex, Weak};
 
 use rdsktp_agent_proto::{PrintOp, PrintResult, ToAgent};
 use rdsktp_core::error::PrintError;
-use rdsktp_core::{PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+use rdsktp_core::{PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
 
 use crate::link::AgentLink;
 
-fn language_code(l: PrintLanguage) -> u8 {
-    match l {
-        PrintLanguage::PostScript => 0,
-        PrintLanguage::Pcl => 1,
-        PrintLanguage::Text => 2,
+/// The `format` of `ToAgent::PrinterAdded`.
+fn format_code(f: PrintFormat) -> u8 {
+    match f {
+        PrintFormat::Raw(PrintLanguage::PostScript) => 0,
+        PrintFormat::Raw(PrintLanguage::Pcl) => 1,
+        PrintFormat::Raw(PrintLanguage::Text) => 2,
+        PrintFormat::Xps => 3,
     }
 }
 
@@ -145,7 +147,7 @@ impl PrinterHost for AgentPrinters {
             name: name.to_owned(),
             driver: info.driver.clone(),
             is_default: info.is_default,
-            language: language_code(info.language),
+            format: format_code(info.format),
         });
     }
 

@@ -947,7 +947,9 @@ mod tests {
     fn printers_are_announced_to_the_agent_and_served_on_its_calls() {
         use rdsktp_agent_proto::{read_msg, PrintOp, PrintResult};
         use rdsktp_core::error::PrintError;
-        use rdsktp_core::{PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+        use rdsktp_core::{
+            PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter,
+        };
 
         type Log = Arc<Mutex<Vec<String>>>;
         struct Job(Log);
@@ -987,7 +989,7 @@ mod tests {
                 name: "Bureau".into(),
                 driver: "MS Publisher Imagesetter".into(),
                 is_default: true,
-                language: PrintLanguage::PostScript,
+                format: PrintFormat::Raw(PrintLanguage::PostScript),
             },
             Arc::new(Fake(log.clone())),
         );
@@ -996,12 +998,12 @@ mod tests {
             name,
             driver,
             is_default,
-            language,
+            format,
         }) = read_msg::<_, ToAgent>(&mut agent).unwrap()
         else {
             panic!("PrinterAdded expected")
         };
-        assert_eq!((name.as_str(), is_default, language), ("Bureau", true, 0));
+        assert_eq!((name.as_str(), is_default, format), ("Bureau", true, 0));
         assert_eq!(driver, "MS Publisher Imagesetter");
 
         fn call(agent: &mut UnixStream, req_id: u32, printer_id: u32, op: PrintOp) -> PrintResult {

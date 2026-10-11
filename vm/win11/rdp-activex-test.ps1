@@ -224,17 +224,21 @@ if ($p.drives -eq '1') {
   [IO.File]::WriteAllText("$drivesDir\guest.txt", 'to delete', [Text.Encoding]::UTF8)
   [IO.File]::WriteAllText("$drivesDir\to-rename.bin", 'rename me', [Text.Encoding]::UTF8)
 }
-if ($p.printers -eq '1') {
+if ($p.printers -in @('1','2')) {
+  # printers=2: XPS jobs (ADR 015): the printer RdsktpXps has the "Microsoft PS Class Driver", the server is told to send it XPS
+  # (--printer-mode RdsktpXps=xps) and the driver renders the XPS document it gets in PostScript. printers=1: raw jobs.
+  $drv = if ($p.printers -eq '2') { 'Microsoft PS Class Driver' } else { 'Generic / Text Only' }
+  $pname = if ($p.printers -eq '2') { 'RdsktpXps' } else { 'RdsktpTest' }
   # Printer redirection: a "Generic / Text Only" printer on a TCP/IP port (local port 9100) where this script listens.
   # The host sends a job to the socket the server makes for the printer; the spooler of this machine sends it to the
   # listener, checked below. (A printer on a file port is not redirected by mstsc.)
   $adv.RedirectPrinters = $true
   try {
-    Get-Printer -Name 'RdsktpTest' -ErrorAction SilentlyContinue | Remove-Printer
+    Get-Printer -Name 'RdsktpTest','RdsktpXps' -ErrorAction SilentlyContinue | Remove-Printer
     Get-PrinterPort -Name 'RdsktpPort' -ErrorAction SilentlyContinue | Remove-PrinterPort -ErrorAction SilentlyContinue
     Add-PrinterPort -Name 'RdsktpPort' -PrinterHostAddress '127.0.0.1' -PortNumber 9100 -ErrorAction Stop
-    if (-not (Get-PrinterDriver -Name 'Generic / Text Only' -ErrorAction SilentlyContinue)) { Add-PrinterDriver -Name 'Generic / Text Only' -ErrorAction Stop }
-    Add-Printer -Name 'RdsktpTest' -DriverName 'Generic / Text Only' -PortName 'RdsktpPort' -ErrorAction Stop
+    if (-not (Get-PrinterDriver -Name $drv -ErrorAction SilentlyContinue)) { Add-PrinterDriver -Name $drv -ErrorAction Stop }
+    Add-Printer -Name $pname -DriverName $drv -PortName 'RdsktpPort' -ErrorAction Stop
   } catch { Emit ("PRINTER SETUP FAILED: " + $_) }
   Emit ('DRIVERS ' + ((Get-PrinterDriver -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '))
   Emit ('PRINTERS ' + ((Get-Printer | ForEach-Object { $_.Name + '@' + $_.PortName + '/' + $_.PrinterStatus }) -join ', '))
@@ -320,7 +324,7 @@ try {
     Check 'drives_roundtrip' ([bool]$okd) $detail
   }
 
-  if ($p.printers -eq '1') {
+  if ($p.printers -in @('1','2')) {
     # The host (xtask) sends one job to the printer's socket: "Bonjour imprimante\n" then 100000 bytes 'A'..'Z' repeated.
     $head = [Text.Encoding]::ASCII.GetBytes("Bonjour imprimante`n")
     $total = $head.Length + 100000
@@ -330,7 +334,7 @@ try {
       $stream = $accepting.Result.GetStream()
       $buf = New-Object byte[] 65536
       $idle = [Diagnostics.Stopwatch]::StartNew()
-      while ($idle.ElapsedMilliseconds -lt 20000 -and $ms.Length -lt $total) {
+      while ($idle.ElapsedMilliseconds -lt 20000 -and ($ms.Length -lt $total -or $p.printers -eq '2')) {
         $t = $stream.ReadAsync($buf, 0, $buf.Length)
         if (-not (Pump { $t.IsCompleted } 20000)) { break }
         if ($t.Result -le 0) { break }
@@ -338,6 +342,13 @@ try {
       }
     }
     $b = $ms.ToArray()
+    if ($p.printers -eq '2') {
+      # What the PostScript driver of this machine made of the XPS document (the host converted a PostScript job).
+      $all = [Text.Encoding]::ASCII.GetString($b) -replace '[^\x20-\x7e\r\n]', '.'
+      $text = $all.Substring(0, [Math]::Min($all.Length, 400))
+      $pages = ([regex]::Matches($all, '(?m)^%%Page: ')).Count
+      Check 'printers_xps' ($b.Length -gt 1000 -and $all.Contains('%!PS') -and $pages -ge 2) ("received $($b.Length) bytes, $pages pages, start: $text")
+    } else {
     $okp = ($b.Length -eq $total)
     $detail = "printed $($b.Length) bytes, expected $total"
     if ($okp) {
@@ -345,6 +356,7 @@ try {
       for ($i = 0; $okp -and $i -lt 100000; $i++) { if ($b[$head.Length + $i] -ne (65 + ($i % 26))) { $okp = $false; $detail += ", differs at $i"; break } }
     }
     Check 'printers_roundtrip' ([bool]$okp) $detail
+    }
   }
 
   # Clipboard round trip. The test server echoes the text it receives: after our own SetText the
@@ -475,6 +487,8 @@ public static class FileDiff {
     }
     Check $name ([bool]($bumped -and $ok)) $detail
   }
+  # Real-time scanning of a freshly written 128 MiB file can make Explorer's range reads fail (CB_RESPONSE_FAIL): not under test.
+  try { Add-MpPreference -ExclusionPath 'C:\rdsktp' -ErrorAction Stop } catch { Emit ('DEFENDER EXCLUSION FAILED: ' + $_) }
   $fr = 'C:\rdsktp\files'
   Remove-Item $fr -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory "$fr\tree\sub" | Out-Null
@@ -487,6 +501,7 @@ public static class FileDiff {
   $fs = [IO.File]::Create($big); $chunk = New-Object byte[] (4MB)
   for ($i = 0; $i -lt [int]$p.big_mib / 4; $i++) { $rng.NextBytes($chunk); $fs.Write($chunk, 0, $chunk.Length) }
   $fs.Close()
+  $null = Pump { Unlocked $big } 30000
   FilesRoundTrip 'clipboard_files_large' @($big) "$big>big.bin" 240000
 
   $snd = @(Get-CimInstance Win32_SoundDevice | ForEach-Object { "$($_.Name) [$($_.Status)]" })

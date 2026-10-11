@@ -119,6 +119,18 @@ impl DirectoryDrive {
         channel.with_printer_driver(device_id, name.to_owned(), driver.to_owned())
     }
 
+    /// Like [`Self::printer_channel`], the client announcing that it takes XPS.
+    pub fn xps_printer_channel(
+        record: PathBuf,
+        device_id: u32,
+        name: &str,
+        driver: &str,
+        computer: &str,
+    ) -> Rdpdr {
+        Self::printer_channel(record, device_id, name, driver, None, computer)
+            .with_printer_xps(device_id)
+    }
+
     fn printer_io(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
         match req {
             PrinterIoRequest::Create(r) => {

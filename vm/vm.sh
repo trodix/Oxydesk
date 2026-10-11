@@ -190,7 +190,7 @@ cmd_deploy() {
   log "deploying $deb"
   # shellcheck disable=SC2046
   scp $(ssh_opts | sed 's/-p /-P /') "$deb" "$VM_USER@127.0.0.1:/tmp/deploy.deb"
-  vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb cups cups-filters'
+  vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb cups cups-filters ghostscript'
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
@@ -238,7 +238,7 @@ User=rdsktp
 DynamicUser=no
 Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
 ExecStart=
-ExecStart=/usr/bin/rdsktp --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+ExecStart=/usr/bin/rdsktp --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp --printer-mode RdsktpXps=xps
 CONF
   vm_ssh 'sudo systemd-sysusers /usr/lib/sysusers.d/rdsktp.conf; sudo systemctl daemon-reload && sudo systemctl restart rdsktp-authd rdsktp && sleep 3 && systemctl is-active rdsktp-authd rdsktp && sudo journalctl -u rdsktp-authd -u rdsktp -n 20 --no-pager'
 }

@@ -26,6 +26,9 @@ pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, Ran
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
 pub use keyboard::{klid_to_xkb, XkbLayout};
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};
-pub use printer::{printer_name, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+pub use printer::{
+    document_only_driver, printer_name, resolve_format, ModeError, PrintFormat, PrintJob,
+    PrintLanguage, PrintMode, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter, XpsConverter,
+};
 pub use scale::ScaleMap;
 pub use throttle::{LoginThrottle, ThrottleConfig};

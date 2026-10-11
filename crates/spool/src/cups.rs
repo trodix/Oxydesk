@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use rdsktp_core::printer::{printer_name, PrintLanguage, PrinterInfo};
+use rdsktp_core::printer::{printer_name, PrintFormat, PrintLanguage, PrinterInfo};
 
 /// URI scheme of the backend (`rdsktp:/path/to/socket`).
 pub const SCHEME: &str = "rdsktp";
@@ -16,12 +16,15 @@ pub fn queue_name(user: &str, printer: &str) -> String {
         .collect()
 }
 
-/// The PPD that makes CUPS produce the language the printer of the client understands.
-fn model(language: PrintLanguage) -> &'static str {
-    match language {
-        PrintLanguage::PostScript => "drv:///sample.drv/generic.ppd",
-        PrintLanguage::Pcl => "drv:///sample.drv/generpcl.ppd",
-        PrintLanguage::Text => "drv:///cupsfilters.drv/textonly.ppd",
+/// The PPD that makes CUPS produce what is sent to the client: the language of a raw printer, or PostScript for an
+/// XPS printer (the socket converts it to XPS).
+fn model(format: PrintFormat) -> &'static str {
+    match format {
+        PrintFormat::Raw(PrintLanguage::Pcl) => "drv:///sample.drv/generpcl.ppd",
+        PrintFormat::Raw(PrintLanguage::Text) => "drv:///cupsfilters.drv/textonly.ppd",
+        PrintFormat::Raw(PrintLanguage::PostScript) | PrintFormat::Xps => {
+            "drv:///sample.drv/generic.ppd"
+        }
     }
 }
 
@@ -97,7 +100,13 @@ impl Cups {
     }
 
     /// Creates the queue of a printer served on `socket`; returns its name.
-    pub fn add_queue(&self, name: &str, info: &PrinterInfo, socket: &Path) -> Option<String> {
+    pub fn add_queue(
+        &self,
+        name: &str,
+        info: &PrinterInfo,
+        socket: &Path,
+        session: &str,
+    ) -> Option<String> {
         if !uri_safe(socket) {
             tracing::warn!(socket = %socket.display(), "unusual socket path: no print queue");
             return None;
@@ -106,6 +115,8 @@ impl Cups {
         let uri = format!("{SCHEME}:{}", socket.display());
         let description = format!("{} (RDP client)", info.name);
         let allow = format!("allow:{}", self.user);
+        // The location tells which RDP session the queue belongs to.
+        let location = format!("RDP session {session}");
         let result = self.run(
             &self.lpadmin,
             &[
@@ -115,11 +126,11 @@ impl Cups {
                 "-v",
                 &uri,
                 "-m",
-                model(info.language),
+                model(info.format),
                 "-D",
                 &description,
                 "-L",
-                "RDP client",
+                &location,
                 "-o",
                 "printer-is-shared=false",
                 "-u",
@@ -182,9 +193,11 @@ mod tests {
 
     #[test]
     fn languages_choose_the_model() {
-        assert!(model(PrintLanguage::PostScript).ends_with("generic.ppd"));
-        assert!(model(PrintLanguage::Pcl).ends_with("generpcl.ppd"));
-        assert!(model(PrintLanguage::Text).ends_with("textonly.ppd"));
+        assert!(model(PrintFormat::Raw(PrintLanguage::PostScript)).ends_with("generic.ppd"));
+        assert!(model(PrintFormat::Raw(PrintLanguage::Pcl)).ends_with("generpcl.ppd"));
+        assert!(model(PrintFormat::Raw(PrintLanguage::Text)).ends_with("textonly.ppd"));
+        // An XPS printer is fed PostScript, which the socket converts.
+        assert!(model(PrintFormat::Xps).ends_with("generic.ppd"));
     }
 
     #[test]
@@ -215,7 +228,7 @@ mod tests {
             name: "Office".into(),
             driver: "HP PCL 6".into(),
             is_default: false,
-            language: PrintLanguage::Pcl,
+            format: PrintFormat::Raw(PrintLanguage::Pcl),
         }
     }
 
@@ -228,7 +241,9 @@ mod tests {
             "alice",
         );
         let socket = Path::new("/run/user/1000/rdsktp-printers/Office.sock");
-        let queue = cups.add_queue("Office", &info(), socket).expect("queue");
+        let queue = cups
+            .add_queue("Office", &info(), socket, "42-1")
+            .expect("queue");
         assert_eq!(queue, "alice-Office");
         cups.remove_queue(&queue);
         let log = std::fs::read_to_string(dir.path().join("lpadmin.log")).unwrap();
@@ -239,6 +254,7 @@ mod tests {
         );
         assert!(add.contains("-m drv:///sample.drv/generpcl.ppd"));
         assert!(add.contains("-u allow:alice"));
+        assert!(add.contains("-L RDP session 42-1"));
         assert_eq!(lines.next().unwrap(), "-x alice-Office");
     }
 
@@ -251,7 +267,7 @@ mod tests {
             "alice",
         );
         let socket = Path::new("/run/user/1000/rdsktp-printers/Office.sock");
-        assert!(cups.add_queue("Office", &info(), socket).is_none());
+        assert!(cups.add_queue("Office", &info(), socket, "42-1").is_none());
     }
 
     #[test]

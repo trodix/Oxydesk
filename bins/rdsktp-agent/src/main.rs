@@ -476,6 +476,11 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
         rdsktp_spool::Cups::detect(&rdsktp_spool::current_user()),
     ) {
         Ok(spool) => {
+            // The printers whose jobs are XPS need Ghostscript in the session of the user.
+            let spool = spool.with_xps(
+                rdsktp_spool::GhostscriptXps::detect()
+                    .map(|gs| Arc::new(gs) as Arc<dyn rdsktp_core::XpsConverter>),
+            );
             let w = writer.clone();
             Some(printers::Printers::new(
                 Arc::new(spool),
@@ -696,10 +701,10 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                 name,
                 driver,
                 is_default,
-                language,
+                format,
             } => {
                 if let Some(printers) = &printers {
-                    printers.added(printer_id, name, driver, is_default, language);
+                    printers.added(printer_id, name, driver, is_default, format);
                 }
             }
             ToAgent::PrinterRemoved { printer_id } => {

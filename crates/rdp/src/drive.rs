@@ -30,7 +30,7 @@ use ironrdp_server::{
 };
 use rdsktp_core::drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode};
 use rdsktp_core::error::DriveError;
-use rdsktp_core::printer::{PrinterHost, PrinterInfo, RemotePrinter};
+use rdsktp_core::printer::{PrintFormat, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter};
 use rdsktp_core::RemoteDrive;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -162,6 +162,11 @@ impl Link {
             }
             Err(RecvTimeoutError::Disconnected) => Err(DriveError::Io("connection closed".into())),
         }
+    }
+
+    /// Sends a message that has no answer.
+    fn notify(&self, message: RdpdrServerMessage) {
+        let _ = (self.send)(ServerEvent::Rdpdr(None, message));
     }
 
     fn forget(&self, tag: u64) {
@@ -635,6 +640,7 @@ pub struct DriveBackend {
     drives: HashMap<u32, (String, Arc<dyn DriveHost>)>,
     /// Printer names (and the host that has them), by device id.
     printers: HashMap<u32, (String, Arc<dyn PrinterHost>)>,
+    modes: PrinterModes,
     commands: Sender<Command>,
 }
 
@@ -701,8 +707,16 @@ impl DriveBackend {
             printer_host,
             drives: HashMap::new(),
             printers: HashMap::new(),
+            modes: PrinterModes::default(),
             commands,
         }
+    }
+
+    /// The mode of each printer (`auto` for all by default).
+    #[must_use]
+    pub fn with_modes(mut self, modes: PrinterModes) -> Self {
+        self.modes = modes;
+        self
     }
 
     fn unique_printer_name(&self, wanted: &str) -> String {
@@ -724,13 +738,25 @@ impl DriveBackend {
             tracing::warn!(device = id, "printer announcement not understood");
             return false;
         };
-        let info = announce.info();
+        // The format is decided here, once: no fallback to another format after a job is sent.
+        let info = match announce.info(self.modes.mode_for(&announce.name)) {
+            Ok(info) => info,
+            Err(e) => {
+                tracing::warn!(device = id, name = %announce.name, driver = %announce.driver, xps = announce.xps, "printer not redirected: {e}");
+                return false;
+            }
+        };
         let name = self.unique_printer_name(&info.name);
-        tracing::info!(device = id, %name, driver = %info.driver, "printer redirected by the client");
+        tracing::info!(device = id, %name, driver = %info.driver, xps = announce.xps, format = ?info.format, "printer redirected by the client");
         let printer = Arc::new(RdpPrinter {
             link: self.link.clone(),
             device_id: id,
         }) as Arc<dyn RemotePrinter>;
+        // Before any write: from now on the client takes the jobs of this printer as XPS.
+        if info.format == PrintFormat::Xps {
+            self.link
+                .notify(RdpdrServerMessage::UsingXps { device_id: id });
+        }
         let _ = self.commands.send(Command::PrinterAdded(
             host.clone(),
             name.clone(),
@@ -955,6 +981,7 @@ pub struct DriveFactory {
     pub shared: Arc<Shared>,
     pub host: HostSlot,
     pub printers: PrinterSlot,
+    pub modes: PrinterModes,
 }
 
 impl ServerEventSender for DriveFactory {
@@ -975,11 +1002,14 @@ impl RdpdrServerFactory for DriveFactory {
                 .is_some_and(|s| s.send(event).is_ok())
         });
         let (host, printers) = (self.host.clone(), self.printers.clone());
-        Box::new(DriveBackend::with_sources(
-            send,
-            Arc::new(move || host.lock().expect("host mutex").clone()),
-            Arc::new(move || printers.lock().expect("printers mutex").clone()),
-        ))
+        Box::new(
+            DriveBackend::with_sources(
+                send,
+                Arc::new(move || host.lock().expect("host mutex").clone()),
+                Arc::new(move || printers.lock().expect("printers mutex").clone()),
+            )
+            .with_modes(self.modes.clone()),
+        )
     }
 }
 

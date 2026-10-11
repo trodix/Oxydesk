@@ -181,6 +181,13 @@ impl Rdpdr {
         self
     }
 
+    /// Announces that the printer takes its jobs as XPS (`RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT`).
+    #[must_use]
+    pub fn with_printer_xps(mut self, device_id: u32) -> Self {
+        self.device_list.set_printer_xps(device_id);
+        self
+    }
+
     /// Builds a raw drive announcement for integrations that manage their own
     /// backend state and static-channel delivery.
     ///

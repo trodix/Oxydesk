@@ -41,6 +41,8 @@ pub struct ServerConfig {
     pub nla: Option<(String, String)>,
     /// Failed-login limits (login mode).
     pub throttle: rdsktp_core::ThrottleConfig,
+    /// Format of the jobs of each redirected printer (ADR 015).
+    pub printer_modes: rdsktp_core::PrinterModes,
 }
 
 /// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
@@ -574,6 +576,7 @@ async fn serve(
             shared: shared.clone(),
             host: slot.drives.clone(),
             printers: slot.printers.clone(),
+            modes: config.printer_modes.clone(),
         })))
         .with_credential_validator(broker.map(|broker| {
             Arc::new(BrokerValidator {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rdsktp_agent_proto::{FromAgent, PrintOp, PrintResult};
 use rdsktp_core::error::PrintError;
-use rdsktp_core::{PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+use rdsktp_core::{PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
 
 use crate::drives::LinkSend;
 
@@ -48,11 +48,12 @@ impl Pending {
     }
 }
 
-fn language(code: u8) -> PrintLanguage {
+fn format(code: u8) -> PrintFormat {
     match code {
-        1 => PrintLanguage::Pcl,
-        2 => PrintLanguage::Text,
-        _ => PrintLanguage::PostScript,
+        1 => PrintFormat::Raw(PrintLanguage::Pcl),
+        2 => PrintFormat::Raw(PrintLanguage::Text),
+        3 => PrintFormat::Xps,
+        _ => PrintFormat::Raw(PrintLanguage::PostScript),
     }
 }
 
@@ -145,7 +146,7 @@ impl Printers {
         }
     }
 
-    pub fn added(&self, id: u32, name: String, driver: String, is_default: bool, lang: u8) {
+    pub fn added(&self, id: u32, name: String, driver: String, is_default: bool, code: u8) {
         let printer = ProxyPrinter {
             id,
             send: self.send.clone(),
@@ -155,7 +156,7 @@ impl Printers {
             name: name.clone(),
             driver,
             is_default,
-            language: language(lang),
+            format: format(code),
         };
         self.names
             .lock()
@@ -252,8 +253,8 @@ mod tests {
                         name,
                         driver,
                         is_default,
-                        language,
-                    } => reader.added(printer_id, name, driver, is_default, language),
+                        format,
+                    } => reader.added(printer_id, name, driver, is_default, format),
                     ToAgent::PrinterRemoved { printer_id } => reader.removed(printer_id),
                     ToAgent::PrintReply { req_id, result } => {
                         reader.pending.complete(req_id, result)
@@ -271,7 +272,7 @@ mod tests {
                 name: "Bureau".into(),
                 driver: "MS Publisher Imagesetter".into(),
                 is_default: false,
-                language: PrintLanguage::PostScript,
+                format: PrintFormat::Raw(PrintLanguage::PostScript),
             },
             Arc::new(Printer(client.clone())),
         );

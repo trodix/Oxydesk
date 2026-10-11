@@ -466,6 +466,10 @@ pub enum RdpdrServerMessage {
         input_buffer: Vec<u8>,
         output_buffer_length: u32,
     },
+    /// [MS-RDPEPC 2.2.2.2] DR_PRN_USING_XPS: the writes to this printer carry XPS from now on (not an IRP, no answer).
+    UsingXps {
+        device_id: u32,
+    },
 }
 
 /// Server-side [\[MS-RDPEFS\]] channel handler.
@@ -644,6 +648,14 @@ impl RdpdrServer {
                 security_information,
                 security_descriptor,
             ),
+            RdpdrServerMessage::UsingXps { device_id } => {
+                let mut bytes = Vec::with_capacity(12);
+                bytes.extend_from_slice(&u16::from(Component::RdpdrCtypPrn).to_le_bytes());
+                bytes.extend_from_slice(&u16::from(PacketId::PrnUsingXps).to_le_bytes());
+                bytes.extend_from_slice(&device_id.to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                Ok(vec![SvcMessage::from(bytes)])
+            }
             RdpdrServerMessage::DeviceControl {
                 device_id,
                 file_id,

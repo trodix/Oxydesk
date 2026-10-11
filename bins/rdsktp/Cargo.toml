@@ -41,7 +41,7 @@ extended-description = "Headless RDP server for KDE Plasma (Wayland)."
 section = "net"
 priority = "optional"
 depends = "$auto, libopenh264-8, libkscreen-bin, fuse3"
-recommends = "cups, cups-filters"
+recommends = "cups, cups-filters, ghostscript"
 assets = [
     ["target/release/rdsktp", "usr/bin/", "755"],
     ["target/release/rdsktp-testapp", "usr/lib/rdsktp/", "755"],

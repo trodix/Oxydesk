@@ -1158,6 +1158,17 @@ impl Devices {
         self.remove(device_id)
     }
 
+    /// Sets `RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT` in the announcement of a printer.
+    pub fn set_printer_xps(&mut self, device_id: u32) {
+        for d in self.0.iter_mut().filter(|d| d.device_id == device_id) {
+            if let Some(flags) = d.device_data.get_mut(..4) {
+                let value = u32::from_le_bytes([flags[0], flags[1], flags[2], flags[3]])
+                    | RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT;
+                flags.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
     /// Returns the [`DeviceType`] for the given device ID.
     pub fn for_device_type(&self, device_id: u32) -> DecodeResult<DeviceType> {
         if let Some(device_type) = self

@@ -261,8 +261,19 @@ fn drives_host_check(mnt: &Path, within: Duration) -> Result<String, String> {
     ))
 }
 
+/// The printer of the mstsc test whose jobs are XPS (`--printer-mode RdsktpXps=xps`), and the one of the raw jobs.
+const XPS_PRINTER: &str = "RdsktpXps";
+const RAW_PRINTER: &str = "RdsktpTest";
+
 /// Byte `i` of the job of the printer test: a line, then 100000 bytes `A..Z` repeated (same as `rdp-activex-test.ps1`).
-fn printer_job() -> Vec<u8> {
+fn printer_job(printer: &str) -> Vec<u8> {
+    // The XPS printer (ADR 015) is sent a PostScript document of two pages: the server turns it into XPS.
+    if printer == XPS_PRINTER {
+        return b"%!PS\n/Helvetica findfont 24 scalefont setfont\n72 700 moveto (Bonjour XPS, page 1) show showpage\n\
+                 /Times-Italic findfont 18 scalefont setfont\n72 700 moveto (Seconde page \\351\\350) show\n\
+                 72 600 72 72 rectfill showpage\n"
+            .to_vec();
+    }
     let mut job = b"Bonjour imprimante\n".to_vec();
     job.extend((0..100_000usize).map(|i| b'A' + (i % 26) as u8));
     job
@@ -270,14 +281,13 @@ fn printer_job() -> Vec<u8> {
 
 /// Host side of the mstsc printer test: the guest's printer `RdsktpTest` appears as a socket under `dir`; one job is
 /// sent through it (the guest compares what its spooler wrote to the file port).
-fn printers_host_check(dir: &Path, within: Duration) -> Result<String, String> {
+fn printers_host_check(dir: &Path, within: Duration, printer: &str) -> Result<String, String> {
     use std::io::{Read, Write};
     let start = Instant::now();
     let socket = loop {
         let found = fs::read_dir(dir).ok().and_then(|d| {
             d.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-                p.extension().is_some_and(|e| e == "sock")
-                    && p.to_string_lossy().contains("RdsktpTest")
+                p.extension().is_some_and(|e| e == "sock") && p.to_string_lossy().contains(printer)
             })
         });
         if let Some(s) = found {
@@ -288,7 +298,7 @@ fn printers_host_check(dir: &Path, within: Duration) -> Result<String, String> {
         }
         std::thread::sleep(Duration::from_millis(300));
     };
-    let job = printer_job();
+    let job = printer_job(printer);
     let mut s =
         std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("connect: {e}"))?;
     s.write_all(&job).map_err(|e| format!("send: {e}"))?;
@@ -449,6 +459,7 @@ fn client(o: &TestOpts) -> Result<(), String> {
         .arg("--printers")
         .arg(&printers_dir)
         .args(["--printers-cups", "off"])
+        .args(["--printer-mode", &format!("{XPS_PRINTER}=xps")])
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log)
@@ -471,14 +482,25 @@ fn client(o: &TestOpts) -> Result<(), String> {
         let dir = drives_dir.clone();
         std::thread::spawn(move || drives_host_check(&dir, Duration::from_secs(240)))
     };
+    let printer_name = if std::env::var("WIN_PRINTERS").as_deref() == Ok("2") {
+        XPS_PRINTER
+    } else {
+        RAW_PRINTER
+    }
+    .to_owned();
     let printers_check = {
         let dir = printers_dir.clone();
-        std::thread::spawn(move || printers_host_check(&dir, Duration::from_secs(240)))
+        std::thread::spawn(move || {
+            printers_host_check(&dir, Duration::from_secs(240), &printer_name)
+        })
     };
     let out = Command::new("bash")
         .args(["vm/win11.sh", "test"])
         .env("WIN_DRIVES", "1")
-        .env("WIN_PRINTERS", "1")
+        .env(
+            "WIN_PRINTERS",
+            std::env::var("WIN_PRINTERS").unwrap_or_else(|_| "1".into()),
+        )
         .arg(format!("10.0.2.2:{}", o.port))
         .arg("tester")
         .env(
@@ -524,21 +546,24 @@ pub fn host_check(args: Vec<String>) -> ExitCode {
     let mut drives = None;
     let mut printers = None;
     let mut within = 240;
+    let mut printer = RAW_PRINTER.to_owned();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match (a.as_str(), it.next()) {
             ("--drives", Some(v)) => drives = Some(PathBuf::from(v)),
             ("--printers", Some(v)) => printers = Some(PathBuf::from(v)),
             ("--within", Some(v)) => within = v.parse().unwrap_or(240),
+            ("--printer", Some(v)) => printer = v,
             _ => {
-                eprintln!("usage: cargo xtask host-check [--drives DIR] [--printers DIR] [--within SECONDS]");
+                eprintln!("usage: cargo xtask host-check [--drives DIR] [--printers DIR] [--printer NAME] [--within SECONDS]");
                 return ExitCode::from(2);
             }
         }
     }
     let within = Duration::from_secs(within);
     let drives = drives.map(|d| std::thread::spawn(move || drives_host_check(&d, within)));
-    let printers = printers.map(|d| std::thread::spawn(move || printers_host_check(&d, within)));
+    let printers =
+        printers.map(|d| std::thread::spawn(move || printers_host_check(&d, within, &printer)));
     let mut ok = true;
     for (name, handle) in [("drives_host", drives), ("printers_host", printers)] {
         let Some(handle) = handle else { continue };

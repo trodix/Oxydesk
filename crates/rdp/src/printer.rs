@@ -9,7 +9,9 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_server::RdpdrServerMessage;
 use rdsktp_core::error::{DriveError, PrintError};
-use rdsktp_core::printer::{PrintJob, PrintLanguage, PrinterInfo, RemotePrinter};
+use rdsktp_core::printer::{
+    resolve_format, ModeError, PrintJob, PrintMode, PrinterInfo, RemotePrinter,
+};
 
 use crate::drive::{Body, Completed, Link};
 
@@ -22,6 +24,8 @@ pub struct PrinterAnnounce {
     pub driver: String,
     pub name: String,
     pub is_default: bool,
+    /// The client can take the output of this printer as XPS (`RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT`).
+    pub xps: bool,
 }
 
 impl PrinterAnnounce {
@@ -48,16 +52,18 @@ impl PrinterAnnounce {
             driver,
             name,
             is_default: flags & RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER != 0,
+            xps: flags & 0x10 != 0,
         })
     }
 
-    pub fn info(&self) -> PrinterInfo {
-        PrinterInfo {
+    /// The printer with the format its jobs will have in `mode`.
+    pub fn info(&self, mode: PrintMode) -> Result<PrinterInfo, ModeError> {
+        Ok(PrinterInfo {
             name: self.name.clone(),
             driver: self.driver.clone(),
             is_default: self.is_default,
-            language: PrintLanguage::from_driver(&self.driver),
-        }
+            format: resolve_format(&self.driver, self.xps, mode)?,
+        })
     }
 }
 
@@ -182,6 +188,7 @@ impl PrintJob for RdpPrintJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdsktp_core::printer::{PrintFormat, PrintLanguage};
 
     fn utf16(s: &str) -> Vec<u8> {
         s.encode_utf16()
@@ -211,7 +218,10 @@ mod tests {
         assert_eq!(a.driver, "Generic / Text Only");
         assert_eq!(a.name, "Imprimante é");
         assert!(a.is_default);
-        assert_eq!(a.info().language, PrintLanguage::Text);
+        assert_eq!(
+            a.info(PrintMode::Auto).unwrap().format,
+            PrintFormat::Raw(PrintLanguage::Text)
+        );
     }
 
     #[test]
@@ -225,7 +235,10 @@ mod tests {
         assert_eq!(a.driver, "MS Publisher Imagesetter");
         assert_eq!(a.name, "office");
         assert!(!a.is_default);
-        assert_eq!(a.info().language, PrintLanguage::PostScript);
+        assert_eq!(
+            a.info(PrintMode::Auto).unwrap().format,
+            PrintFormat::Raw(PrintLanguage::PostScript)
+        );
     }
 
     #[test]
@@ -249,7 +262,30 @@ mod tests {
         data.extend_from_slice(&[1, 2, 3]);
         let a = PrinterAnnounce::decode(&data).expect("announce");
         assert_eq!((a.driver.as_str(), a.name.as_str()), ("HP PCL 6", "hp"));
-        assert_eq!(a.info().language, PrintLanguage::Pcl);
+        assert_eq!(
+            a.info(PrintMode::Auto).unwrap().format,
+            PrintFormat::Raw(PrintLanguage::Pcl)
+        );
+    }
+
+    #[test]
+    fn the_xps_flag_and_the_mode_decide_the_format() {
+        let xps = announce(0x10, &utf16("Brother HL-L2350DW"), &utf16("hl"));
+        let a = PrinterAnnounce::decode(&xps).expect("announce");
+        assert!(a.xps);
+        assert_eq!(a.info(PrintMode::Auto).unwrap().format, PrintFormat::Xps);
+        assert!(a.info(PrintMode::Raw(None)).is_err());
+        let plain = announce(0, &utf16("Brother HL-L2350DW"), &utf16("hl"));
+        let a = PrinterAnnounce::decode(&plain).expect("announce");
+        assert!(!a.xps);
+        assert!(a.info(PrintMode::Auto).is_err());
+        assert!(a.info(PrintMode::Xps).is_err());
+        assert_eq!(
+            a.info(PrintMode::Raw(Some(PrintLanguage::Pcl)))
+                .unwrap()
+                .format,
+            PrintFormat::Raw(PrintLanguage::Pcl)
+        );
     }
 
     #[test]

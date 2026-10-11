@@ -21,7 +21,10 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)
   --drives-dir DIR   drive redirection: the client's drives are mounted (FUSE) under DIR/<name> (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-drives; `off` disables)
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-printers; `off` disables)
-  --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)";
+  --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
+  --printer-mode SPEC     format of the jobs of the printers: auto (default), raw, raw:ps|pcl|text, xps; per printer with
+                          PATTERN=MODE (`*` matches anything), comma-separated: xps,HP*=raw:pcl. auto = raw when the
+                          driver name states a language, XPS otherwise (if the client takes it), else the printer is refused";
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -132,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
             tls_key,
             nla,
             throttle,
+            printer_modes: printer_modes(&args)?,
         };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
@@ -278,10 +282,20 @@ async fn main() -> anyhow::Result<()> {
         tls_key,
         nla,
         throttle,
+        printer_modes: printer_modes(&args)?,
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
         _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
+    }
+}
+
+/// The mode of each printer, per `--printer-mode`.
+fn printer_modes(args: &[String]) -> anyhow::Result<rdsktp_core::PrinterModes> {
+    match arg::<String>(args, "--printer-mode") {
+        Some(spec) => rdsktp_core::PrinterModes::parse(&spec)
+            .map_err(|e| anyhow::anyhow!("--printer-mode: {e}")),
+        None => Ok(rdsktp_core::PrinterModes::default()),
     }
 }
 
@@ -303,6 +317,9 @@ fn printers_host(
     };
     match rdsktp_spool::PrinterSpool::new(dir.clone(), cups) {
         Ok(spool) => {
+            let spool = spool.with_xps(rdsktp_spool::GhostscriptXps::detect().map(|gs| {
+                std::sync::Arc::new(gs) as std::sync::Arc<dyn rdsktp_core::XpsConverter>
+            }));
             tracing::info!(dir = %dir.display(), "printer redirection enabled");
             Some(std::sync::Arc::new(spool))
         }

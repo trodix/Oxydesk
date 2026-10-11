@@ -246,13 +246,13 @@ pub enum ToAgent {
         result: DriveResult,
     },
     /// The client redirected a printer; the agent makes its socket and its CUPS queue, and sends the jobs
-    /// with `FromAgent::PrintCall`. `language`: 0 PostScript, 1 PCL, 2 text.
+    /// with `FromAgent::PrintCall`. `format`: 0 PostScript, 1 PCL, 2 text (raw jobs), 3 XPS.
     PrinterAdded {
         printer_id: u32,
         name: String,
         driver: String,
         is_default: bool,
-        language: u8,
+        format: u8,
     },
     /// The printer is gone: the agent removes its socket and its queue.
     PrinterRemoved {
@@ -878,11 +878,11 @@ impl Message for ToAgent {
                 name,
                 driver,
                 is_default,
-                language,
+                format,
             } => {
                 o.u32(*printer_id);
                 o.u8(u8::from(*is_default));
-                o.u8(*language);
+                o.u8(*format);
                 o.str(name);
                 o.str(driver);
                 20
@@ -980,7 +980,7 @@ impl Message for ToAgent {
             20 => Self::PrinterAdded {
                 printer_id: i.u32()?,
                 is_default: i.bool()?,
-                language: i.u8()?,
+                format: i.u8()?,
                 name: i.str()?,
                 driver: i.str()?,
             },
@@ -1493,7 +1493,7 @@ mod tests {
             name: "Bureau é".into(),
             driver: "MS Publisher Imagesetter".into(),
             is_default: true,
-            language: 2,
+            format: 3,
         });
         roundtrip(ToAgent::PrinterRemoved { printer_id: 4 });
         for result in [
