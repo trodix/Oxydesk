@@ -219,9 +219,9 @@ mod tests {
     }
 
     #[test]
-    fn healthy_server_passes_all_nine() {
+    fn healthy_server_passes_all_ten() {
         let r = run(MockFaults::default(), fast());
-        assert_eq!(r.checks.len(), 9);
+        assert_eq!(r.checks.len(), 10);
         assert!(failed(&r).is_empty(), "{:?}", r.checks);
     }
 
@@ -255,7 +255,8 @@ mod tests {
             vec![
                 "clipboard_roundtrip",
                 "clipboard_roundtrip_large",
-                "clipboard_image_roundtrip"
+                "clipboard_image_roundtrip",
+                "clipboard_image_large"
             ]
         );
     }

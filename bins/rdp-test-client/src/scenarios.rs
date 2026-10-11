@@ -74,6 +74,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "clipboard_roundtrip",
             "clipboard_roundtrip_large",
             "clipboard_image_roundtrip",
+            "clipboard_image_large",
             "audio_tone",
             "reconnect",
         ]
@@ -92,7 +93,8 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     key_to_pixel(s, cfg, r);
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
-    clipboard_image(s, cfg, r);
+    clipboard_image(s, cfg, "clipboard_image_roundtrip", 37, 23, r);
+    clipboard_image(s, cfg, "clipboard_image_large", 1920, 1080, r);
     audio_tone(s, cfg, r);
     if cfg.multi_resize {
         multi_resize(s, cfg, r);
@@ -420,15 +422,13 @@ fn clipboard(s: &mut dyn Session, cfg: &Config, name: &str, text: &str, r: &mut 
 }
 
 /// Image with distinct pixels and an odd width (CF_DIB rows are padded to 4 bytes), as a PNG file.
-fn test_png() -> (Vec<u8>, Vec<u8>) {
-    let (w, h) = (37u32, 23u32);
-    let rgb: Vec<u8> = (0..w * h)
-        .flat_map(|i| {
-            [
-                (i * 7 % 256) as u8,
-                (i * 13 % 256) as u8,
-                (i / 5 % 256) as u8,
-            ]
+fn test_png(w: u32, h: u32) -> (Vec<u8>, Vec<u8>) {
+    // Pseudo-random pixels: incompressible, so a large image is a large transfer.
+    let mut seed = 0x9E37_79B9u32;
+    let rgb: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
         })
         .collect();
     let mut png = Vec::new();
@@ -460,17 +460,20 @@ fn png_rgb(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 
 /// The image goes through the clipboard of the server and comes back (the test application
 /// copies it back, as an application would): the pixels must be unchanged.
-fn clipboard_image(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
-    let name = "clipboard_image_roundtrip";
-    let (png, rgb) = test_png();
+fn clipboard_image(s: &mut dyn Session, cfg: &Config, name: &str, w: u32, h: u32, r: &mut Report) {
+    let (png, rgb) = test_png(w, h);
     if let Err(e) = s.set_clipboard_image(&png) {
         r.check(name, false, e);
         return;
     }
     match s.next_clipboard_image(cfg.timeout) {
         Ok(Some(got)) => match png_rgb(&got) {
-            Some((37, 23, px)) if px == rgb => r.check(name, true, "37x23 identical pixels"),
-            Some((w, h, _)) => r.check(name, false, format!("different image ({w}x{h})")),
+            Some((gw, gh, px)) if (gw, gh) == (w, h) && px == rgb => r.check(
+                name,
+                true,
+                format!("{w}x{h} identical pixels ({} KiB PNG)", png.len() / 1024),
+            ),
+            Some((gw, gh, _)) => r.check(name, false, format!("different image ({gw}x{gh})")),
             None => r.check(name, false, "unreadable image received"),
         },
         Ok(None) => r.check(name, false, "no image received before the timeout"),
