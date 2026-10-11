@@ -21,3 +21,4 @@ async-trait = "0.1"
 anyhow = "1"
 tracing = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+png = "0.17"

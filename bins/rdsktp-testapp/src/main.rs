@@ -350,6 +350,9 @@ fn main() {
                 if let Ok(Some(text)) = cb.poll_text() {
                     let _ = cb.set_text(&text);
                 }
+                if let Ok(Some(png)) = cb.poll_image() {
+                    let _ = cb.set_image(&png);
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
         });

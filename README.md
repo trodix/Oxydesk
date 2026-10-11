@@ -42,7 +42,7 @@ Défauts trouvés puis corrigés :
 Limites des replis (derniers recours, bien plus lourds que H.264) : en mode `--login` l'agent n'envoie que du H.264, donc ces clients n'ont rien tant que l'agent n'envoie pas de pixels bruts ; la justesse des pixels n'est pas contrôlée (le test vérifie la réception sans erreur, pas l'image) ; débit élevé (≈ 8 Mo par image en 1080p), régulé par la contre-pression EGFX.
 
 ### Non couvert ou non vérifié
-Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
+Transfert de fichiers (et copie d'images avec de vrais clients), imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
 
 ## Plan priorisé
 Efforts estimés, pas mesurés.
@@ -54,7 +54,7 @@ Efforts estimés, pas mesurés.
 3. Durcissement du mode login : **fait** (voir « Limitation des essais » ci-dessous).
 
 **P1 — fonctions de base manquantes**
-4. Presse-papiers d'images, puis fichiers. Moyen.
+4. Presse-papiers d'images : **fait** (voir « Presse-papiers d'images » ci-dessous). Reste : les fichiers. Moyen.
 5. HiDPI. Moyen.
 6. Curseur distant. **Fait** (voir « Curseur distant » ci-dessous).
 7. Plusieurs utilisateurs en parallèle. Moyen.
@@ -68,6 +68,9 @@ Efforts estimés, pas mesurés.
 **P3 — facultatif** : fichiers partagés, imprimantes, microphone, USB, cartes à puce ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
 
 Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 7, le reste selon l'usage.
+
+## Presse-papiers d'images
+Les images se copient dans les deux sens, en plus du texte. Côté bureau, l'adaptateur Wayland échange du PNG (`image/png`, via data-control) ; côté RDP, le format est CF_DIB (24 bits, ligne par ligne du bas vers le haut), converti par `crates/rdp/src/dib.rs`. Le texte l'emporte quand une application offre les deux ; la dernière copie gagne. La transparence est aplatie sur du blanc vers Windows (les applications ne s'accordent pas sur l'alpha d'un DIB) ; en sens inverse, les DIB 24 et 32 bits non compressés sont lus (masques BGR(A) usuels), les autres formats (palette, RLE, 16 bits) sont ignorés avec un avertissement. Plafond : 64 Mio de pixels décodés. En mode `--login`, l'image passe par l'agent (`ToAgent::ClipboardImageSet`, `FromAgent::ClipboardImage`). Test : le scénario `clipboard_image_roundtrip` du client de test (image 37×23, largeur impaire pour le remplissage des lignes) passe par le client RDP, le serveur, la sélection Wayland et l'application de test, et revient identique (vérifié sur la VM avec `cargo xtask vm-test --session login`). Non essayé : mstsc, xfreerdp et Remmina avec de vraies images (le format CF_DIB est celui qu'ils annoncent d'ordinaire, mais certains n'offrent que « PNG » ou CF_DIBV5).
 
 ## Verrouillage de session
 KWin n'est plus lancé avec `--no-lockscreen` : l'écran de verrouillage (`kscreenlocker_greet`) fait partie de la session, donc il apparaît dans l'image capturée, le clavier et la souris RDP l'atteignent, et le mot de passe tapé est vérifié par PAM. Le verrou survit à la déconnexion : le client qui revient retrouve le même KWin, toujours verrouillé, et le déverrouille avec le mot de passe du compte. Test (VM Debian 13, xfreerdp en conteneur) : `RDP_TEST_PASSWORD=... bash ci/lock-test.sh` (verrou affiché, persistance à la reconnexion avec le même KWin, mauvais mot de passe refusé, déverrouillage).

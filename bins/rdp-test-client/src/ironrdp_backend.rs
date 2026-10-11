@@ -42,8 +42,8 @@ use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::ChannelFlags;
-use rdsktp_rdp::clipboard::{announce, LocalText, SendFn};
-use rdsktp_rdp::TextClipboard;
+use rdsktp_rdp::clipboard::{announce, Content, LocalContent, SendFn};
+use rdsktp_rdp::RdpClipboard;
 use rustls::pki_types::ServerName;
 use tracing::debug;
 
@@ -68,6 +68,7 @@ struct State {
     frame: Option<Frame>,
     seq: u64,
     clip_inbox: VecDeque<String>,
+    clip_images: VecDeque<Vec<u8>>,
     audio_inbox: VecDeque<crate::audio::AudioChunk>,
     error: Option<String>,
 }
@@ -91,6 +92,7 @@ impl Shared {
 enum Command {
     Key(u16, bool),
     Clipboard(String),
+    ClipboardImage(Vec<u8>),
     Monitors(Vec<MonitorRequest>),
     Close,
     /// Drops the socket without the RDP shutdown sequence.
@@ -196,6 +198,33 @@ impl Session for IronRdpSession {
         loop {
             if let Some(c) = s.audio_inbox.pop_front() {
                 return Ok(Some(c));
+            }
+            if let Some(e) = &s.error {
+                return Err(e.clone());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            s = self
+                .shared
+                .cond
+                .wait_timeout(s, left)
+                .expect("client state")
+                .0;
+        }
+    }
+
+    fn set_clipboard_image(&mut self, png: &[u8]) -> Result<(), String> {
+        self.send(Command::ClipboardImage(png.to_vec()))
+    }
+
+    fn next_clipboard_image(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.shared.lock();
+        loop {
+            if let Some(img) = s.clip_images.pop_front() {
+                return Ok(Some(img));
             }
             if let Some(e) = &s.error {
                 return Err(e.clone());
@@ -675,11 +704,14 @@ fn run_worker(
     let send: SendFn = Arc::new(move |m| {
         let _ = clip_tx.lock().expect("clip_tx").send(m);
     });
-    let local: LocalText = Arc::new(Mutex::new(None));
-    let on_text = {
+    let local: LocalContent = Arc::new(Mutex::new(None));
+    let on_content = {
         let shared = shared.clone();
-        Arc::new(move |t: String| {
-            shared.lock().clip_inbox.push_back(t);
+        Arc::new(move |c: Content| {
+            match c {
+                Content::Text(t) => shared.lock().clip_inbox.push_back(t),
+                Content::Image(png) => shared.lock().clip_images.push_back(png),
+            }
             shared.cond.notify_all();
         })
     };
@@ -707,10 +739,10 @@ fn run_worker(
             .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
     connector.attach_static_channel(Rdpsnd::new(Box::new(AudioSink::new(shared.clone()))));
-    connector.attach_static_channel(CliprdrClient::new(Box::new(TextClipboard::new(
+    connector.attach_static_channel(CliprdrClient::new(Box::new(RdpClipboard::new(
         send.clone(),
         local.clone(),
-        on_text,
+        on_content,
     ))));
 
     let mut framed = ironrdp_blocking::Framed::new(tcp);
@@ -795,7 +827,8 @@ fn run_worker(
                         .map_err(|e| anyhow!("{e}"))?;
                     write_outputs(&mut framed, outs)?;
                 }
-                Command::Clipboard(text) => announce(&send, &local, text),
+                Command::Clipboard(text) => announce(&send, &local, Content::Text(text)),
+                Command::ClipboardImage(png) => announce(&send, &local, Content::Image(png)),
                 Command::Monitors(monitors) => {
                     let frame = encode_monitor_layout(&mut stage, &monitors)?;
                     framed.write_all(&frame)?;

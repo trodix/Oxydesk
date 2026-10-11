@@ -25,7 +25,7 @@ use rdsktp_core::ports::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::clipboard::{announce, LocalText, TextClipboard};
+use crate::clipboard::{announce, Content, LocalContent, RdpClipboard};
 use crate::pump::{self, PumpParams, PumpPorts, Shared};
 use crate::sound::SoundFactory;
 
@@ -279,7 +279,7 @@ impl GfxServerFactory for GfxFactory {
 
 struct ClipFactory {
     shared: Arc<Shared>,
-    local: LocalText,
+    local: LocalContent,
     clipboard: Slot<Box<dyn ClipboardBackend>>,
 }
 
@@ -303,17 +303,21 @@ impl ServerEventSender for ClipFactory {
 impl CliprdrBackendFactory for ClipFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
         let clipboard = self.clipboard.clone();
-        let on_text = Arc::new(move |text: String| {
+        let on_content = Arc::new(move |content: Content| {
             if let Some(backend) = clipboard.lock().expect("clipboard mutex").as_mut() {
-                if let Err(e) = backend.set_text(&text) {
+                let result = match &content {
+                    Content::Text(t) => backend.set_text(t),
+                    Content::Image(png) => backend.set_image(png),
+                };
+                if let Err(e) = result {
                     tracing::warn!("clipboard: {e}");
                 }
             }
         });
-        Box::new(TextClipboard::new(
+        Box::new(RdpClipboard::new(
             self.send_fn(),
             self.local.clone(),
-            on_text,
+            on_content,
         ))
     }
 }
@@ -504,7 +508,7 @@ async fn serve(
     let guard = LoginGuard::new(config.throttle);
     let has_broker = broker.is_some();
     let shared = Arc::new(Shared::default());
-    let local: LocalText = Arc::new(Mutex::new(None));
+    let local: LocalContent = Arc::new(Mutex::new(None));
     let slot = SessionSlot::new(shared.clone());
     let clipboard = slot.clipboard.clone();
     // The audio channel is announced as soon as the server can offer one: always in login mode, otherwise depending on the port.
@@ -584,12 +588,17 @@ async fn serve(
         .spawn(move || {
             while !poller_shared.stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
-                let text = match clipboard.lock().expect("clipboard mutex").as_mut() {
-                    Some(c) => c.poll_text(),
+                let (text, image) = match clipboard.lock().expect("clipboard mutex").as_mut() {
+                    Some(c) => (c.poll_text(), c.poll_image()),
                     None => continue,
                 };
                 match text {
-                    Ok(Some(t)) => announce(&send, &local, t),
+                    Ok(Some(t)) => announce(&send, &local, Content::Text(t)),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("clipboard: {e}"),
+                }
+                match image {
+                    Ok(Some(png)) => announce(&send, &local, Content::Image(png)),
                     Ok(None) => {}
                     Err(e) => tracing::warn!("clipboard: {e}"),
                 }

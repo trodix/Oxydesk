@@ -56,6 +56,8 @@ pub enum ToAgent {
         output: u32,
     },
     ClipboardSet(String),
+    /// Image (PNG file) to offer as the desktop selection.
+    ClipboardImageSet(Vec<u8>),
     AudioOpen {
         sample_rate: u32,
         channels: u16,
@@ -94,6 +96,8 @@ pub enum FromAgent {
         data: Vec<u8>,
     },
     ClipboardText(String),
+    /// New image selection of the desktop (PNG file).
+    ClipboardImage(Vec<u8>),
     Audio(Vec<u8>),
     Fatal(String),
     /// Uncompressed frame (after `ToAgent::SetPixels { raw: true }`): compact BGRA rows, `width * 4` bytes each.
@@ -233,6 +237,10 @@ impl Message for ToAgent {
                 o.bytes(t.as_bytes());
                 6
             }
+            Self::ClipboardImageSet(d) => {
+                o.bytes(d);
+                12
+            }
             Self::AudioOpen {
                 sample_rate,
                 channels,
@@ -312,6 +320,7 @@ impl Message for ToAgent {
                 Self::SetLayout { outputs }
             }
             11 => Self::SetPixels { raw: i.bool()? },
+            12 => Self::ClipboardImageSet(i.rest()),
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
         i.end()?;
@@ -350,6 +359,10 @@ impl Message for FromAgent {
             Self::ClipboardText(t) => {
                 o.bytes(t.as_bytes());
                 3
+            }
+            Self::ClipboardImage(d) => {
+                o.bytes(d);
+                10
             }
             Self::Audio(d) => {
                 o.bytes(d);
@@ -418,6 +431,7 @@ impl Message for FromAgent {
             },
             3 => Self::ClipboardText(i.string()?),
             4 => Self::Audio(i.rest()),
+            10 => Self::ClipboardImage(i.rest()),
             5 => Self::Fatal(i.string()?),
             6 => Self::Resized { ok: i.bool()? },
             7 => Self::LayoutApplied {
@@ -511,6 +525,7 @@ mod tests {
         roundtrip(ToAgent::Wheel { dx: 0, dy: -120 });
         roundtrip(ToAgent::RequestKeyframe { output: 1 });
         roundtrip(ToAgent::ClipboardSet("Café 😀 日本".into()));
+        roundtrip(ToAgent::ClipboardImageSet(vec![137, 80, 78, 71]));
         roundtrip(ToAgent::AudioOpen {
             sample_rate: 48_000,
             channels: 2,
@@ -570,6 +585,7 @@ mod tests {
             rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
         })));
         roundtrip(FromAgent::ClipboardText("x".into()));
+        roundtrip(FromAgent::ClipboardImage(vec![1, 2, 3]));
         roundtrip(FromAgent::Audio(vec![1, 2, 3, 4]));
         roundtrip(FromAgent::Fatal("boom".into()));
     }

@@ -386,10 +386,22 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
-                let text = d.clipboard.lock().expect("clipboard mutex").poll_text();
+                let (text, image) = {
+                    let mut c = d.clipboard.lock().expect("clipboard mutex");
+                    (c.poll_text(), c.poll_image())
+                };
                 match text {
                     Ok(Some(t)) => {
                         if !send(&w, &FromAgent::ClipboardText(t)) {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("clipboard: {e}"),
+                }
+                match image {
+                    Ok(Some(png)) => {
+                        if !send(&w, &FromAgent::ClipboardImage(png)) {
                             break;
                         }
                     }
@@ -496,6 +508,11 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::ClipboardSet(text) => {
                 if let Err(e) = d.clipboard.lock().expect("clipboard mutex").set_text(&text) {
+                    tracing::warn!("clipboard: {e}");
+                }
+            }
+            ToAgent::ClipboardImageSet(png) => {
+                if let Err(e) = d.clipboard.lock().expect("clipboard mutex").set_image(&png) {
                     tracing::warn!("clipboard: {e}");
                 }
             }

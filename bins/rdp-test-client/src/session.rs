@@ -46,6 +46,14 @@ pub trait Session {
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String>;
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String>;
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String>;
+    /// Puts an image (PNG file) on the client's clipboard.
+    fn set_clipboard_image(&mut self, _png: &[u8]) -> Result<(), String> {
+        Err("image clipboard not supported by this backend".into())
+    }
+    /// Image (PNG file) received from the server's clipboard.
+    fn next_clipboard_image(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+        Err("image clipboard not supported by this backend".into())
+    }
     /// Next audio packet (`None` if nothing before the timeout).
     fn next_audio(
         &mut self,

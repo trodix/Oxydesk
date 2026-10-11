@@ -1,7 +1,7 @@
-//! Text clipboard through the Wayland data-control protocols: `ext_data_control_manager_v1`
+//! Text and image (PNG) clipboard through the Wayland data-control protocols: `ext_data_control_manager_v1`
 //! (KWin 6.4+, tried first) or `zwlr_data_control_manager_v1` (older KWin, wlroots).
 //!
-//! A dedicated thread dispatches Wayland events; `poll_text` / `set_text` do not block.
+//! A dedicated thread dispatches Wayland events; `poll_*` / `set_*` do not block.
 //! Our own selection is recognized thanks to a private MIME type specific to the instance, never
 //! by text comparison: another application copying the same text remains a real change.
 
@@ -22,20 +22,22 @@ const TEXT_MIMES: &[&str] = &[
     "TEXT",
     "STRING",
 ];
+const IMAGE_MIME: &str = "image/png";
 /// Read cap for a remote selection.
 const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Default)]
 struct Shared {
     incoming: Mutex<Option<String>>,
+    incoming_image: Mutex<Option<Vec<u8>>>,
 }
 
 /// MIME types offered by an offer (filled by the `offer` events).
 #[derive(Default)]
 struct OfferMimes(Mutex<Vec<String>>);
 
-/// Text served by a source; one source = one `set_text`.
-struct SourceText(String);
+/// Bytes served by a source; one source = one `set_text` / `set_image`.
+struct SourceText(Vec<u8>);
 
 /// Why a protocol could not be started.
 enum StartError {
@@ -46,24 +48,29 @@ enum StartError {
 /// Sends a text as the selection of the seat (implemented by each protocol).
 trait Backend: Send {
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
+    fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError>;
 }
 
-/// Reads the received selection in a thread and stores it in `shared`.
-fn read_selection(reader: std::io::PipeReader, shared: Arc<Shared>) {
+/// Reads the received selection in a thread and stores it in `shared` (text, or PNG if `image`).
+fn read_selection(reader: std::io::PipeReader, shared: Arc<Shared>, image: bool) {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if reader.take(MAX_TEXT_BYTES).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-            *shared.incoming.lock().expect("incoming") =
-                Some(String::from_utf8_lossy(&bytes).into_owned());
+            if image {
+                *shared.incoming_image.lock().expect("incoming") = Some(bytes);
+            } else {
+                *shared.incoming.lock().expect("incoming") =
+                    Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
         }
     });
 }
 
-/// Writes `text` into the descriptor of a reader in a dedicated thread (a slow reader must not block the loop).
-fn serve_text(fd: OwnedFd, text: String) {
+/// Writes `data` into the descriptor of a reader in a dedicated thread (a slow reader must not block the loop).
+fn serve_bytes(fd: OwnedFd, data: Vec<u8>) {
     std::thread::spawn(move || {
         let mut file = std::fs::File::from(fd);
-        let _ = file.write_all(text.as_bytes());
+        let _ = file.write_all(&data);
     });
 }
 
@@ -199,7 +206,7 @@ macro_rules! data_control {
                     _: &QueueHandle<Self>,
                 ) {
                     match event {
-                        source_ev::Event::Send { fd, .. } => serve_text(fd, data.0.clone()),
+                        source_ev::Event::Send { fd, .. } => serve_bytes(fd, data.0.clone()),
                         source_ev::Event::Cancelled => source.destroy(),
                     }
                 }
@@ -215,10 +222,17 @@ macro_rules! data_control {
                         offer.destroy(); // our own selection
                         return;
                     }
-                    let Some(mime) = TEXT_MIMES.iter().find(|w| mimes.iter().any(|m| m == **w))
-                    else {
-                        offer.destroy();
-                        return;
+                    // Text wins over an image (a copy from a page offers both).
+                    let (mime, image) = match TEXT_MIMES
+                        .iter()
+                        .find(|w| mimes.iter().any(|m| m == **w))
+                    {
+                        Some(m) => (*m, false),
+                        None if mimes.iter().any(|m| m == IMAGE_MIME) => (IMAGE_MIME, true),
+                        None => {
+                            offer.destroy();
+                            return;
+                        }
                     };
                     let Ok((reader, writer)) = std::io::pipe() else {
                         offer.destroy();
@@ -228,7 +242,7 @@ macro_rules! data_control {
                     offer.destroy();
                     // The write descriptor is closed (drop) after sending: the reader sees the end of the stream.
                     let _ = self.conn.flush();
-                    read_selection(reader, self.shared.clone());
+                    read_selection(reader, self.shared.clone(), image);
                 }
             }
 
@@ -244,10 +258,22 @@ macro_rules! data_control {
                 fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
                     let source = self
                         .manager
-                        .create_data_source(&self.qh, SourceText(text.to_string()));
+                        .create_data_source(&self.qh, SourceText(text.as_bytes().to_vec()));
                     for mime in TEXT_MIMES {
                         source.offer((*mime).to_string());
                     }
+                    source.offer(self.instance_mime.clone());
+                    self.device.set_selection(Some(&source));
+                    self.conn
+                        .flush()
+                        .map_err(|e| ClipboardError::Backend(format!("flush Wayland : {e}")))
+                }
+
+                fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
+                    let source = self
+                        .manager
+                        .create_data_source(&self.qh, SourceText(png.to_vec()));
+                    source.offer(IMAGE_MIME.to_string());
                     source.offer(self.instance_mime.clone());
                     self.device.set_selection(Some(&source));
                     self.conn
@@ -377,5 +403,13 @@ impl ClipboardBackend for WaylandClipboard {
 
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
         Ok(self.shared.incoming.lock().expect("incoming").take())
+    }
+
+    fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
+        self.backend.set_image(png)
+    }
+
+    fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
+        Ok(self.shared.incoming_image.lock().expect("incoming").take())
     }
 }

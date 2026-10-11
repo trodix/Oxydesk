@@ -19,7 +19,7 @@ donc par : client RDP -> rdsktp -> sélection Wayland -> testapp -> sélection -
 Contrôle négatif : sans `--clipboard-echo`, les deux checks échouent (« aucun texte reçu »).
 
 ## Limites connues
-- Texte seul (CF_UNICODETEXT) ; pas d'images ni de fichiers.
+- Texte (CF_UNICODETEXT) et images (CF_DIB <-> PNG, ajoutées ensuite, voir README) ; pas de fichiers.
 - Pas de sélection primaire (clic milieu).
 - La sélection déjà présente au démarrage est transmise au premier client.
 - Le thread Wayland n'est pas arrêté explicitement (il se termine avec le processus).

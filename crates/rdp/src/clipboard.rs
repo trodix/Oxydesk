@@ -1,4 +1,5 @@
-//! "Unicode text only" CLIPRDR backend, usable on the server side and on the test client side.
+//! CLIPRDR backend for text (CF_UNICODETEXT) and images (CF_DIB, exchanged as PNG with the desktop),
+//! usable on the server side and on the test client side.
 
 use std::sync::{Arc, Mutex};
 
@@ -9,46 +10,61 @@ use ironrdp_cliprdr::pdu::{
 };
 
 pub type SendFn = Arc<dyn Fn(ClipboardMessage) + Send + Sync>;
-pub type OnText = Arc<dyn Fn(String) + Send + Sync>;
+pub type OnContent = Arc<dyn Fn(Content) + Send + Sync>;
 
-/// Shared local text: what we offer to the other end.
-pub type LocalText = Arc<Mutex<Option<String>>>;
-
-pub struct TextClipboard {
-    send: SendFn,
-    local: LocalText,
-    on_text: OnText,
+/// A clipboard content, in the local representation (LF text, PNG image).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    Text(String),
+    /// A PNG file.
+    Image(Vec<u8>),
 }
 
-impl std::fmt::Debug for TextClipboard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TextClipboard")
+impl Content {
+    fn format(&self) -> ClipboardFormat {
+        ClipboardFormat::new(match self {
+            Self::Text(_) => ClipboardFormatId::CF_UNICODETEXT,
+            Self::Image(_) => ClipboardFormatId::CF_DIB,
+        })
     }
 }
 
-ironrdp_core::impl_as_any!(TextClipboard);
+/// Shared local content: what we offer to the other end (the last copy wins).
+pub type LocalContent = Arc<Mutex<Option<Content>>>;
 
-impl TextClipboard {
-    /// `send`: emits a CLIPRDR message to the connection; `on_text`: text received from the other end.
-    pub fn new(send: SendFn, local: LocalText, on_text: OnText) -> Self {
+pub struct RdpClipboard {
+    send: SendFn,
+    local: LocalContent,
+    on_content: OnContent,
+    /// Format of the paste request in flight (the response does not say which one it answers).
+    requested: Option<ClipboardFormatId>,
+}
+
+impl std::fmt::Debug for RdpClipboard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RdpClipboard")
+    }
+}
+
+ironrdp_core::impl_as_any!(RdpClipboard);
+
+impl RdpClipboard {
+    /// `send`: emits a CLIPRDR message to the connection; `on_content`: content received from the other end.
+    pub fn new(send: SendFn, local: LocalContent, on_content: OnContent) -> Self {
         Self {
             send,
             local,
-            on_text,
+            on_content,
+            requested: None,
         }
-    }
-
-    fn unicode_format() -> ClipboardFormat {
-        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)
     }
 }
 
-/// Announces a new local text to the other end (delayed copy).
-pub fn announce(send: &SendFn, local: &LocalText, text: String) {
-    *local.lock().expect("clipboard mutex") = Some(text);
-    send(ClipboardMessage::SendInitiateCopy(vec![
-        TextClipboard::unicode_format(),
-    ]));
+/// Announces a new local content to the other end (delayed copy).
+pub fn announce(send: &SendFn, local: &LocalContent, content: Content) {
+    let format = content.format();
+    *local.lock().expect("clipboard mutex") = Some(content);
+    send(ClipboardMessage::SendInitiateCopy(vec![format]));
 }
 
 /// Local line endings (LF) -> CF_UNICODETEXT (CRLF), without doubling the CRLFs already present.
@@ -73,7 +89,7 @@ pub fn decode_unicode_text(data: &[u8]) -> String {
     from_crlf(&String::from_utf16_lossy(&units[..end]))
 }
 
-impl CliprdrBackend for TextClipboard {
+impl CliprdrBackend for RdpClipboard {
     fn temporary_directory(&self) -> &str {
         "/tmp"
     }
@@ -85,10 +101,9 @@ impl CliprdrBackend for TextClipboard {
     fn on_ready(&mut self) {}
 
     fn on_request_format_list(&mut self) {
-        let formats = if self.local.lock().expect("clipboard mutex").is_some() {
-            vec![Self::unicode_format()]
-        } else {
-            vec![]
+        let formats = match &*self.local.lock().expect("clipboard mutex") {
+            Some(c) => vec![c.format()],
+            None => vec![],
         };
         (self.send)(ClipboardMessage::SendInitiateCopy(formats));
     }
@@ -100,21 +115,33 @@ impl CliprdrBackend for TextClipboard {
     }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
-        if available_formats
-            .iter()
-            .any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT)
-        {
-            (self.send)(ClipboardMessage::SendInitiatePaste(
-                ClipboardFormatId::CF_UNICODETEXT,
-            ));
-        }
+        // Text wins over an image (an application often offers both).
+        let has = |id| available_formats.iter().any(|f| f.id() == id);
+        let wanted = if has(ClipboardFormatId::CF_UNICODETEXT) {
+            ClipboardFormatId::CF_UNICODETEXT
+        } else if has(ClipboardFormatId::CF_DIB) {
+            ClipboardFormatId::CF_DIB
+        } else {
+            return;
+        };
+        self.requested = Some(wanted);
+        (self.send)(ClipboardMessage::SendInitiatePaste(wanted));
     }
 
     fn on_format_data_request(&mut self, request: FormatDataRequest) {
-        let text = self.local.lock().expect("clipboard mutex").clone();
-        let response = match text {
-            Some(t) if request.format == ClipboardFormatId::CF_UNICODETEXT => {
+        let content = self.local.lock().expect("clipboard mutex").clone();
+        let response = match content {
+            Some(Content::Text(t)) if request.format == ClipboardFormatId::CF_UNICODETEXT => {
                 FormatDataResponse::new_unicode_string(&to_crlf(&t))
+            }
+            Some(Content::Image(png)) if request.format == ClipboardFormatId::CF_DIB => {
+                match crate::dib::png_to_dib(&png) {
+                    Ok(dib) => FormatDataResponse::new_data(dib),
+                    Err(e) => {
+                        tracing::warn!("clipboard image not sent: {e}");
+                        FormatDataResponse::new_error()
+                    }
+                }
             }
             _ => FormatDataResponse::new_error(),
         };
@@ -124,8 +151,19 @@ impl CliprdrBackend for TextClipboard {
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
-        if !response.is_error() {
-            (self.on_text)(decode_unicode_text(response.data()));
+        let requested = self.requested.take();
+        if response.is_error() {
+            return;
+        }
+        match requested {
+            Some(ClipboardFormatId::CF_UNICODETEXT) => {
+                (self.on_content)(Content::Text(decode_unicode_text(response.data())))
+            }
+            Some(ClipboardFormatId::CF_DIB) => match crate::dib::dib_to_png(response.data()) {
+                Ok(png) => (self.on_content)(Content::Image(png)),
+                Err(e) => tracing::warn!("clipboard image ignored: {e}"),
+            },
+            _ => {}
         }
     }
 

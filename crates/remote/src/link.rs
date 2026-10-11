@@ -35,6 +35,7 @@ pub struct AgentLink {
     /// One mailbox per output; the list follows the layout (`LayoutApplied`).
     video: RwLock<Vec<Mutex<Mailbox>>>,
     clipboard: Mutex<Option<String>>,
+    clipboard_image: Mutex<Option<Vec<u8>>>,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
@@ -80,6 +81,7 @@ impl AgentLink {
                     .collect(),
             ),
             clipboard: Mutex::new(None),
+            clipboard_image: Mutex::new(None),
             cursor: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
@@ -215,6 +217,9 @@ impl AgentLink {
             }
             FromAgent::ClipboardText(t) => {
                 *self.clipboard.lock().expect("clipboard mutex") = Some(t)
+            }
+            FromAgent::ClipboardImage(d) => {
+                *self.clipboard_image.lock().expect("clipboard mutex") = Some(d)
             }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
@@ -354,6 +359,10 @@ impl AgentLink {
 
     pub fn take_clipboard(&self) -> Option<String> {
         self.clipboard.lock().expect("clipboard mutex").take()
+    }
+
+    pub fn take_clipboard_image(&self) -> Option<Vec<u8>> {
+        self.clipboard_image.lock().expect("clipboard mutex").take()
     }
 
     pub fn open_audio(&self, sample_rate: u32, channels: u16) {
@@ -641,6 +650,8 @@ mod tests {
         let (link, mut agent) = pair();
         write_msg(&mut agent, &FromAgent::ClipboardText("héllo".into())).unwrap();
         assert_eq!(wait_for(|| link.take_clipboard()), "héllo");
+        write_msg(&mut agent, &FromAgent::ClipboardImage(vec![9, 8, 7])).unwrap();
+        assert_eq!(wait_for(|| link.take_clipboard_image()), vec![9, 8, 7]);
         link.open_audio(48_000, 2);
         write_msg(&mut agent, &FromAgent::Audio(vec![7; 8])).unwrap();
         let mut buf = [0u8; 8];

@@ -168,6 +168,16 @@ impl ClipboardBackend for RemoteClipboard {
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
         Ok(self.0.take_clipboard())
     }
+    fn set_image(&mut self, png: &[u8]) -> Result<(), ClipboardError> {
+        if self.0.send(&ToAgent::ClipboardImageSet(png.to_vec())) {
+            Ok(())
+        } else {
+            Err(ClipboardError::Backend("agent unreachable".into()))
+        }
+    }
+    fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
+        Ok(self.0.take_clipboard_image())
+    }
 }
 
 struct RemoteAudio(Arc<AgentLink>);

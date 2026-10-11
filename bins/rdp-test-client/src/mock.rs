@@ -36,6 +36,7 @@ pub struct MockSession {
     pending: Option<(Instant, [u8; 3])>,
     beat: bool,
     clip: VecDeque<String>,
+    clip_images: VecDeque<Vec<u8>>,
     audio_pos: u64,
     connections: u32,
     monitors: Vec<MonitorRequest>,
@@ -49,6 +50,7 @@ impl MockSession {
             pending: None,
             beat: false,
             clip: VecDeque::new(),
+            clip_images: VecDeque::new(),
             audio_pos: 0,
             connections: 0,
             monitors: Vec::new(),
@@ -169,6 +171,19 @@ impl Session for MockSession {
         Ok(())
     }
 
+    fn set_clipboard_image(&mut self, png: &[u8]) -> Result<(), String> {
+        let mut echoed = png.to_vec();
+        if self.faults.broken_clipboard {
+            echoed.truncate(echoed.len() / 2);
+        }
+        self.clip_images.push_back(echoed);
+        Ok(())
+    }
+
+    fn next_clipboard_image(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.clip_images.pop_front())
+    }
+
     fn next_clipboard_text(&mut self, _timeout: Duration) -> Result<Option<String>, String> {
         Ok(self.clip.pop_front())
     }
@@ -204,9 +219,9 @@ mod tests {
     }
 
     #[test]
-    fn healthy_server_passes_all_eight() {
+    fn healthy_server_passes_all_nine() {
         let r = run(MockFaults::default(), fast());
-        assert_eq!(r.checks.len(), 8);
+        assert_eq!(r.checks.len(), 9);
         assert!(failed(&r).is_empty(), "{:?}", r.checks);
     }
 
@@ -237,7 +252,11 @@ mod tests {
         );
         assert_eq!(
             failed(&r),
-            vec!["clipboard_roundtrip", "clipboard_roundtrip_large"]
+            vec![
+                "clipboard_roundtrip",
+                "clipboard_roundtrip_large",
+                "clipboard_image_roundtrip"
+            ]
         );
     }
 

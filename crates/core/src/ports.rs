@@ -80,6 +80,14 @@ pub trait InputSink: Send {
 pub trait ClipboardBackend: Send {
     fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
     fn poll_text(&mut self) -> Result<Option<String>, ClipboardError>;
+    /// Image (PNG file) to offer as the desktop selection. Ignored by default.
+    fn set_image(&mut self, _png: &[u8]) -> Result<(), ClipboardError> {
+        Ok(())
+    }
+    /// New image selection of the desktop (PNG file), if any.
+    fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
+        Ok(None)
+    }
 }
 
 /// 16-bit little-endian interleaved PCM format requested from an audio source.
