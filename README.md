@@ -60,7 +60,7 @@ Efforts estimés, pas mesurés.
 5. HiDPI. Moyen.
 6. Curseur distant. **Fait** (voir « Curseur distant » ci-dessous).
 7. Plusieurs utilisateurs en parallèle. Moyen.
-8. Disposition du clavier. **Fait** (voir « Disposition du clavier » ci-dessous) ; reste à essayer à la main avec mstsc : touches mortes, AltGr, pavé numérique. Moyen.
+8. Disposition du clavier. **Fait** (voir « Disposition du clavier » ci-dessous) ; testé automatiquement avec mstsc ; reste la saisie réelle (touches mortes, AltGr, pavé numérique). Moyen.
 9. Redirection de lecteurs (`rdpdr`) : dossier du client monté dans la session, accès continu. Élevé.
 
 **P2 — qualité et exploitation**
@@ -88,7 +88,7 @@ Test : scénarios `clipboard_files*` du client de test (`--large-file-mib N` pou
 ## Disposition du clavier
 RDP envoie des touches physiques (scancodes) : le caractère obtenu dépend de la disposition de la session. À chaque connexion, le serveur lit l'identifiant de disposition Windows (KLID) annoncé par le client (patch `RdpServerInputHandler::keyboard_layout` dans `third_party/ironrdp-server`), le convertit en disposition XKB (`rdsktp_core::klid_to_xkb`, ~45 langues : `0x040C` → `fr`, `0x0807` → `ch(de)`…) et la session l'adopte. Adaptateur KWin : `kxkbrc` (groupe `Layout`) écrit par `kwriteconfig6`, puis signal D-Bus `org.kde.keyboard.reloadConfig` (celui du module clavier de KDE) ; en mode `--login`, l'ordre passe par l'agent (`ToAgent::KeyboardLayout`). Une disposition inconnue ou absente laisse celle de la session. `RDSKTP_KEYBOARD_LAYOUT=off` désactive l'adoption (à utiliser quand le serveur partage le bus D-Bus d'un vrai bureau : la disposition de l'utilisateur serait modifiée).
 
-Test : le client de test annonce `--keyboard-layout 0x40C` ; le bureau synthétique l'affiche par la couleur du marqueur (scénario `keyboard_layout`). Sur la VM Debian 13 (KWin 6.3, mode `--login`), `kxkbrc` contient `LayoutList=fr` et KWin répond `getLayoutsList` = `fr`. Non essayé : mstsc avec une disposition Windows non américaine, AltGr, touches mortes, pavé numérique.
+Test : le client de test annonce `--keyboard-layout 0x40C` ; le bureau synthétique l'affiche par la couleur du marqueur (scénario `keyboard_layout`). Sur la VM Debian 13 (KWin 6.3, mode `--login`), `kxkbrc` contient `LayoutList=fr` et KWin répond `getLayoutsList` = `fr`. **mstsc automatique** (`cargo xtask test --client`, 14/14) : le script active la disposition française (`WIN_KLID`, `040C` par défaut) sur le fil qui héberge le contrôle avant la connexion, et le contrôle `keyboard_layout` vérifie que le bureau synthétique l'a reçue (marqueur orange). Avec `WIN_SESSION=kwin`, le serveur est lancé avec `RDSKTP_KEYBOARD_LAYOUT=off` (il partage le bus D-Bus de l'hôte) et ce contrôle est ignoré. Non essayé : la saisie réelle (AltGr, touches mortes, pavé numérique).
 
 ## Verrouillage de session
 KWin n'est plus lancé avec `--no-lockscreen` : l'écran de verrouillage (`kscreenlocker_greet`) fait partie de la session, donc il apparaît dans l'image capturée, le clavier et la souris RDP l'atteignent, et le mot de passe tapé est vérifié par PAM. Le verrou survit à la déconnexion : le client qui revient retrouve le même KWin, toujours verrouillé, et le déverrouille avec le mot de passe du compte. Test (VM Debian 13, xfreerdp en conteneur) : `RDP_TEST_PASSWORD=... bash ci/lock-test.sh` (verrou affiché, persistance à la reconnexion avec le même KWin, mauvais mot de passe refusé, déverrouillage).

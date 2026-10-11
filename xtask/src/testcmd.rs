@@ -289,6 +289,10 @@ fn client(o: &TestOpts) -> Result<(), String> {
     }
     // WIN_MONITORS=2: the guest uses both its monitors (multimon) and the server exposes two outputs.
     let monitors = std::env::var("WIN_MONITORS").unwrap_or_else(|_| "1".into());
+    if kwin {
+        // The session shares the user's D-Bus: adopting the client's layout would change the layout of the host.
+        server.env("RDSKTP_KEYBOARD_LAYOUT", "off");
+    }
     let server = server
         // Files echoed by the test desktop are copied aside: mstsc drops the contents of its old clipboard.
         .env("RDSKTP_ECHO_FILES", "copy")
@@ -324,6 +328,8 @@ fn client(o: &TestOpts) -> Result<(), String> {
             "RDP_TEST_PASSWORD",
             std::env::var("RDP_TEST_PASSWORD").unwrap_or_else(|_| "test-mode".into()),
         )
+        // The marker of the layout exists only on the synthetic desktop.
+        .env("WIN_LAYOUT_CHECK", if kwin { "0" } else { "1" })
         .output()
         .map_err(|e| format!("cannot run vm/win11.sh: {e}"))?;
     let text = format!(

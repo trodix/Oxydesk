@@ -124,6 +124,12 @@ Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @"
 public class Win32Clip {
   [System.Runtime.InteropServices.DllImport("user32.dll")]
   public static extern uint GetClipboardSequenceNumber();
+  [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+  public static extern System.IntPtr LoadKeyboardLayout(string klid, uint flags);
+  [System.Runtime.InteropServices.DllImport("user32.dll")]
+  public static extern System.IntPtr ActivateKeyboardLayout(System.IntPtr hkl, uint flags);
+  [System.Runtime.InteropServices.DllImport("user32.dll")]
+  public static extern System.IntPtr GetKeyboardLayout(uint thread);
 }
 [System.Runtime.InteropServices.ComImport,
  System.Runtime.InteropServices.Guid("c1e6743a-41c1-4a74-832a-0dd06c1c7a0e"),
@@ -212,6 +218,12 @@ function PixelAt([int]$x, [int]$y) {
   return $c
 }
 
+# Keyboard layout announced by mstsc at connection: the one of the thread that hosts the control.
+if ($p.klid) {
+  $hkl = [Win32Clip]::LoadKeyboardLayout(('0000' + $p.klid), 1)
+  $null = [Win32Clip]::ActivateKeyboardLayout($hkl, 0)
+  Emit ('STEP keyboard layout of the thread: 0x{0:X8}' -f [Win32Clip]::GetKeyboardLayout(0).ToInt64())
+}
 Emit 'STEP connecting'
 try {
   $ocx.Connect(); $script:connectCalled = $true
@@ -228,6 +240,13 @@ try {
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.CopyFromScreen($form.Location, [System.Drawing.Point]::Empty, $form.ClientSize); $g.Dispose()
   $bmp.Save($shot); $bmp.Dispose()
+  if ($p.klid -eq '040C' -and $p.layout_check -ne '0') {
+    # The synthetic desktop shows a French layout received from the client by an orange marker (255,128,0) at (0,0).
+    function Orange($c) { [math]::Abs($c.R - 255) -lt 70 -and [math]::Abs($c.G - 128) -lt 70 -and $c.B -lt 70 }  # H.264 shifts colours
+    $null = Pump { Orange (PixelAt 8 8) } 10000
+    $m = PixelAt 8 8
+    Check 'keyboard_layout' (Orange $m) "klid $($p.klid): marker pixel $($m.R),$($m.G),$($m.B), expected 255,128,0"
+  }
   Check 'heartbeat' ($seen.Count -ge 2) "states seen: $($seen.Keys -join ',')"
 
   # Clipboard round trip. The test server echoes the text it receives: after our own SetText the
