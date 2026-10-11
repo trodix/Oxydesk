@@ -687,6 +687,8 @@ impl RdpdrServer {
             capabilities: vec![
                 CapabilityMessage::new_general(0),
                 CapabilityMessage::new_drive(),
+                // rdsktp patch: printers are announced only if the server supports them.
+                CapabilityMessage::new_printer(),
             ],
             kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
         });

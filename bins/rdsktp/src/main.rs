@@ -19,7 +19,9 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable
   --encoder     auto (default) | vaapi | openh264; auto uses the GPU when VA-API is usable
   --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)
-  --drives-dir DIR   drive redirection: the client's drives are mounted (FUSE) under DIR/<name> (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-drives; `off` disables)";
+  --drives-dir DIR   drive redirection: the client's drives are mounted (FUSE) under DIR/<name> (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-drives; `off` disables)
+  --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-printers; `off` disables)
+  --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)";
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -254,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
         },
         None => None,
     };
+    let printers = printers_host(&args, kwin_mode);
     let ports = Ports {
         capture,
         encoders,
@@ -265,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
         clipboard,
         audio,
         drives,
+        printers,
     };
     let config = ServerConfig {
         addr,
@@ -278,5 +282,33 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
         _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
+    }
+}
+
+/// The host of the printers of the client, per `--printers` and `--printers-cups`.
+fn printers_host(
+    args: &[String],
+    kwin_mode: bool,
+) -> Option<std::sync::Arc<dyn rdsktp_core::PrinterHost>> {
+    let dir: PathBuf = match arg::<String>(args, "--printers").as_deref() {
+        Some("off") => return None,
+        Some(dir) => dir.into(),
+        None if kwin_mode => std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| PathBuf::from(d).join(rdsktp_spool::SOCKET_DIR))?,
+        None => return None,
+    };
+    let cups = match arg::<String>(args, "--printers-cups").as_deref() {
+        Some("off") => None,
+        _ => rdsktp_spool::Cups::detect(&rdsktp_spool::current_user()),
+    };
+    match rdsktp_spool::PrinterSpool::new(dir.clone(), cups) {
+        Ok(spool) => {
+            tracing::info!(dir = %dir.display(), "printer redirection enabled");
+            Some(std::sync::Arc::new(spool))
+        }
+        Err(e) => {
+            tracing::warn!("printer redirection disabled: {e}");
+            None
+        }
     }
 }

@@ -2411,6 +2411,11 @@ impl DeviceCreateRequest {
         dst.write_u32(self.create_options.bits());
         // Round-trips through decode's from_utf16_bytes(..).trim_end_matches('\0'), so the
         // written PathLength must include the null terminator decode expects to trim.
+        // A printer job is opened with PathLength 0 (the client refuses anything else).
+        if self.path.is_empty() {
+            dst.write_u32(0);
+            return Ok(());
+        }
         dst.write_u32(cast_length!(
             "DeviceCreateRequest",
             "path_length",
@@ -2420,9 +2425,12 @@ impl DeviceCreateRequest {
     }
 
     pub fn size(&self) -> usize {
-        self.device_io_request.size()
-            + Self::FIXED_PART_SIZE
-            + encoded_str_len(&self.path, CharacterSet::Unicode, true)
+        let path = if self.path.is_empty() {
+            0
+        } else {
+            encoded_str_len(&self.path, CharacterSet::Unicode, true)
+        };
+        self.device_io_request.size() + Self::FIXED_PART_SIZE + path
     }
 }
 
@@ -2629,9 +2637,14 @@ impl DeviceCreateResponse {
         device_io_reply: DeviceIoResponse,
         src: &mut ReadCursor<'_>,
     ) -> DecodeResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: src, size: 5);
+        ensure_size!(ctx: Self::NAME, in: src, size: 4);
         let file_id = src.read_u32();
-        let information = Information::from_bits_retain(src.read_u8());
+        // FreeRDP's printer answers a failed create without the Information byte.
+        let information = if src.is_empty() {
+            Information::from_bits_retain(0)
+        } else {
+            Information::from_bits_retain(src.read_u8())
+        };
 
         Ok(Self {
             device_io_reply,

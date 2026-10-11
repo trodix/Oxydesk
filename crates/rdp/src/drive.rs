@@ -30,9 +30,11 @@ use ironrdp_server::{
 };
 use rdsktp_core::drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode};
 use rdsktp_core::error::DriveError;
+use rdsktp_core::printer::{PrinterHost, PrinterInfo, RemotePrinter};
 use rdsktp_core::RemoteDrive;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::printer::{announced_printer, RdpPrinter};
 use crate::pump::Shared;
 
 /// Sends a request event to the connection; `false` if it is gone.
@@ -85,7 +87,7 @@ fn status_error(status: NtStatus) -> DriveError {
 
 /// What a completion carried besides its status.
 #[derive(Debug)]
-enum Body {
+pub(crate) enum Body {
     None,
     Create(u32),
     Read(Vec<u8>),
@@ -95,9 +97,9 @@ enum Body {
 }
 
 #[derive(Debug)]
-struct Completed {
-    status: NtStatus,
-    body: Body,
+pub(crate) struct Completed {
+    pub(crate) status: NtStatus,
+    pub(crate) body: Body,
 }
 
 impl Completed {
@@ -120,14 +122,14 @@ struct Waiters {
 }
 
 /// What the callers and the backend of one connection share.
-struct Link {
+pub(crate) struct Link {
     send: EventSender,
     next_tag: AtomicU64,
     waiters: Mutex<Waiters>,
 }
 
 impl Link {
-    fn call(&self, message: RdpdrServerMessage) -> Result<Completed, DriveError> {
+    pub(crate) fn call(&self, message: RdpdrServerMessage) -> Result<Completed, DriveError> {
         let tag = self.next_tag.fetch_add(1, Ordering::Relaxed);
         let request = tracing::enabled!(tracing::Level::DEBUG).then(|| {
             let mut text = format!("{message:?}");
@@ -611,14 +613,19 @@ impl RemoteDrive for RdpDrive {
 enum Command {
     Added(String, Arc<dyn RemoteDrive>),
     Removed(String),
+    PrinterAdded(String, PrinterInfo, Arc<dyn RemotePrinter>),
+    PrinterRemoved(String),
 }
 
 /// Handles the announcements of the client and the completions of the requests.
 pub struct DriveBackend {
     link: Arc<Link>,
     host: Option<Arc<dyn DriveHost>>,
+    printer_host: Option<Arc<dyn PrinterHost>>,
     /// Drive directory names, by device id.
     drives: HashMap<u32, String>,
+    /// Printer names, by device id.
+    printers: HashMap<u32, String>,
     commands: Option<Sender<Command>>,
 }
 
@@ -626,6 +633,7 @@ impl std::fmt::Debug for DriveBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DriveBackend")
             .field("drives", &self.drives)
+            .field("printers", &self.printers)
             .finish_non_exhaustive()
     }
 }
@@ -633,17 +641,29 @@ impl std::fmt::Debug for DriveBackend {
 impl_as_any!(DriveBackend);
 
 impl DriveBackend {
-    pub fn new(send: EventSender, host: Option<Arc<dyn DriveHost>>) -> Self {
-        let commands = host.clone().map(|host| {
+    pub fn new(
+        send: EventSender,
+        host: Option<Arc<dyn DriveHost>>,
+        printer_host: Option<Arc<dyn PrinterHost>>,
+    ) -> Self {
+        let commands = (host.is_some() || printer_host.is_some()).then(|| {
             let (tx, rx) = mpsc::channel::<Command>();
+            let (drive_host, print_host) = (host.clone(), printer_host.clone());
             // Mounting can take a moment and must not stall the connection: a thread, in order.
             std::thread::Builder::new()
                 .name("drive-host".into())
                 .spawn(move || {
                     for command in rx {
-                        match command {
-                            Command::Added(name, drive) => host.added(&name, drive),
-                            Command::Removed(name) => host.removed(&name),
+                        match (command, &drive_host, &print_host) {
+                            (Command::Added(name, drive), Some(host), _) => {
+                                host.added(&name, drive)
+                            }
+                            (Command::Removed(name), Some(host), _) => host.removed(&name),
+                            (Command::PrinterAdded(name, info, printer), _, Some(host)) => {
+                                host.added(&name, &info, printer)
+                            }
+                            (Command::PrinterRemoved(name), _, Some(host)) => host.removed(&name),
+                            _ => {}
                         }
                     }
                 })
@@ -657,9 +677,44 @@ impl DriveBackend {
                 waiters: Mutex::default(),
             }),
             host,
+            printer_host,
             drives: HashMap::new(),
+            printers: HashMap::new(),
             commands,
         }
+    }
+
+    fn unique_printer_name(&self, wanted: &str) -> String {
+        let base = rdsktp_core::printer_name(wanted);
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.printers.values().any(|p| *p == name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        name
+    }
+
+    fn announce_printer(&mut self, id: u32, device: &DeviceAnnounceHeader) -> bool {
+        if self.printer_host.is_none() {
+            return false;
+        }
+        let Some(announce) = announced_printer(device) else {
+            tracing::warn!(device = id, "printer announcement not understood");
+            return false;
+        };
+        let info = announce.info();
+        let name = self.unique_printer_name(&info.name);
+        tracing::info!(device = id, %name, driver = %info.driver, "printer redirected by the client");
+        let printer = Arc::new(RdpPrinter {
+            link: self.link.clone(),
+            device_id: id,
+        }) as Arc<dyn RemotePrinter>;
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(Command::PrinterAdded(name.clone(), info, printer));
+        }
+        self.printers.insert(id, name);
+        true
     }
 
     fn unique_name(&self, wanted: &str) -> String {
@@ -714,6 +769,9 @@ impl Drop for DriveBackend {
             for name in self.drives.values() {
                 let _ = commands.send(Command::Removed(name.clone()));
             }
+            for name in self.printers.values() {
+                let _ = commands.send(Command::PrinterRemoved(name.clone()));
+            }
         }
     }
 }
@@ -724,6 +782,9 @@ impl RdpdrServerBackend for DriveBackend {
             .iter()
             .map(|device| {
                 let id = device.device_id();
+                if device.device_type() == DeviceType::Print {
+                    return (id, self.announce_printer(id, device));
+                }
                 if device.device_type() != DeviceType::Filesystem || self.host.is_none() {
                     return (id, false);
                 }
@@ -746,6 +807,9 @@ impl RdpdrServerBackend for DriveBackend {
         for id in device_ids {
             if let (Some(name), Some(commands)) = (self.drives.remove(id), &self.commands) {
                 let _ = commands.send(Command::Removed(name));
+            }
+            if let (Some(name), Some(commands)) = (self.printers.remove(id), &self.commands) {
+                let _ = commands.send(Command::PrinterRemoved(name));
             }
         }
     }
@@ -855,11 +919,13 @@ impl RdpdrServerBackend for DriveBackend {
 }
 
 type HostSlot = Arc<Mutex<Option<Arc<dyn DriveHost>>>>;
+type PrinterSlot = Arc<Mutex<Option<Arc<dyn PrinterHost>>>>;
 
 /// Creates the backend of each connection; the host is the one of the current session.
 pub struct DriveFactory {
     pub shared: Arc<Shared>,
     pub host: HostSlot,
+    pub printers: PrinterSlot,
 }
 
 impl ServerEventSender for DriveFactory {
@@ -882,6 +948,7 @@ impl RdpdrServerFactory for DriveFactory {
         Box::new(DriveBackend::new(
             send,
             self.host.lock().expect("host mutex").clone(),
+            self.printers.lock().expect("printers mutex").clone(),
         ))
     }
 }

@@ -149,6 +149,8 @@ pub struct DesktopPorts {
     pub audio: Option<std::sync::Arc<dyn AudioProvider>>,
     /// Where the drives redirected by the client are made available; without it they are refused.
     pub drives: Option<std::sync::Arc<dyn crate::drive::DriveHost>>,
+    /// Where the printers redirected by the client are made available; without it they are refused.
+    pub printers: Option<std::sync::Arc<dyn crate::printer::PrinterHost>>,
 }
 
 /// Authenticates a user and opens (or joins) their desktop session.

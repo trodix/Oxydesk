@@ -18,6 +18,7 @@ rdsktp-agent-proto.workspace = true
 rdsktp-capture.workspace = true
 rdsktp-audio.workspace = true
 rdsktp-drivefs.workspace = true
+rdsktp-spool.workspace = true
 rdsktp-encode = { workspace = true, features = ["openh264"] }
 rdsktp-scaling = { workspace = true, optional = true }
 rdsktp-input = { workspace = true, optional = true }
@@ -27,3 +28,6 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
+
+[dev-dependencies]
+rdsktp-remote.workspace = true

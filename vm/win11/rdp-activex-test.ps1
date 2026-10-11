@@ -224,6 +224,24 @@ if ($p.drives -eq '1') {
   [IO.File]::WriteAllText("$drivesDir\guest.txt", 'to delete', [Text.Encoding]::UTF8)
   [IO.File]::WriteAllText("$drivesDir\to-rename.bin", 'rename me', [Text.Encoding]::UTF8)
 }
+if ($p.printers -eq '1') {
+  # Printer redirection: a "Generic / Text Only" printer on a TCP/IP port (local port 9100) where this script listens.
+  # The host sends a job to the socket the server makes for the printer; the spooler of this machine sends it to the
+  # listener, checked below. (A printer on a file port is not redirected by mstsc.)
+  $adv.RedirectPrinters = $true
+  try {
+    Get-Printer -Name 'RdsktpTest' -ErrorAction SilentlyContinue | Remove-Printer
+    Get-PrinterPort -Name 'RdsktpPort' -ErrorAction SilentlyContinue | Remove-PrinterPort -ErrorAction SilentlyContinue
+    Add-PrinterPort -Name 'RdsktpPort' -PrinterHostAddress '127.0.0.1' -PortNumber 9100 -ErrorAction Stop
+    if (-not (Get-PrinterDriver -Name 'Generic / Text Only' -ErrorAction SilentlyContinue)) { Add-PrinterDriver -Name 'Generic / Text Only' -ErrorAction Stop }
+    Add-Printer -Name 'RdsktpTest' -DriverName 'Generic / Text Only' -PortName 'RdsktpPort' -ErrorAction Stop
+  } catch { Emit ("PRINTER SETUP FAILED: " + $_) }
+  Emit ('DRIVERS ' + ((Get-PrinterDriver -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '))
+  Emit ('PRINTERS ' + ((Get-Printer | ForEach-Object { $_.Name + '@' + $_.PortName + '/' + $_.PrinterStatus }) -join ', '))
+  $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Parse('127.0.0.1')), 9100
+  $listener.Start()
+  $accepting = $listener.AcceptTcpClientAsync()
+}
 $adv.AudioRedirectionMode = 0   # play on this computer
 $adv.SmartSizing = $false
 # ClearTextPassword lives on the non-scriptable interface (declared above).
@@ -300,6 +318,33 @@ try {
       if (-not (Test-Path "$drivesDir\renamed.bin") -or (Test-Path "$drivesDir\to-rename.bin")) { $okd = $false; $detail += ', rename not seen' } else { $detail += ', rename ok' }
     }
     Check 'drives_roundtrip' ([bool]$okd) $detail
+  }
+
+  if ($p.printers -eq '1') {
+    # The host (xtask) sends one job to the printer's socket: "Bonjour imprimante\n" then 100000 bytes 'A'..'Z' repeated.
+    $head = [Text.Encoding]::ASCII.GetBytes("Bonjour imprimante`n")
+    $total = $head.Length + 100000
+    $ms = New-Object IO.MemoryStream
+    $null = Pump { $accepting.IsCompleted } 90000
+    if ($accepting.IsCompleted) {
+      $stream = $accepting.Result.GetStream()
+      $buf = New-Object byte[] 65536
+      $idle = [Diagnostics.Stopwatch]::StartNew()
+      while ($idle.ElapsedMilliseconds -lt 20000 -and $ms.Length -lt $total) {
+        $t = $stream.ReadAsync($buf, 0, $buf.Length)
+        if (-not (Pump { $t.IsCompleted } 20000)) { break }
+        if ($t.Result -le 0) { break }
+        $ms.Write($buf, 0, $t.Result); $idle.Restart()
+      }
+    }
+    $b = $ms.ToArray()
+    $okp = ($b.Length -eq $total)
+    $detail = "printed $($b.Length) bytes, expected $total"
+    if ($okp) {
+      for ($i = 0; $i -lt $head.Length; $i++) { if ($b[$i] -ne $head[$i]) { $okp = $false; $detail += ", head differs at $i"; break } }
+      for ($i = 0; $okp -and $i -lt 100000; $i++) { if ($b[$head.Length + $i] -ne (65 + ($i % 26))) { $okp = $false; $detail += ", differs at $i"; break } }
+    }
+    Check 'printers_roundtrip' ([bool]$okp) $detail
   }
 
   # Clipboard round trip. The test server echoes the text it receives: after our own SetText the

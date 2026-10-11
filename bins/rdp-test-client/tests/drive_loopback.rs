@@ -60,7 +60,7 @@ fn connect(root: &std::path::Path, host: Arc<Host>) -> (Arc<dyn RemoteDrive>, Wi
     let (tx, rx): (_, Receiver<ServerEvent>) = mpsc::channel();
     let tx = Mutex::new(tx);
     let send: EventSender = Arc::new(move |event| tx.lock().unwrap().send(event).is_ok());
-    let mut server = RdpdrServer::new(Box::new(DriveBackend::new(send, Some(host.clone()))));
+    let mut server = RdpdrServer::new(Box::new(DriveBackend::new(send, Some(host.clone()), None)));
     let mut client = DirectoryDrive::channel(root.to_path_buf(), 7, "Share", "TESTPC");
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();

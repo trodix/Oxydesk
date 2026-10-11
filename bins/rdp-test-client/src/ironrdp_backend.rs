@@ -65,6 +65,8 @@ pub struct Options {
     pub keyboard_layout: u32,
     /// Directory shared with the server (drive redirection) and the name it is announced under.
     pub drive: Option<(std::path::PathBuf, String)>,
+    /// Directory where the jobs of the redirected printer are recorded, and the printer name.
+    pub printer: Option<(std::path::PathBuf, String)>,
 }
 
 #[derive(Default)]
@@ -776,7 +778,18 @@ fn run_worker(
             .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
     connector.attach_static_channel(Rdpsnd::new(Box::new(AudioSink::new(shared.clone()))));
-    if let Some((dir, name)) = &opts.drive {
+    if let Some((record, name)) = &opts.printer {
+        connector.attach_static_channel(crate::drive_client::DirectoryDrive::printer_channel(
+            record.clone(),
+            2,
+            name,
+            "Generic / Text Only",
+            opts.drive
+                .as_ref()
+                .map(|(dir, n)| (dir.clone(), 1, n.as_str())),
+            "rdp-test-client",
+        ));
+    } else if let Some((dir, name)) = &opts.drive {
         connector.attach_static_channel(crate::drive_client::DirectoryDrive::channel(
             dir.clone(),
             1,

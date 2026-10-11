@@ -5,6 +5,7 @@ pub mod clipboard;
 mod clipfiles;
 pub mod dib;
 pub mod drive;
+pub mod printer;
 mod pump;
 mod raw;
 mod server;

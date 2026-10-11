@@ -9,6 +9,7 @@ pub mod files;
 #[cfg(feature = "ironrdp")]
 pub mod ironrdp_backend;
 pub mod mock;
+pub mod printers;
 pub mod report;
 pub mod scenarios;
 pub mod session;

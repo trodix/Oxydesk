@@ -2,7 +2,7 @@
 # Drives a real RDP client in a virtual X server against the synthetic desktop of `rdsktp --test-mode` and checks
 # what it displays, like a user would: desktop size, live frames, keyboard (marker block colour), clipboard
 # round trip and dynamic resizing.
-# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives
+# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives printers
 #   fallback_nohh264 / fallback_nogfx: client without H.264 (uncompressed EGFX) / without EGFX (bitmap updates): pixels
 #   compared with what the synthetic desktop draws (probe.py integrity). clipboard_image / clipboard_files: round trips.
 # env: RDP_HOST (127.0.0.1) RDP_PORT (3389) RDP_USER (test) RDP_PASS (x) OUT (/out) DESKTOP (1920x1080) HOST_UID HOST_GID
@@ -56,6 +56,7 @@ cert_ignore=1
 ignore-tls-errors=1
 disableclipboard=0
 ${SHARE_DIR:+sharefolder=$SHARE_DIR}
+${SHARE_PRINTER:+shareprinter=1}
 viewmode=${VIEWMODE:-4}
 scale=${SCALE:-0}
 R
@@ -331,6 +332,34 @@ scenario_drives() {
   while [[ $SECONDS -lt $end && ! -e "$OUT/drives.done" ]]; do sleep 0.5; done
   check drives_checked "$([[ -e "$OUT/drives.done" ]]; echo $?)" "host-side check finished"
   stop_all
+}
+
+# A CUPS queue "Recorder" that writes each job it receives to $OUT/printed: the client redirects it, the host sends a
+# job to the socket of the desktop and checks what came out here (ci/clients-test.sh creates $OUT/printers.done).
+scenario_printers() {
+  mkdir -p "$OUT/printed" /usr/lib/cups/backend; rm -f "$OUT/printers.done"
+  cat >/usr/lib/cups/backend/record <<'B'
+#!/bin/sh
+if [ $# -eq 0 ]; then echo 'direct record "Unknown" "Recorder"'; exit 0; fi
+if [ -n "$6" ]; then cat "$6"; else cat; fi >"/out/printed/job-$1-$$.bin"
+exit 0
+B
+  chmod 700 /usr/lib/cups/backend/record
+  cupsd; for _ in $(seq 50); do lpstat -r >/dev/null 2>&1 && break; sleep 0.2; done
+  lpadmin -p Recorder -E -v record:/ -m raw >"$OUT/lpadmin.log" 2>&1 || { check printers_queue 1 "lpadmin: $(cat "$OUT/lpadmin.log")"; return; }
+  start_x 2560 1440
+  if [[ "$CLIENT" == xfreerdp ]]; then
+    start_client printers /size:"${DW}x${DH}" "/printer:Recorder,MS Publisher Imagesetter"
+  else
+    SHARE_PRINTER=1 start_client printers
+  fi
+  locate "$DW" "$DH" 30 || { check printers_desktop 1 "desktop not shown"; stop_all; return; }
+  echo "printers: waiting for the host to check $OUT/printed"
+  local end=$((SECONDS + 150))
+  while [[ $SECONDS -lt $end && ! -e "$OUT/printers.done" ]]; do sleep 0.5; done
+  check printers_checked "$([[ -e "$OUT/printers.done" ]]; echo $?)" "host-side check finished"
+  stop_all
+  pkill -x cupsd
 }
 
 for s in "${SCENARIOS[@]}"; do

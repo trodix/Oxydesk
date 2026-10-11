@@ -4,6 +4,7 @@
 //! the most recent one replaces the previous one (reconnection); the desktop session survives disconnections.
 
 mod drives;
+mod printers;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -469,6 +470,23 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             None
         }
     };
+    // Printers of the client: a socket and a CUPS queue in the session for the duration of the connection.
+    let printers = match rdsktp_spool::PrinterSpool::new(
+        runtime_dir().join(rdsktp_spool::SOCKET_DIR),
+        rdsktp_spool::Cups::detect(&rdsktp_spool::current_user()),
+    ) {
+        Ok(spool) => {
+            let w = writer.clone();
+            Some(printers::Printers::new(
+                Arc::new(spool),
+                Arc::new(move |msg: &FromAgent| send(&w, msg)),
+            ))
+        }
+        Err(e) => {
+            tracing::warn!("printer redirection unavailable: {e}");
+            None
+        }
+    };
     // Audio: one stream at a time, stopped by a flag specific to each open.
     let mut audio_stop: Option<Arc<AtomicBool>> = None;
     let mut reader = stream;
@@ -673,6 +691,27 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     drives.pending.complete(req_id, result);
                 }
             }
+            ToAgent::PrinterAdded {
+                printer_id,
+                name,
+                driver,
+                is_default,
+                language,
+            } => {
+                if let Some(printers) = &printers {
+                    printers.added(printer_id, name, driver, is_default, language);
+                }
+            }
+            ToAgent::PrinterRemoved { printer_id } => {
+                if let Some(printers) = &printers {
+                    printers.removed(printer_id);
+                }
+            }
+            ToAgent::PrintReply { req_id, result } => {
+                if let Some(printers) = &printers {
+                    printers.pending.complete(req_id, result);
+                }
+            }
             ToAgent::AudioClose => {
                 if let Some(s) = audio_stop.take() {
                     s.store(true, Ordering::Relaxed);
@@ -684,6 +723,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     files.fail_all();
     if let Some(drives) = &drives {
         drives.close();
+    }
+    if let Some(printers) = &printers {
+        printers.close();
     }
     if let Some(s) = audio_stop {
         s.store(true, Ordering::Relaxed);

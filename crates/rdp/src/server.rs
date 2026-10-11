@@ -57,6 +57,7 @@ struct SessionSlot {
     clipboard: Slot<Box<dyn ClipboardBackend>>,
     audio: Slot<Arc<dyn AudioProvider>>,
     drives: Slot<Arc<dyn rdsktp_core::drive::DriveHost>>,
+    printers: Slot<Arc<dyn rdsktp_core::printer::PrinterHost>>,
 }
 
 impl SessionSlot {
@@ -67,6 +68,7 @@ impl SessionSlot {
             clipboard: Default::default(),
             audio: Default::default(),
             drives: Default::default(),
+            printers: Default::default(),
         }
     }
 
@@ -77,6 +79,7 @@ impl SessionSlot {
         *self.clipboard.lock().expect("clipboard mutex") = Some(ports.clipboard);
         *self.audio.lock().expect("audio mutex") = ports.audio;
         *self.drives.lock().expect("drives mutex") = ports.drives;
+        *self.printers.lock().expect("printers mutex") = ports.printers;
         *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts {
             capture: ports.capture,
             encoders: ports.encoders,
@@ -570,6 +573,7 @@ async fn serve(
         .with_rdpdr_factory(Some(Box::new(DriveFactory {
             shared: shared.clone(),
             host: slot.drives.clone(),
+            printers: slot.printers.clone(),
         })))
         .with_credential_validator(broker.map(|broker| {
             Arc::new(BrokerValidator {

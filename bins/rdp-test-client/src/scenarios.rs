@@ -29,6 +29,8 @@ pub struct Config {
     pub layout_check: bool,
     /// Runs the `drives` scenario (the client shares a directory, mounted by the server).
     pub drives: Option<crate::drives::DrivesCheck>,
+    /// Runs the `printers` scenario (a job sent to the socket of the client's printer).
+    pub printers: Option<crate::printers::PrintersCheck>,
 }
 
 impl Default for Config {
@@ -48,6 +50,7 @@ impl Default for Config {
             keyboard_layout: 0,
             layout_check: true,
             drives: None,
+            printers: None,
         }
     }
 }
@@ -96,6 +99,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         .chain((cfg.keyboard_layout != 0 && cfg.layout_check).then_some("keyboard_layout"))
         .chain((cfg.large_file_mib > 0).then_some("clipboard_files_large"))
         .chain(cfg.drives.is_some().then_some("drives"))
+        .chain(cfg.printers.is_some().then_some("printers"))
         {
             r.check(n, false, "not run: connection failed");
         }
@@ -120,6 +124,9 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     }
     if let Some(d) = &cfg.drives {
         crate::drives::drives(d, cfg.timeout, r);
+    }
+    if let Some(p) = &cfg.printers {
+        crate::printers::printers(p, cfg.timeout, r);
     }
     audio_tone(s, cfg, r);
     if cfg.multi_resize {

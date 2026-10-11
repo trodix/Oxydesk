@@ -10,12 +10,14 @@ members = [
     "crates/input",
     "crates/clipboard",
     "crates/drivefs",
+    "crates/spool",
     "crates/audio",
     "crates/agent-proto",
     "crates/authd-proto",
     "crates/remote",
     "bins/authd",
     "bins/rdsktp-agent",
+    "bins/rdsktp-cups-backend",
     "crates/rdp",
     "crates/session",
     "bins/bench",
@@ -39,6 +41,7 @@ rdsktp-core = { path = "crates/core" }
 rdsktp-capture = { path = "crates/capture" }
 rdsktp-clipboard = { path = "crates/clipboard" }
 rdsktp-drivefs = { path = "crates/drivefs" }
+rdsktp-spool = { path = "crates/spool" }
 rdsktp-audio = { path = "crates/audio" }
 rdsktp-agent-proto = { path = "crates/agent-proto" }
 rdsktp-authd-proto = { path = "crates/authd-proto" }

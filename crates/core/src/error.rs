@@ -71,3 +71,13 @@ pub enum DriveError {
     #[error("drive unavailable: {0}")]
     Io(String),
 }
+
+/// Failure of a print job sent to a redirected printer.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PrintError {
+    /// The client refused the job or one of its blocks.
+    #[error("the client refused the job: {0}")]
+    Refused(String),
+    #[error("printer unavailable: {0}")]
+    Io(String),
+}

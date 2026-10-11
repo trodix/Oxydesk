@@ -42,7 +42,7 @@ Défauts trouvés puis corrigés :
 Limites des replis (derniers recours, bien plus lourds que H.264) : en mode `--login` l'agent n'envoie que du H.264, donc ces clients n'ont rien tant que l'agent n'envoie pas de pixels bruts ; la justesse des pixels n'est pas contrôlée (le test vérifie la réception sans erreur, pas l'image) ; débit élevé (≈ 8 Mo par image en 1080p), régulé par la contre-pression EGFX.
 
 ### Non couvert ou non vérifié
-Copie d'images et de fichiers avec de vrais clients (mstsc, xfreerdp, Remmina), imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
+Cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
 
 ## Plan priorisé
 Efforts estimés, pas mesurés.
@@ -62,6 +62,7 @@ Efforts estimés, pas mesurés.
 7. Plusieurs utilisateurs en parallèle. Moyen.
 8. Disposition du clavier. **Fait** (voir « Disposition du clavier » ci-dessous) ; testé automatiquement avec mstsc ; reste la saisie réelle (touches mortes, AltGr, pavé numérique). Moyen.
 9. Redirection de lecteurs (`rdpdr`). **Fait** (voir « Redirection de lecteurs » ci-dessous). Élevé.
+10. Redirection d'imprimantes (`rdpdr`, MS-RDPEPC). **Fait** (voir « Redirection d'imprimantes » ci-dessous). Moyen.
 
 **P2 — qualité et exploitation**
 10. Mesure du coût CPU en multi-écran. Faible.
@@ -69,7 +70,7 @@ Efforts estimés, pas mesurés.
 12. Plusieurs clients sur une même session. Moyen.
 13. Proposer le patch IronRDP en amont. Variable.
 
-**P3 — facultatif** : imprimantes, USB, cartes à puce, transport UDP ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
+**P3 — facultatif** : USB, cartes à puce, transport UDP ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
 
 **Tout en bas de la liste (pas prioritaire)**
 14. Microphone (canal audio en entrée). Moyen.
@@ -89,6 +90,13 @@ Test : scénarios `clipboard_files*` du client de test (`--large-file-mib N` pou
 Les dossiers partagés par le client (mstsc « Lecteurs locaux », xfreerdp `/drive:NOM,DOSSIER`, Remmina « Partager un dossier ») sont montés dans la session sous `$XDG_RUNTIME_DIR/rdsktp-drives/<NOM>` (FUSE, paquet `fuse3`), en **lecture et écriture** : création, renommage, suppression, dossiers, fichiers de plusieurs gigaoctets lus et écrits par blocs, sans stockage intermédiaire. Le montage disparaît à la déconnexion. `--drives-dir DIR` change le répertoire (`off` le désactive) ; activé par défaut avec `--session kwin`. En mode `--login`, le serveur relaie les opérations à l'agent, qui monte le dossier sous l'utilisateur. Conception : [ADR 013](docs/decisions/013-redirection-de-lecteurs.md).
 
 Test : `bash ci/drives-test.sh` (client de test IronRDP contre le bureau synthétique ; 64 Mio dans chaque sens, renommage, dossiers, suppression, démontage) ; `bash ci/clients-test.sh` fait aussi contrôler les fichiers par l'hôte pendant que xfreerdp et Remmina restent connectés. Validé avec mstsc (`cargo xtask test --client`), xfreerdp et Remmina ; le relais du mode `--login` n'est pas encore testé en VM (voir l'ADR 013).
+
+## Redirection d'imprimantes
+Les imprimantes du client (mstsc « Imprimantes », xfreerdp `/printer:NOM[,PILOTE]`, Remmina « Partager les imprimantes ») deviennent, dans la session, un **socket Unix** `$XDG_RUNTIME_DIR/rdsktp-printers/<NOM>.sock` (une connexion = un travail, réponse `OK` ou `ERROR: …`) et, si CUPS répond, une **file CUPS** `<utilisateur>-<NOM>` visible de l'utilisateur seul, utilisable par LibreOffice, Firefox ou `lp -d`. Le client reçoit les octets tels quels : CUPS produit le langage de l'imprimante annoncée (PostScript, PCL ou texte, déduit du pilote Windows). `--printers DIR|off` change le répertoire ; `--printers-cups on|off` choisit de créer ou non les files ; activé par défaut avec `--session kwin`. En mode `--login`, le serveur relaie les travaux à l'agent, qui héberge sockets et files sous l'utilisateur. Conception : [ADR 014](docs/decisions/014-redirection-d-imprimantes.md).
+
+Installation des files CUPS : le backend `rdsktp-cups-backend` doit être installé en `/usr/lib/cups/backend/rdsktp`, propriétaire `root`, mode `0700` (`sudo install -o root -g root -m 0700 target/release/rdsktp-cups-backend /usr/lib/cups/backend/rdsktp`), et l'utilisateur doit pouvoir administrer CUPS (groupe `lpadmin`, `wheel` ou `sudo`, selon la distribution) ; sinon seuls les sockets existent, avec un avertissement dans le journal.
+
+Test : `bash ci/printers-test.sh` (client de test IronRDP contre le bureau synthétique : travaux par le socket, puis par un `cupsd` privé avec le vrai backend, `lp -o raw` et un travail texte filtré) ; `bash ci/clients-test.sh` fait aussi envoyer un travail à une file CUPS du conteneur redirigée par xfreerdp et Remmina, dont l'hôte compare les octets. Avec mstsc (`cargo xtask test --client`), une imprimante « Generic / Text Only » sur un port fichier reçoit le travail envoyé par l'hôte.
 
 ## Disposition du clavier
 RDP envoie des touches physiques (scancodes) : le caractère obtenu dépend de la disposition de la session. À chaque connexion, le serveur lit l'identifiant de disposition Windows (KLID) annoncé par le client (patch `RdpServerInputHandler::keyboard_layout` dans `third_party/ironrdp-server`), le convertit en disposition XKB (`rdsktp_core::klid_to_xkb`, ~45 langues : `0x040C` → `fr`, `0x0807` → `ch(de)`…) et la session l'adopte. Adaptateur KWin : `kxkbrc` (groupe `Layout`) écrit par `kwriteconfig6`, puis signal D-Bus `org.kde.keyboard.reloadConfig` (celui du module clavier de KDE) ; en mode `--login`, l'ordre passe par l'agent (`ToAgent::KeyboardLayout`). Une disposition inconnue ou absente laisse celle de la session. `RDSKTP_KEYBOARD_LAYOUT=off` désactive l'adoption (à utiliser quand le serveur partage le bus D-Bus d'un vrai bureau : la disposition de l'utilisateur serait modifiée).

@@ -6,6 +6,7 @@
 mod drives;
 mod link;
 mod ports;
+mod printers;
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ use rdsktp_core::ports::{DesktopPorts, SessionBroker};
 
 pub use drives::AgentDrives;
 pub use link::AgentLink;
+pub use printers::AgentPrinters;
 
 pub struct RemoteBroker {
     authd_socket: PathBuf,

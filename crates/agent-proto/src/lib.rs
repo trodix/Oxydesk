@@ -140,6 +140,32 @@ pub enum DriveResult {
     Space { total: u64, available: u64 },
 }
 
+/// An operation on a printer of the client, asked by the agent to the server (which holds the client's printer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrintOp {
+    /// Starts a job titled `title`; answered by `PrintResult::Job`.
+    Begin {
+        title: String,
+    },
+    Write {
+        job: u64,
+        data: Vec<u8>,
+    },
+    Finish(u64),
+    Abort(u64),
+}
+
+/// Answer to a `PrintOp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrintResult {
+    Ok,
+    /// The client refused (or lost) the job.
+    Refused(String),
+    /// The link failed.
+    Io(String),
+    Job(u64),
+}
+
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
@@ -219,6 +245,24 @@ pub enum ToAgent {
         req_id: u32,
         result: DriveResult,
     },
+    /// The client redirected a printer; the agent makes its socket and its CUPS queue, and sends the jobs
+    /// with `FromAgent::PrintCall`. `language`: 0 PostScript, 1 PCL, 2 text.
+    PrinterAdded {
+        printer_id: u32,
+        name: String,
+        driver: String,
+        is_default: bool,
+        language: u8,
+    },
+    /// The printer is gone: the agent removes its socket and its queue.
+    PrinterRemoved {
+        printer_id: u32,
+    },
+    /// Answer to `FromAgent::PrintCall` with the same `req_id`.
+    PrintReply {
+        req_id: u32,
+        result: PrintResult,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -279,6 +323,12 @@ pub enum FromAgent {
         req_id: u32,
         drive_id: u32,
         op: DriveOp,
+    },
+    /// An operation on a redirected printer; answered by `ToAgent::PrintReply`.
+    PrintCall {
+        req_id: u32,
+        printer_id: u32,
+        op: PrintOp,
     },
 }
 
@@ -345,6 +395,44 @@ impl Out {
         self.i64(s.modified);
         self.i64(s.accessed);
         self.i64(s.created);
+    }
+    fn print_op(&mut self, op: &PrintOp) {
+        match op {
+            PrintOp::Begin { title } => {
+                self.u8(0);
+                self.str(title);
+            }
+            PrintOp::Write { job, data } => {
+                self.u8(1);
+                self.u64(*job);
+                self.bytes(data);
+            }
+            PrintOp::Finish(job) => {
+                self.u8(2);
+                self.u64(*job);
+            }
+            PrintOp::Abort(job) => {
+                self.u8(3);
+                self.u64(*job);
+            }
+        }
+    }
+    fn print_result(&mut self, r: &PrintResult) {
+        match r {
+            PrintResult::Ok => self.u8(0),
+            PrintResult::Refused(m) => {
+                self.u8(1);
+                self.str(m);
+            }
+            PrintResult::Io(m) => {
+                self.u8(2);
+                self.str(m);
+            }
+            PrintResult::Job(job) => {
+                self.u8(3);
+                self.u64(*job);
+            }
+        }
     }
     fn drive_op(&mut self, op: &DriveOp) {
         match op {
@@ -562,6 +650,27 @@ impl<'a> In<'a> {
             created: self.i64()?,
         })
     }
+    fn print_op(&mut self) -> Result<PrintOp, ProtoError> {
+        Ok(match self.u8()? {
+            0 => PrintOp::Begin { title: self.str()? },
+            1 => PrintOp::Write {
+                job: self.u64()?,
+                data: self.rest(),
+            },
+            2 => PrintOp::Finish(self.u64()?),
+            3 => PrintOp::Abort(self.u64()?),
+            _ => return Err(ProtoError::Invalid("unknown print operation")),
+        })
+    }
+    fn print_result(&mut self) -> Result<PrintResult, ProtoError> {
+        Ok(match self.u8()? {
+            0 => PrintResult::Ok,
+            1 => PrintResult::Refused(self.str()?),
+            2 => PrintResult::Io(self.str()?),
+            3 => PrintResult::Job(self.u64()?),
+            _ => return Err(ProtoError::Invalid("unknown print result")),
+        })
+    }
     fn drive_op(&mut self) -> Result<DriveOp, ProtoError> {
         Ok(match self.u8()? {
             0 => DriveOp::Stat(self.str()?),
@@ -764,6 +873,29 @@ impl Message for ToAgent {
                 o.drive_result(result);
                 19
             }
+            Self::PrinterAdded {
+                printer_id,
+                name,
+                driver,
+                is_default,
+                language,
+            } => {
+                o.u32(*printer_id);
+                o.u8(u8::from(*is_default));
+                o.u8(*language);
+                o.str(name);
+                o.str(driver);
+                20
+            }
+            Self::PrinterRemoved { printer_id } => {
+                o.u32(*printer_id);
+                21
+            }
+            Self::PrintReply { req_id, result } => {
+                o.u32(*req_id);
+                o.print_result(result);
+                22
+            }
         };
         (tag, o.0)
     }
@@ -844,6 +976,20 @@ impl Message for ToAgent {
             19 => Self::DriveReply {
                 req_id: i.u32()?,
                 result: i.drive_result()?,
+            },
+            20 => Self::PrinterAdded {
+                printer_id: i.u32()?,
+                is_default: i.bool()?,
+                language: i.u8()?,
+                name: i.str()?,
+                driver: i.str()?,
+            },
+            21 => Self::PrinterRemoved {
+                printer_id: i.u32()?,
+            },
+            22 => Self::PrintReply {
+                req_id: i.u32()?,
+                result: i.print_result()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -954,6 +1100,16 @@ impl Message for FromAgent {
                 o.drive_op(op);
                 14
             }
+            Self::PrintCall {
+                req_id,
+                printer_id,
+                op,
+            } => {
+                o.u32(*req_id);
+                o.u32(*printer_id);
+                o.print_op(op);
+                15
+            }
         };
         (tag, o.0)
     }
@@ -1029,6 +1185,11 @@ impl Message for FromAgent {
                 req_id: i.u32()?,
                 drive_id: i.u32()?,
                 op: i.drive_op()?,
+            },
+            15 => Self::PrintCall {
+                req_id: i.u32()?,
+                printer_id: i.u32()?,
+                op: i.print_op()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -1320,6 +1481,47 @@ mod tests {
             roundtrip(FromAgent::DriveCall {
                 req_id: 1,
                 drive_id: 2,
+                op,
+            });
+        }
+    }
+
+    #[test]
+    fn print_messages_roundtrip() {
+        roundtrip(ToAgent::PrinterAdded {
+            printer_id: 4,
+            name: "Bureau é".into(),
+            driver: "MS Publisher Imagesetter".into(),
+            is_default: true,
+            language: 2,
+        });
+        roundtrip(ToAgent::PrinterRemoved { printer_id: 4 });
+        for result in [
+            PrintResult::Ok,
+            PrintResult::Refused("papier".into()),
+            PrintResult::Io("lien".into()),
+            PrintResult::Job(u64::MAX),
+        ] {
+            roundtrip(ToAgent::PrintReply { req_id: 3, result });
+        }
+        for op in [
+            PrintOp::Begin {
+                title: "doc.pdf".into(),
+            },
+            PrintOp::Write {
+                job: 1,
+                data: vec![7; 1000],
+            },
+            PrintOp::Write {
+                job: 1,
+                data: vec![],
+            },
+            PrintOp::Finish(2),
+            PrintOp::Abort(3),
+        ] {
+            roundtrip(FromAgent::PrintCall {
+                req_id: 1,
+                printer_id: 2,
                 op,
             });
         }

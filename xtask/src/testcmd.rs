@@ -261,6 +261,56 @@ fn drives_host_check(mnt: &Path, within: Duration) -> Result<String, String> {
     ))
 }
 
+/// Byte `i` of the job of the printer test: a line, then 100000 bytes `A..Z` repeated (same as `rdp-activex-test.ps1`).
+fn printer_job() -> Vec<u8> {
+    let mut job = b"Bonjour imprimante\n".to_vec();
+    job.extend((0..100_000usize).map(|i| b'A' + (i % 26) as u8));
+    job
+}
+
+/// Host side of the mstsc printer test: the guest's printer `RdsktpTest` appears as a socket under `dir`; one job is
+/// sent through it (the guest compares what its spooler wrote to the file port).
+fn printers_host_check(dir: &Path, within: Duration) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let start = Instant::now();
+    let socket = loop {
+        let found = fs::read_dir(dir).ok().and_then(|d| {
+            d.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                p.extension().is_some_and(|e| e == "sock")
+                    && p.to_string_lossy().contains("RdsktpTest")
+            })
+        });
+        if let Some(s) = found {
+            break s;
+        }
+        if start.elapsed() > within {
+            return Err(format!("no guest printer appeared under {}", dir.display()));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    let job = printer_job();
+    let mut s =
+        std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("connect: {e}"))?;
+    s.write_all(&job).map_err(|e| format!("send: {e}"))?;
+    s.shutdown(std::net::Shutdown::Write)
+        .map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(60))).ok();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer)
+        .map_err(|e| format!("answer: {e}"))?;
+    if answer.trim() != "OK" {
+        return Err(format!("the spool answered {:?}", answer.trim()));
+    }
+    Ok(format!(
+        "job of {} bytes sent to {}",
+        job.len(),
+        socket
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ))
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         // SIGINT first: the server then stops its own KWin session (children of a killed process would leak).
@@ -358,6 +408,10 @@ fn client(o: &TestOpts) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .join("drives");
     fs::create_dir_all(&drives_dir).map_err(|e| e.to_string())?;
+    // The directory is named like the real one: the CUPS backend only accepts such a directory.
+    let printers_dir = fs::canonicalize(&o.out)
+        .map_err(|e| e.to_string())?
+        .join("rdsktp-printers");
     let mut server = Command::new("target/debug/rdsktp");
     if kwin {
         let app = fs::canonicalize("target/debug/rdsktp-testapp").map_err(|e| e.to_string())?;
@@ -391,6 +445,10 @@ fn client(o: &TestOpts) -> Result<(), String> {
         // Drive redirection: the drives of the guest are mounted here (checked by `drives_host_check`).
         .arg("--drives-dir")
         .arg(&drives_dir)
+        // Printer redirection: the printers of the guest are sockets here (checked by `printers_host_check`).
+        .arg("--printers")
+        .arg(&printers_dir)
+        .args(["--printers-cups", "off"])
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log)
@@ -413,9 +471,14 @@ fn client(o: &TestOpts) -> Result<(), String> {
         let dir = drives_dir.clone();
         std::thread::spawn(move || drives_host_check(&dir, Duration::from_secs(240)))
     };
+    let printers_check = {
+        let dir = printers_dir.clone();
+        std::thread::spawn(move || printers_host_check(&dir, Duration::from_secs(240)))
+    };
     let out = Command::new("bash")
         .args(["vm/win11.sh", "test"])
         .env("WIN_DRIVES", "1")
+        .env("WIN_PRINTERS", "1")
         .arg(format!("10.0.2.2:{}", o.port))
         .arg("tester")
         .env(
@@ -440,7 +503,14 @@ fn client(o: &TestOpts) -> Result<(), String> {
         Ok(d) => println!("PASS drives_host {d}"),
         Err(e) => println!("FAIL drives_host {e}"),
     }
-    if out.status.success() && drives.is_ok() {
+    let printers = printers_check
+        .join()
+        .unwrap_or_else(|_| Err("printer check panicked".into()));
+    match &printers {
+        Ok(d) => println!("PASS printers_host {d}"),
+        Err(e) => println!("FAIL printers_host {e}"),
+    }
+    if out.status.success() && drives.is_ok() && printers.is_ok() {
         Ok(())
     } else {
         Err("client test (Windows) failed".into())

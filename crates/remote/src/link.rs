@@ -44,6 +44,8 @@ pub struct AgentLink {
     files: Arc<FileExchange>,
     /// Drives of the client, mounted by the agent.
     pub(crate) drives: crate::drives::Drives,
+    /// Printers of the client, served by the agent.
+    pub(crate) printers: crate::printers::Printers,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
@@ -113,6 +115,7 @@ impl AgentLink {
             clipboard_files: Mutex::new(None),
             files: Arc::new(FileExchange::default()),
             drives: Default::default(),
+            printers: Default::default(),
             cursor: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
@@ -300,6 +303,18 @@ impl AgentLink {
                     this.send(&ToAgent::DriveReply { req_id, result });
                 });
             }
+            FromAgent::PrintCall {
+                req_id,
+                printer_id,
+                op,
+            } => {
+                // The client's answer can take a while: not in the reader thread.
+                let this = this.clone();
+                std::thread::spawn(move || {
+                    let result = crate::printers::execute(&this, printer_id, op);
+                    this.send(&ToAgent::PrintReply { req_id, result });
+                });
+            }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
                 if q.open {
@@ -332,6 +347,11 @@ impl AgentLink {
                 self.resize_cv.notify_all();
             }
         }
+    }
+
+    /// Where the printers redirected by the client are announced (the agent makes their sockets and queues).
+    pub fn printer_host(this: &Arc<Self>) -> Arc<crate::printers::AgentPrinters> {
+        Arc::new(crate::printers::AgentPrinters(Arc::downgrade(this)))
     }
 
     /// Where the drives redirected by the client are announced (the agent mounts them).
@@ -921,6 +941,180 @@ mod tests {
         );
         let (link, _agent) = pair();
         assert!(!link.set_layout(vec![rect(0)], Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn printers_are_announced_to_the_agent_and_served_on_its_calls() {
+        use rdsktp_agent_proto::{read_msg, PrintOp, PrintResult};
+        use rdsktp_core::error::PrintError;
+        use rdsktp_core::{PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+
+        type Log = Arc<Mutex<Vec<String>>>;
+        struct Job(Log);
+        impl PrintJob for Job {
+            fn write(&mut self, d: &[u8]) -> Result<(), PrintError> {
+                if d == b"boom" {
+                    return Err(PrintError::Io("lien".into()));
+                }
+                self.0.lock().unwrap().push(format!("write {}", d.len()));
+                Ok(())
+            }
+            fn finish(self: Box<Self>) -> Result<(), PrintError> {
+                self.0.lock().unwrap().push("finish".into());
+                Ok(())
+            }
+            fn abort(self: Box<Self>) {
+                self.0.lock().unwrap().push("abort".into());
+            }
+        }
+        struct Fake(Log);
+        impl RemotePrinter for Fake {
+            fn begin(&self, title: &str) -> Result<Box<dyn PrintJob>, PrintError> {
+                if title == "refuse" {
+                    return Err(PrintError::Refused("non".into()));
+                }
+                self.0.lock().unwrap().push(format!("begin {title}"));
+                Ok(Box::new(Job(self.0.clone())))
+            }
+        }
+
+        let (link, mut agent) = pair();
+        let log: Log = Arc::default();
+        let host = AgentLink::printer_host(&link);
+        host.added(
+            "Bureau",
+            &PrinterInfo {
+                name: "Bureau".into(),
+                driver: "MS Publisher Imagesetter".into(),
+                is_default: true,
+                language: PrintLanguage::PostScript,
+            },
+            Arc::new(Fake(log.clone())),
+        );
+        let Some(ToAgent::PrinterAdded {
+            printer_id,
+            name,
+            driver,
+            is_default,
+            language,
+        }) = read_msg::<_, ToAgent>(&mut agent).unwrap()
+        else {
+            panic!("PrinterAdded expected")
+        };
+        assert_eq!((name.as_str(), is_default, language), ("Bureau", true, 0));
+        assert_eq!(driver, "MS Publisher Imagesetter");
+
+        fn call(agent: &mut UnixStream, req_id: u32, printer_id: u32, op: PrintOp) -> PrintResult {
+            write_msg(
+                agent,
+                &FromAgent::PrintCall {
+                    req_id,
+                    printer_id,
+                    op,
+                },
+            )
+            .unwrap();
+            let Some(ToAgent::PrintReply { req_id: id, result }) =
+                read_msg::<_, ToAgent>(agent).unwrap()
+            else {
+                panic!("PrintReply expected")
+            };
+            assert_eq!(id, req_id);
+            result
+        }
+        let PrintResult::Job(job) = call(
+            &mut agent,
+            1,
+            printer_id,
+            PrintOp::Begin {
+                title: "doc".into(),
+            },
+        ) else {
+            panic!("a job was expected")
+        };
+        for (n, data) in [b"abc".to_vec(), vec![0; 1000]].into_iter().enumerate() {
+            assert_eq!(
+                call(
+                    &mut agent,
+                    2 + n as u32,
+                    printer_id,
+                    PrintOp::Write { job, data }
+                ),
+                PrintResult::Ok
+            );
+        }
+        assert_eq!(
+            call(&mut agent, 4, printer_id, PrintOp::Finish(job)),
+            PrintResult::Ok
+        );
+        // A finished job is gone; a refused begin and an unknown printer are answered, not fatal.
+        assert!(matches!(
+            call(&mut agent, 5, printer_id, PrintOp::Finish(job)),
+            PrintResult::Refused(_)
+        ));
+        assert_eq!(
+            call(
+                &mut agent,
+                6,
+                printer_id,
+                PrintOp::Begin {
+                    title: "refuse".into()
+                }
+            ),
+            PrintResult::Refused("non".into())
+        );
+        assert!(matches!(
+            call(&mut agent, 7, printer_id + 9, PrintOp::Abort(1)),
+            PrintResult::Refused(_)
+        ));
+        // A write failure aborts the job on the client's side.
+        let PrintResult::Job(job) = call(
+            &mut agent,
+            8,
+            printer_id,
+            PrintOp::Begin { title: "b".into() },
+        ) else {
+            panic!("a job was expected")
+        };
+        assert_eq!(
+            call(
+                &mut agent,
+                9,
+                printer_id,
+                PrintOp::Write {
+                    job,
+                    data: b"boom".to_vec()
+                }
+            ),
+            PrintResult::Io("lien".into())
+        );
+        // A job in progress when the printer goes away is aborted.
+        let PrintResult::Job(_) = call(
+            &mut agent,
+            10,
+            printer_id,
+            PrintOp::Begin { title: "c".into() },
+        ) else {
+            panic!("a job was expected")
+        };
+        host.removed("Bureau");
+        assert_eq!(
+            read_msg::<_, ToAgent>(&mut agent).unwrap(),
+            Some(ToAgent::PrinterRemoved { printer_id })
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "begin doc",
+                "write 3",
+                "write 1000",
+                "finish",
+                "begin b",
+                "abort",
+                "begin c",
+                "abort"
+            ]
+        );
     }
 
     #[test]

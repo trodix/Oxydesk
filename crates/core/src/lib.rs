@@ -11,6 +11,7 @@ pub mod keyboard;
 pub mod layout;
 pub mod pixels;
 pub mod ports;
+pub mod printer;
 pub mod scale;
 pub mod throttle;
 pub mod wake;
@@ -19,10 +20,12 @@ pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
 pub use drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive};
 pub use error::{
     AudioError, CaptureError, ClipboardError, DriveError, EncodeError, InputError, LoginError,
+    PrintError,
 };
 pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
 pub use keyboard::{klid_to_xkb, XkbLayout};
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};
+pub use printer::{printer_name, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
 pub use scale::ScaleMap;
 pub use throttle::{LoginThrottle, ThrottleConfig};

@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--drives-only] [--drive-share DIR --drive-mount DIR [--drive-name NAME] [--drive-mib N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--drives-only] [--drive-share DIR --drive-mount DIR [--drive-name NAME] [--drive-mib N]] [--printer-socket DIR --printer-record DIR [--printer-name NAME] [--printer-kib N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -24,6 +24,7 @@ struct Args {
     mock: bool,
     no_nla: bool,
     drive: Option<(std::path::PathBuf, String)>,
+    printer: Option<(std::path::PathBuf, String)>,
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
@@ -33,6 +34,12 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     let mut no_nla = false;
     let (mut share, mut mount, mut drive_name, mut drive_mib) =
         (None::<String>, None::<String>, "Partage".to_string(), 8u64);
+    let (mut printer_socket, mut printer_record, mut printer_name, mut printer_kib) = (
+        None::<String>,
+        None::<String>,
+        "Imprimante".to_string(),
+        256u64,
+    );
     let (mut host, mut port, mut user) = ("127.0.0.1".to_string(), 3389u16, "test".to_string());
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -58,6 +65,12 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--drive-mount" => mount = Some(val(&a)?),
             "--drive-name" => drive_name = val(&a)?,
             "--drive-mib" => drive_mib = val(&a)?.parse().map_err(|_| "--drive-mib invalid")?,
+            "--printer-socket" => printer_socket = Some(val(&a)?),
+            "--printer-record" => printer_record = Some(val(&a)?),
+            "--printer-name" => printer_name = val(&a)?,
+            "--printer-kib" => {
+                printer_kib = val(&a)?.parse().map_err(|_| "--printer-kib invalid")?
+            }
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalid")?,
@@ -93,7 +106,23 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
         (None, None) => None,
         _ => return Err("--drive-share and --drive-mount go together".into()),
     };
+    let printer = match (printer_socket, printer_record) {
+        (Some(socket), Some(record)) => {
+            cfg.printers = Some(rdp_test_client::printers::PrintersCheck {
+                socket: std::path::Path::new(&socket).join(format!(
+                    "{}.sock",
+                    rdsktp_core::printer::printer_name(&printer_name)
+                )),
+                record: record.clone().into(),
+                kib: printer_kib,
+            });
+            Some((record.into(), printer_name))
+        }
+        (None, None) => None,
+        _ => return Err("--printer-socket and --printer-record go together".into()),
+    };
     Ok(Args {
+        printer,
         drive,
         out: out.ok_or("--out is required")?,
         host,
@@ -120,6 +149,7 @@ fn real_session(args: &Args) -> Box<dyn Session> {
         height: args.cfg.height as u16,
         keyboard_layout: args.cfg.keyboard_layout,
         drive: args.drive.clone(),
+        printer: args.printer.clone(),
     }))
 }
 
@@ -165,7 +195,11 @@ fn main() -> ExitCode {
         };
     }
     let drives_only = raw.iter().any(|a| a == "--drives-only");
-    let raw: Vec<String> = raw.into_iter().filter(|a| a != "--drives-only").collect();
+    let raw_printers_only = raw.iter().any(|a| a == "--printers-only");
+    let raw: Vec<String> = raw
+        .into_iter()
+        .filter(|a| a != "--drives-only" && a != "--printers-only")
+        .collect();
     let args = match parse(raw) {
         Ok(a) => a,
         Err(e) => {
@@ -173,6 +207,20 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if raw_printers_only {
+        let Some(check) = &args.cfg.printers else {
+            eprintln!("--printers-only needs --printer-socket and --printer-record");
+            return ExitCode::from(2);
+        };
+        let mut report = Report::default();
+        rdp_test_client::printers::printers(check, args.cfg.timeout, &mut report);
+        println!("{}", report.to_json());
+        return if report.passed("printers") {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
     if drives_only {
         // A real RDP client (xfreerdp, Remmina) shares the directory: only the files are checked, on both sides.
         let Some(check) = &args.cfg.drives else {

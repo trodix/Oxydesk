@@ -21,8 +21,8 @@ use ironrdp_rdpdr::pdu::efs::{
     FileFsDeviceInformation, FileFsFullSizeInformation, FileFsSizeInformation,
     FileFsVolumeInformation, FileInformationClass, FileInformationClassLevel,
     FileStandardInformation, FileSystemAttributes, FileSystemInformationClass,
-    FileSystemInformationClassLevel, Information, NtStatus, ServerDeviceAnnounceResponse,
-    ServerDriveIoRequest,
+    FileSystemInformationClassLevel, Information, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
@@ -74,6 +74,10 @@ pub struct DirectoryDrive {
     root: PathBuf,
     open: HashMap<u32, Open>,
     next_id: u32,
+    /// Where the print jobs of the redirected printer are recorded (`job-<n>.bin`).
+    printer_dir: Option<PathBuf>,
+    jobs: HashMap<u32, File>,
+    job_count: u32,
 }
 
 impl std::fmt::Debug for Open {
@@ -90,6 +94,77 @@ impl DirectoryDrive {
             root,
             open: HashMap::new(),
             next_id: 1,
+            printer_dir: None,
+            jobs: HashMap::new(),
+            job_count: 0,
+        }
+    }
+
+    /// The channel announcing a printer `name` (driver `driver`, device `device_id`) that records its jobs
+    /// in `record`, and optionally a drive too.
+    pub fn printer_channel(
+        record: PathBuf,
+        device_id: u32,
+        name: &str,
+        driver: &str,
+        drive: Option<(PathBuf, u32, &str)>,
+        computer: &str,
+    ) -> Rdpdr {
+        let mut backend = Self::new(drive.as_ref().map_or_else(PathBuf::new, |d| d.0.clone()));
+        backend.printer_dir = Some(record);
+        let mut channel = Rdpdr::new(Box::new(backend), computer.to_owned());
+        if let Some((_, id, drive_name)) = drive {
+            channel = channel.with_drives(Some(vec![(id, drive_name.to_owned())]));
+        }
+        channel.with_printer_driver(device_id, name.to_owned(), driver.to_owned())
+    }
+
+    fn printer_io(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        match req {
+            PrinterIoRequest::Create(r) => {
+                let dir = self.printer_dir.clone().unwrap_or_default();
+                self.job_count += 1;
+                let path = dir.join(format!("job-{}.bin", self.job_count));
+                let (status, file_id) = match File::create(&path) {
+                    Ok(f) => {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        self.jobs.insert(id, f);
+                        (NtStatus::SUCCESS, id)
+                    }
+                    Err(e) => (status_of(&e), 0),
+                };
+                message(RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
+                    device_io_reply: reply(&r.device_io_request, status),
+                    file_id,
+                    information: Information::file_opened(),
+                }))
+            }
+            PrinterIoRequest::Write(r) => {
+                let io = &r.device_io_request;
+                let (status, length) = match self.jobs.get_mut(&io.file_id) {
+                    Some(f) => match std::io::Write::write_all(f, &r.write_data) {
+                        Ok(()) => (NtStatus::SUCCESS, r.write_data.len() as u32),
+                        Err(e) => (status_of(&e), 0),
+                    },
+                    None => (NtStatus::INVALID_HANDLE, 0),
+                };
+                message(RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
+                    device_io_reply: reply(io, status),
+                    length,
+                }))
+            }
+            PrinterIoRequest::Close(r) => {
+                let status = match self.jobs.remove(&r.device_io_request.file_id) {
+                    Some(f) => f
+                        .sync_all()
+                        .map_or_else(|e| status_of(&e), |()| NtStatus::SUCCESS),
+                    None => NtStatus::INVALID_HANDLE,
+                };
+                message(RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+                    device_io_response: reply(&r.device_io_request, status),
+                }))
+            }
         }
     }
 
@@ -425,6 +500,10 @@ impl ironrdp_rdpdr::RdpdrBackend for DirectoryDrive {
         _: ScardCall,
     ) -> PduResult<Vec<SvcMessage>> {
         Ok(Vec::new())
+    }
+
+    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        self.printer_io(req)
     }
 
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
