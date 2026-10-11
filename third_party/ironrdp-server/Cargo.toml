@@ -117,6 +117,10 @@ optional = true
 [dependencies.ironrdp-pdu]
 version = "0.9"
 
+[dependencies.ironrdp-rdpdr]
+path = "../ironrdp-rdpdr"
+version = "0.7"
+
 [dependencies.ironrdp-rdpsnd]
 version = "0.9"
 

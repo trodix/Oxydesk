@@ -27,6 +27,8 @@ pub struct Config {
     pub keyboard_layout: u32,
     /// `false`: the layout is announced but the desktop is a real one, without the synthetic marker.
     pub layout_check: bool,
+    /// Runs the `drives` scenario (the client shares a directory, mounted by the server).
+    pub drives: Option<crate::drives::DrivesCheck>,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             large_file_mib: 0,
             keyboard_layout: 0,
             layout_check: true,
+            drives: None,
         }
     }
 }
@@ -92,6 +95,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         .chain((cfg.outputs > 1).then_some("multi_screen"))
         .chain((cfg.keyboard_layout != 0 && cfg.layout_check).then_some("keyboard_layout"))
         .chain((cfg.large_file_mib > 0).then_some("clipboard_files_large"))
+        .chain(cfg.drives.is_some().then_some("drives"))
         {
             r.check(n, false, "not run: connection failed");
         }
@@ -113,6 +117,9 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     clipboard_files(s, cfg, "clipboard_files", 0, r);
     if cfg.large_file_mib > 0 {
         clipboard_files(s, cfg, "clipboard_files_large", cfg.large_file_mib << 20, r);
+    }
+    if let Some(d) = &cfg.drives {
+        crate::drives::drives(d, cfg.timeout, r);
     }
     audio_tone(s, cfg, r);
     if cfg.multi_resize {

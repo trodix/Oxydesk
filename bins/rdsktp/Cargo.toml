@@ -17,6 +17,7 @@ kwin = ["dep:rdsktp-scaling", "rdsktp-capture/kwin", "rdsktp-input/kwin", "rdskt
 rdsktp-input = { workspace = true, optional = true }
 rdsktp-clipboard = { workspace = true, optional = true }
 rdsktp-audio.workspace = true
+rdsktp-drivefs.workspace = true
 rdsktp-remote.workspace = true
 rdsktp-session = { workspace = true, optional = true }
 rdsktp-core.workspace = true

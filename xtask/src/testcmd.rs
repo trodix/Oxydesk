@@ -180,6 +180,87 @@ fn cargo(args: &[&str]) -> bool {
 /// Test server killed on drop, whatever the way out.
 struct Server(Child);
 
+/// Byte `i` of the files exchanged by the drive test (same pattern as `vm/win11/rdp-activex-test.ps1`).
+fn drive_pattern(offset: u64, buf: &mut [u8]) {
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = (((offset + i as u64) * 31 + 7) % 251) as u8;
+    }
+}
+
+fn write_drive_pattern(path: &Path, size: u64) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = fs::File::create(path)?;
+    let mut buf = vec![0u8; 65536];
+    let mut done = 0;
+    while done < size {
+        let n = buf.len().min((size - done) as usize);
+        drive_pattern(done, &mut buf[..n]);
+        f.write_all(&buf[..n])?;
+        done += n as u64;
+    }
+    f.sync_all()
+}
+
+fn check_drive_pattern(path: &Path, size: u64) -> Result<(), String> {
+    let data = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if data.len() as u64 != size {
+        return Err(format!(
+            "{} has {} bytes, {size} expected",
+            path.display(),
+            data.len()
+        ));
+    }
+    let mut want = vec![0u8; data.len()];
+    drive_pattern(0, &mut want);
+    match data.iter().zip(&want).position(|(a, b)| a != b) {
+        Some(at) => Err(format!("{} differs at byte {at}", path.display())),
+        None => Ok(()),
+    }
+}
+
+/// Host side of the mstsc drive test: the guest's drive appears under `mnt`; the guest prepared `rdsktp/drive/guest.bin`
+/// and others, which are checked here through the mount, then changed (the guest checks the result).
+fn drives_host_check(mnt: &Path, within: Duration) -> Result<String, String> {
+    let start = Instant::now();
+    let dir = loop {
+        let found = fs::read_dir(mnt).ok().and_then(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.path().join("rdsktp").join("drive"))
+                .find(|p| p.join("to-rename.bin").is_file())
+        });
+        if let Some(d) = found {
+            break d;
+        }
+        if start.elapsed() > within {
+            return Err(format!("no guest drive appeared under {}", mnt.display()));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    let drive = dir
+        .ancestors()
+        .nth(2)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    check_drive_pattern(&dir.join("guest.bin"), (3 << 20) + 5)?;
+    // PowerShell's UTF8 encoding writes a byte order mark.
+    let text = fs::read_to_string(dir.join("guest.txt")).map_err(|e| e.to_string())?;
+    if text.trim_start_matches('\u{feff}') != "to delete" {
+        return Err("guest.txt differs".into());
+    }
+    write_drive_pattern(&dir.join("from-host.bin"), (2 << 20) + 17)
+        .map_err(|e| format!("write: {e}"))?;
+    fs::create_dir(dir.join("hostdir")).map_err(|e| format!("mkdir: {e}"))?;
+    fs::write(dir.join("hostdir").join("note.txt"), "salut é à ü")
+        .map_err(|e| format!("write: {e}"))?;
+    fs::remove_file(dir.join("guest.txt")).map_err(|e| format!("unlink: {e}"))?;
+    fs::rename(dir.join("to-rename.bin"), dir.join("renamed.bin"))
+        .map_err(|e| format!("rename: {e}"))?;
+    fs::write(dir.join("host-done.txt"), "done").map_err(|e| format!("write: {e}"))?;
+    Ok(format!(
+        "guest drive {drive}: read 3 MiB, wrote 2 MiB, mkdir, delete, rename"
+    ))
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         // SIGINT first: the server then stops its own KWin session (children of a killed process would leak).
@@ -273,6 +354,10 @@ fn client(o: &TestOpts) -> Result<(), String> {
         return Err("build failed".into());
     }
     let log = fs::File::create(o.out.join("server.log")).map_err(|e| e.to_string())?;
+    let drives_dir = fs::canonicalize(&o.out)
+        .map_err(|e| e.to_string())?
+        .join("drives");
+    fs::create_dir_all(&drives_dir).map_err(|e| e.to_string())?;
     let mut server = Command::new("target/debug/rdsktp");
     if kwin {
         let app = fs::canonicalize("target/debug/rdsktp-testapp").map_err(|e| e.to_string())?;
@@ -303,6 +388,9 @@ fn client(o: &TestOpts) -> Result<(), String> {
         .arg(format!("0.0.0.0:{}", o.port))
         .arg("--state-dir")
         .arg(o.out.join("state"))
+        // Drive redirection: the drives of the guest are mounted here (checked by `drives_host_check`).
+        .arg("--drives-dir")
+        .arg(&drives_dir)
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log)
@@ -320,8 +408,14 @@ fn client(o: &TestOpts) -> Result<(), String> {
         "== windows (the VM reaches the server at 10.0.2.2:{})",
         o.port
     );
+    // The guest redirects its drives (WIN_DRIVES=1); this thread checks and changes them through the server's mount.
+    let drives_check = {
+        let dir = drives_dir.clone();
+        std::thread::spawn(move || drives_host_check(&dir, Duration::from_secs(240)))
+    };
     let out = Command::new("bash")
         .args(["vm/win11.sh", "test"])
+        .env("WIN_DRIVES", "1")
         .arg(format!("10.0.2.2:{}", o.port))
         .arg("tester")
         .env(
@@ -339,7 +433,14 @@ fn client(o: &TestOpts) -> Result<(), String> {
     );
     let _ = fs::write(o.out.join("win11.log"), &text);
     print!("{text}");
-    if out.status.success() {
+    let drives = drives_check
+        .join()
+        .unwrap_or_else(|_| Err("drive check panicked".into()));
+    match &drives {
+        Ok(d) => println!("PASS drives_host {d}"),
+        Err(e) => println!("FAIL drives_host {e}"),
+    }
+    if out.status.success() && drives.is_ok() {
         Ok(())
     } else {
         Err("client test (Windows) failed".into())

@@ -18,7 +18,8 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --max-login-failures N   --login-lockout-secs S   --max-user-failures N   login mode: failed attempts before an address (default 5) or an account (default 10) is blocked, and for how long (default 300)\n\
   --nla-user    enables NLA; password only through the RDSKTP_PASSWORD variable
   --encoder     auto (default) | vaapi | openh264; auto uses the GPU when VA-API is usable
-  --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)";
+  --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)
+  --drives-dir DIR   drive redirection: the client's drives are mounted (FUSE) under DIR/<name> (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-drives; `off` disables)";
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -232,6 +233,27 @@ async fn main() -> anyhow::Result<()> {
             Box::new(desktop),
         )
     };
+    let drives_dir: Option<PathBuf> = match arg::<String>(&args, "--drives-dir").as_deref() {
+        Some("off") => None,
+        Some(dir) => Some(dir.into()),
+        None if kwin_mode => {
+            std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("rdsktp-drives"))
+        }
+        None => None,
+    };
+    let drives: Option<std::sync::Arc<dyn rdsktp_core::DriveHost>> = match drives_dir {
+        Some(dir) => match rdsktp_drivefs::DriveMounts::new(dir.clone()) {
+            Ok(m) => {
+                tracing::info!(dir = %dir.display(), "drive redirection enabled");
+                Some(std::sync::Arc::new(m))
+            }
+            Err(e) => {
+                tracing::warn!("drive redirection disabled: {e}");
+                None
+            }
+        },
+        None => None,
+    };
     let ports = Ports {
         capture,
         encoders,
@@ -242,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
         input,
         clipboard,
         audio,
+        drives,
     };
     let config = ServerConfig {
         addr,

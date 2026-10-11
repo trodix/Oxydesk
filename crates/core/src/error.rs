@@ -46,3 +46,28 @@ pub enum LoginError {
     #[error("login backend failure: {0}")]
     Backend(String),
 }
+
+/// Failure of an operation on a redirected drive; maps to an errno on the desktop side.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum DriveError {
+    #[error("not found")]
+    NotFound,
+    #[error("already exists")]
+    Exists,
+    #[error("access denied")]
+    Denied,
+    #[error("not a directory")]
+    NotDirectory,
+    #[error("is a directory")]
+    IsDirectory,
+    #[error("directory not empty")]
+    NotEmpty,
+    #[error("no space left")]
+    NoSpace,
+    #[error("invalid argument")]
+    Invalid,
+    #[error("file in use")]
+    Busy,
+    #[error("drive unavailable: {0}")]
+    Io(String),
+}

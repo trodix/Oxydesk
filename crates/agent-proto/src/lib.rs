@@ -56,6 +56,90 @@ pub struct FileRange {
     pub len: u32,
 }
 
+/// Most entries of a drive directory listing.
+pub const MAX_DRIVE_ENTRIES: usize = 1_000_000;
+
+/// Metadata of a file of a redirected drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DriveStatInfo {
+    pub size: u64,
+    pub is_dir: bool,
+    pub read_only: bool,
+    pub modified: i64,
+    pub accessed: i64,
+    pub created: i64,
+}
+
+/// Failure of a drive operation (mirrors `rdsktp_core::error::DriveError`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DriveFailure {
+    NotFound,
+    Exists,
+    Denied,
+    NotDirectory,
+    IsDirectory,
+    NotEmpty,
+    NoSpace,
+    Invalid,
+    Busy,
+    Io(String),
+}
+
+/// An operation on a drive, asked by the agent to the server (which holds the client's drive).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DriveOp {
+    Stat(String),
+    List(String),
+    /// `mode`: 0 read, 1 read-write, 2 truncate, 3 create.
+    Open {
+        path: String,
+        mode: u8,
+    },
+    Read {
+        handle: u64,
+        offset: u64,
+        len: u32,
+    },
+    Write {
+        handle: u64,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    Flush(u64),
+    Close(u64),
+    Mkdir(String),
+    Remove {
+        path: String,
+        is_dir: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    Truncate {
+        path: String,
+        size: u64,
+    },
+    SetModified {
+        path: String,
+        seconds: i64,
+    },
+    Space,
+}
+
+/// Answer to a `DriveOp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DriveResult {
+    Ok,
+    Err(DriveFailure),
+    Stat(DriveStatInfo),
+    List(Vec<(String, DriveStatInfo)>),
+    Handle(u64),
+    Data(Vec<u8>),
+    Written(u32),
+    Space { total: u64, available: u64 },
+}
+
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
@@ -121,6 +205,20 @@ pub enum ToAgent {
         layout: String,
         variant: String,
     },
+    /// The client redirected a drive; the agent mounts it and asks its contents with `FromAgent::DriveCall`.
+    DriveAdded {
+        drive_id: u32,
+        name: String,
+    },
+    /// The drive is gone: the agent unmounts it.
+    DriveRemoved {
+        drive_id: u32,
+    },
+    /// Answer to `FromAgent::DriveCall` with the same `req_id`.
+    DriveReply {
+        req_id: u32,
+        result: DriveResult,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -176,6 +274,12 @@ pub enum FromAgent {
     /// The pointer changed: `None` hides it, otherwise a straight RGBA bitmap (`width * height * 4` bytes) and its
     /// hotspot.
     Cursor(Option<CursorImage>),
+    /// An operation on a redirected drive; answered by `ToAgent::DriveReply`.
+    DriveCall {
+        req_id: u32,
+        drive_id: u32,
+        op: DriveOp,
+    },
 }
 
 /// Pointer bitmap of `FromAgent::Cursor`.
@@ -229,6 +333,139 @@ impl Out {
     }
     fn bytes(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);
+    }
+    fn str(&mut self, v: &str) {
+        let n = v.len().min(u16::MAX as usize);
+        self.u16(n as u16);
+        self.bytes(&v.as_bytes()[..n]);
+    }
+    fn stat(&mut self, s: &DriveStatInfo) {
+        self.u64(s.size);
+        self.u8(u8::from(s.is_dir) | u8::from(s.read_only) << 1);
+        self.i64(s.modified);
+        self.i64(s.accessed);
+        self.i64(s.created);
+    }
+    fn drive_op(&mut self, op: &DriveOp) {
+        match op {
+            DriveOp::Stat(p) => {
+                self.u8(0);
+                self.str(p);
+            }
+            DriveOp::List(p) => {
+                self.u8(1);
+                self.str(p);
+            }
+            DriveOp::Open { path, mode } => {
+                self.u8(2);
+                self.u8(*mode);
+                self.str(path);
+            }
+            DriveOp::Read {
+                handle,
+                offset,
+                len,
+            } => {
+                self.u8(3);
+                self.u64(*handle);
+                self.u64(*offset);
+                self.u32(*len);
+            }
+            DriveOp::Write {
+                handle,
+                offset,
+                data,
+            } => {
+                self.u8(4);
+                self.u64(*handle);
+                self.u64(*offset);
+                self.bytes(data);
+            }
+            DriveOp::Flush(h) => {
+                self.u8(5);
+                self.u64(*h);
+            }
+            DriveOp::Close(h) => {
+                self.u8(6);
+                self.u64(*h);
+            }
+            DriveOp::Mkdir(p) => {
+                self.u8(7);
+                self.str(p);
+            }
+            DriveOp::Remove { path, is_dir } => {
+                self.u8(8);
+                self.u8(u8::from(*is_dir));
+                self.str(path);
+            }
+            DriveOp::Rename { from, to } => {
+                self.u8(9);
+                self.str(from);
+                self.str(to);
+            }
+            DriveOp::Truncate { path, size } => {
+                self.u8(10);
+                self.u64(*size);
+                self.str(path);
+            }
+            DriveOp::SetModified { path, seconds } => {
+                self.u8(11);
+                self.i64(*seconds);
+                self.str(path);
+            }
+            DriveOp::Space => self.u8(12),
+        }
+    }
+    fn drive_result(&mut self, r: &DriveResult) {
+        match r {
+            DriveResult::Ok => self.u8(0),
+            DriveResult::Err(f) => {
+                self.u8(1);
+                let (code, msg) = match f {
+                    DriveFailure::NotFound => (0, ""),
+                    DriveFailure::Exists => (1, ""),
+                    DriveFailure::Denied => (2, ""),
+                    DriveFailure::NotDirectory => (3, ""),
+                    DriveFailure::IsDirectory => (4, ""),
+                    DriveFailure::NotEmpty => (5, ""),
+                    DriveFailure::NoSpace => (6, ""),
+                    DriveFailure::Invalid => (7, ""),
+                    DriveFailure::Busy => (8, ""),
+                    DriveFailure::Io(m) => (9, m.as_str()),
+                };
+                self.u8(code);
+                self.str(msg);
+            }
+            DriveResult::Stat(s) => {
+                self.u8(2);
+                self.stat(s);
+            }
+            DriveResult::List(entries) => {
+                self.u8(3);
+                self.u32(entries.len() as u32);
+                for (name, s) in entries {
+                    self.str(name);
+                    self.stat(s);
+                }
+            }
+            DriveResult::Handle(h) => {
+                self.u8(4);
+                self.u64(*h);
+            }
+            DriveResult::Data(d) => {
+                self.u8(5);
+                self.bytes(d);
+            }
+            DriveResult::Written(n) => {
+                self.u8(6);
+                self.u32(*n);
+            }
+            DriveResult::Space { total, available } => {
+                self.u8(7);
+                self.u64(*total);
+                self.u64(*available);
+            }
+        }
     }
 }
 
@@ -306,6 +543,108 @@ impl<'a> In<'a> {
             index: self.u32()?,
             offset: self.u64()?,
             len: self.u32()?,
+        })
+    }
+    fn str(&mut self) -> Result<String, ProtoError> {
+        let n = usize::from(self.u16()?);
+        String::from_utf8(self.take(n)?.to_vec())
+            .map_err(|_| ProtoError::Invalid("text is not UTF-8"))
+    }
+    fn stat(&mut self) -> Result<DriveStatInfo, ProtoError> {
+        let size = self.u64()?;
+        let flags = self.u8()?;
+        Ok(DriveStatInfo {
+            size,
+            is_dir: flags & 1 != 0,
+            read_only: flags & 2 != 0,
+            modified: self.i64()?,
+            accessed: self.i64()?,
+            created: self.i64()?,
+        })
+    }
+    fn drive_op(&mut self) -> Result<DriveOp, ProtoError> {
+        Ok(match self.u8()? {
+            0 => DriveOp::Stat(self.str()?),
+            1 => DriveOp::List(self.str()?),
+            2 => DriveOp::Open {
+                mode: self.u8()?,
+                path: self.str()?,
+            },
+            3 => DriveOp::Read {
+                handle: self.u64()?,
+                offset: self.u64()?,
+                len: self.u32()?,
+            },
+            4 => DriveOp::Write {
+                handle: self.u64()?,
+                offset: self.u64()?,
+                data: self.rest(),
+            },
+            5 => DriveOp::Flush(self.u64()?),
+            6 => DriveOp::Close(self.u64()?),
+            7 => DriveOp::Mkdir(self.str()?),
+            8 => DriveOp::Remove {
+                is_dir: self.bool()?,
+                path: self.str()?,
+            },
+            9 => DriveOp::Rename {
+                from: self.str()?,
+                to: self.str()?,
+            },
+            10 => DriveOp::Truncate {
+                size: self.u64()?,
+                path: self.str()?,
+            },
+            11 => DriveOp::SetModified {
+                seconds: self.i64()?,
+                path: self.str()?,
+            },
+            12 => DriveOp::Space,
+            _ => return Err(ProtoError::Invalid("unknown drive operation")),
+        })
+    }
+    fn drive_result(&mut self) -> Result<DriveResult, ProtoError> {
+        Ok(match self.u8()? {
+            0 => DriveResult::Ok,
+            1 => {
+                let code = self.u8()?;
+                let msg = self.str()?;
+                DriveResult::Err(match code {
+                    0 => DriveFailure::NotFound,
+                    1 => DriveFailure::Exists,
+                    2 => DriveFailure::Denied,
+                    3 => DriveFailure::NotDirectory,
+                    4 => DriveFailure::IsDirectory,
+                    5 => DriveFailure::NotEmpty,
+                    6 => DriveFailure::NoSpace,
+                    7 => DriveFailure::Invalid,
+                    8 => DriveFailure::Busy,
+                    9 => DriveFailure::Io(msg),
+                    _ => return Err(ProtoError::Invalid("unknown drive failure")),
+                })
+            }
+            2 => DriveResult::Stat(self.stat()?),
+            3 => {
+                let n = self.u32()? as usize;
+                if n > MAX_DRIVE_ENTRIES {
+                    return Err(ProtoError::Invalid("too many entries"));
+                }
+                // Each entry takes at least 36 bytes: a lying count cannot trigger a big allocation.
+                let mut entries = Vec::with_capacity(n.min(self.0.len() / 36));
+                for _ in 0..n {
+                    let name = self.str()?;
+                    entries.push((name, self.stat()?));
+                }
+                DriveResult::List(entries)
+            }
+            4 => DriveResult::Handle(self.u64()?),
+            5 => DriveResult::Data(self.rest()),
+            6 => DriveResult::Written(self.u32()?),
+            7 => DriveResult::Space {
+                total: self.u64()?,
+                available: self.u64()?,
+            },
+            _ => return Err(ProtoError::Invalid("unknown drive result")),
         })
     }
     fn rest(&mut self) -> Vec<u8> {
@@ -411,6 +750,20 @@ impl Message for ToAgent {
                 o.bytes(format!("{layout}\n{variant}").as_bytes());
                 16
             }
+            Self::DriveAdded { drive_id, name } => {
+                o.u32(*drive_id);
+                o.bytes(name.as_bytes());
+                17
+            }
+            Self::DriveRemoved { drive_id } => {
+                o.u32(*drive_id);
+                18
+            }
+            Self::DriveReply { req_id, result } => {
+                o.u32(*req_id);
+                o.drive_result(result);
+                19
+            }
         };
         (tag, o.0)
     }
@@ -482,6 +835,15 @@ impl Message for ToAgent {
                 req_id: i.u32()?,
                 ok: i.bool()?,
                 data: i.rest(),
+            },
+            17 => Self::DriveAdded {
+                drive_id: i.u32()?,
+                name: i.string()?,
+            },
+            18 => Self::DriveRemoved { drive_id: i.u32()? },
+            19 => Self::DriveReply {
+                req_id: i.u32()?,
+                result: i.drive_result()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -582,6 +944,16 @@ impl Message for FromAgent {
                 o.bytes(&c.rgba);
                 9
             }
+            Self::DriveCall {
+                req_id,
+                drive_id,
+                op,
+            } => {
+                o.u32(*req_id);
+                o.u32(*drive_id);
+                o.drive_op(op);
+                14
+            }
         };
         (tag, o.0)
     }
@@ -652,6 +1024,11 @@ impl Message for FromAgent {
                         rgba,
                     }))
                 }
+            },
+            14 => Self::DriveCall {
+                req_id: i.u32()?,
+                drive_id: i.u32()?,
+                op: i.drive_op()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -868,5 +1245,92 @@ mod tests {
         assert!(ToAgent::decode(10, &[0, 0, 0, 1, 0, 0]).is_err());
         // text is not UTF-8
         assert!(ToAgent::decode(6, &[0xFF, 0xFE]).is_err());
+    }
+
+    #[test]
+    fn drive_messages_roundtrip() {
+        let stat = DriveStatInfo {
+            size: 1 << 40,
+            is_dir: false,
+            read_only: true,
+            modified: -5,
+            accessed: 6,
+            created: 7,
+        };
+        roundtrip(ToAgent::DriveAdded {
+            drive_id: 3,
+            name: "Documents".into(),
+        });
+        roundtrip(ToAgent::DriveRemoved { drive_id: 3 });
+        for result in [
+            DriveResult::Ok,
+            DriveResult::Err(DriveFailure::NotEmpty),
+            DriveResult::Err(DriveFailure::Io("boom".into())),
+            DriveResult::Stat(stat),
+            DriveResult::List(vec![("a.txt".into(), stat), ("é".into(), stat)]),
+            DriveResult::List(vec![]),
+            DriveResult::Handle(u64::MAX),
+            DriveResult::Data(vec![1, 2, 3]),
+            DriveResult::Written(9),
+            DriveResult::Space {
+                total: 10,
+                available: 4,
+            },
+        ] {
+            roundtrip(ToAgent::DriveReply { req_id: 8, result });
+        }
+        for op in [
+            DriveOp::Stat("a/b".into()),
+            DriveOp::List(String::new()),
+            DriveOp::Open {
+                path: "x".into(),
+                mode: 3,
+            },
+            DriveOp::Read {
+                handle: 1,
+                offset: 2,
+                len: 3,
+            },
+            DriveOp::Write {
+                handle: 1,
+                offset: 2,
+                data: vec![9; 100],
+            },
+            DriveOp::Flush(4),
+            DriveOp::Close(5),
+            DriveOp::Mkdir("d".into()),
+            DriveOp::Remove {
+                path: "d".into(),
+                is_dir: true,
+            },
+            DriveOp::Rename {
+                from: "a".into(),
+                to: "b/c".into(),
+            },
+            DriveOp::Truncate {
+                path: "t".into(),
+                size: 77,
+            },
+            DriveOp::SetModified {
+                path: "t".into(),
+                seconds: -1,
+            },
+            DriveOp::Space,
+        ] {
+            roundtrip(FromAgent::DriveCall {
+                req_id: 1,
+                drive_id: 2,
+                op,
+            });
+        }
+    }
+
+    #[test]
+    fn drive_list_with_a_lying_count_is_refused() {
+        let mut payload = vec![0u8; 0];
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(3);
+        payload.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(ToAgent::decode(19, &payload).is_err());
     }
 }

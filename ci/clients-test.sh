@@ -24,13 +24,34 @@ if [[ -z "$RDSKTP" ]]; then
   RDSKTP="${CARGO_TARGET_DIR:-target}/debug/rdsktp"
 fi
 
+# The checker is the test client's `drives` scenario, without the connection.
+cargo build -q --release -p rdp-test-client --features ironrdp || exit 2
+DRIVE_CHECK="${CARGO_TARGET_DIR:-target}/release/rdp-test-client"
 failed=0
 for c in "${CLIENTS[@]}"; do
   # A fresh server per client: the synthetic desktop remembers the last size requested by a client.
   # RDSKTP_ECHO_FILES=copy: the echoed files are copied aside, a client drops the contents of its old clipboard.
-  RDSKTP_ECHO_FILES=copy "$RDSKTP" --test-mode --listen "127.0.0.1:$PORT" --state-dir "$ART/state" >"$ART/server-$c.log" 2>&1 & srv=$!
+  mkdir -p "$ART/mnt"
+  RDSKTP_ECHO_FILES=copy "$RDSKTP" --test-mode --listen "127.0.0.1:$PORT" --state-dir "$ART/state" --drives-dir "$ART/mnt" >"$ART/server-$c.log" 2>&1 & srv=$!
   sleep 1
   mkdir -p "$ART/$c"
+  # Drive redirection: the client shares a directory of its container, the server mounts it on this host, and the
+  # files are checked from here while the client stays connected (the container waits for drives.done).
+  if [[ "${CLIENTS_DRIVES:-1}" == 1 && -e /dev/fuse ]] && command -v fusermount3 >/dev/null; then
+    name=Partage; [[ "$c" == remmina ]] && name=out_share
+    "$ENGINE" run --rm --network host --device /dev/fuse --cap-add SYS_ADMIN --security-opt label=disable -e "RDP_PORT=$PORT" -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
+      -v "$PWD/$ART/$c:/out:Z" "$IMAGE" "$c" drives >"$ART/$c.drives.txt" 2>&1 & cpid=$!
+    "$DRIVE_CHECK" --out "$ART/$c" --drives-only --drive-share "$ART/$c/share" --drive-mount "$ART/mnt" --drive-name "$name" \
+      --drive-mib 16 --timeout 60 >"$ART/$c.drives.json" 2>&1; rc=$?
+    touch "$ART/$c/drives.done"
+    wait "$cpid" 2>/dev/null
+    cat "$ART/$c.drives.txt"
+    if [[ $rc -eq 0 ]]; then echo "PASS  $c/drives_files  $(grep -o '"detail":"[^"]*"' "$ART/$c.drives.json" | head -1)"
+    else echo "FAIL  $c/drives_files  $(cat "$ART/$c.drives.json")"; failed=1; fi
+    grep -q FAIL "$ART/$c.drives.txt" && failed=1
+  else
+    echo "SKIP  $c/drives  no /dev/fuse or fusermount3 on the host"
+  fi
   # --network host: the client reaches the server on the host loopback (rootless Podman included).
   # :Z relabels the volume under SELinux; --userns keep-id is not needed, the script chowns the output.
   # /dev/fuse: FreeRDP exposes the files of the remote clipboard through a FUSE mount.

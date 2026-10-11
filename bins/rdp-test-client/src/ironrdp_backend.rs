@@ -63,6 +63,8 @@ pub struct Options {
     pub height: u16,
     /// Windows keyboard layout announced to the server (KLID, `0`: none).
     pub keyboard_layout: u32,
+    /// Directory shared with the server (drive redirection) and the name it is announced under.
+    pub drive: Option<(std::path::PathBuf, String)>,
 }
 
 #[derive(Default)]
@@ -774,6 +776,14 @@ fn run_worker(
             .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
     connector.attach_static_channel(Rdpsnd::new(Box::new(AudioSink::new(shared.clone()))));
+    if let Some((dir, name)) = &opts.drive {
+        connector.attach_static_channel(crate::drive_client::DirectoryDrive::channel(
+            dir.clone(),
+            1,
+            name,
+            "rdp-test-client",
+        ));
+    }
     connector.attach_static_channel(CliprdrClient::new(Box::new(RdpClipboard::new(
         send.clone(),
         local.clone(),

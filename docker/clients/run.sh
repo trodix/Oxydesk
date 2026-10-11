@@ -2,7 +2,7 @@
 # Drives a real RDP client in a virtual X server against the synthetic desktop of `rdsktp --test-mode` and checks
 # what it displays, like a user would: desktop size, live frames, keyboard (marker block colour), clipboard
 # round trip and dynamic resizing.
-# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize
+# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives
 #   fallback_nohh264 / fallback_nogfx: client without H.264 (uncompressed EGFX) / without EGFX (bitmap updates): pixels
 #   compared with what the synthetic desktop draws (probe.py integrity). clipboard_image / clipboard_files: round trips.
 # env: RDP_HOST (127.0.0.1) RDP_PORT (3389) RDP_USER (test) RDP_PASS (x) OUT (/out) DESKTOP (1920x1080) HOST_UID HOST_GID
@@ -55,6 +55,7 @@ network=${REMMINA_NETWORK:-7}
 cert_ignore=1
 ignore-tls-errors=1
 disableclipboard=0
+${SHARE_DIR:+sharefolder=$SHARE_DIR}
 viewmode=${VIEWMODE:-4}
 scale=${SCALE:-0}
 R
@@ -311,6 +312,24 @@ scenario_clipboard_files() {
   (cd "$OUT/files-got" && sha256sum $(find "$(basename "$root")" -type f | sort | sed 's|^|./|') 2>/dev/null | sed 's| \./| |') >"$OUT/files.got.sha"
   sed 's|rdsktp-files|X|' "$OUT/files.sent.sha" >"$OUT/files.sent.norm"; sed "s|$(basename "$root")|X|" "$OUT/files.got.sha" >"$OUT/files.got.norm"
   check clipboard_files_roundtrip "$([[ $cprc -eq 0 ]] && diff -q "$OUT/files.sent.norm" "$OUT/files.got.norm" >/dev/null; echo $?)" "$(wc -l <"$OUT/files.sent.sha") files incl. folders, empty file, 1.5 MB file, accent; copy exit $cprc"
+  stop_all
+}
+
+# The server mounts the drive on the host, out of this container's sight: the host checks the files while the client
+# stays connected, then creates $OUT/drives.done (see ci/clients-test.sh).
+scenario_drives() {
+  mkdir -p "$OUT/share"; rm -f "$OUT/drives.done"
+  start_x 2560 1440
+  if [[ "$CLIENT" == xfreerdp ]]; then
+    start_client drives /size:"${DW}x${DH}" "/drive:Partage,$OUT/share"
+  else
+    SHARE_DIR="$OUT/share" start_client drives
+  fi
+  locate "$DW" "$DH" 30 || { check drives_desktop 1 "desktop not shown"; stop_all; return; }
+  echo "drives: waiting for the host to check $OUT/share"
+  local end=$((SECONDS + 150))
+  while [[ $SECONDS -lt $end && ! -e "$OUT/drives.done" ]]; do sleep 0.5; done
+  check drives_checked "$([[ -e "$OUT/drives.done" ]]; echo $?)" "host-side check finished"
   stop_all
 }
 

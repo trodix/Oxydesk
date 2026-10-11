@@ -19,6 +19,7 @@ mod handler;
 #[cfg(feature = "helper")]
 mod helper;
 mod server;
+mod rdpdr;
 mod sound;
 
 pub use clipboard::CliprdrServerFactory;
@@ -38,6 +39,7 @@ pub use server::{
     ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
     ServerEventSender, TransportTls,
 };
+pub use rdpdr::{NoopRdpdrServerBackend, RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 
 #[cfg(feature = "__bench")]

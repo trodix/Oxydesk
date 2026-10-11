@@ -8,7 +8,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use rdsktp_agent_proto::{
-    read_msg, write_msg, FileInfo, FileRange, FromAgent, Rect, ToAgent, MAX_OUTPUTS,
+    read_msg, write_msg, DriveResult, FileInfo, FileRange, FromAgent, Rect, ToAgent, MAX_OUTPUTS,
 };
 use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
 use rdsktp_core::layout::OutputId;
@@ -42,6 +42,8 @@ pub struct AgentLink {
     /// File selection of the desktop not yet taken, and the bookkeeping of the ranges exchanged with the agent.
     clipboard_files: Mutex<Option<FileList>>,
     files: Arc<FileExchange>,
+    /// Drives of the client, mounted by the agent.
+    pub(crate) drives: crate::drives::Drives,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
@@ -110,6 +112,7 @@ impl AgentLink {
             clipboard_image: Mutex::new(None),
             clipboard_files: Mutex::new(None),
             files: Arc::new(FileExchange::default()),
+            drives: Default::default(),
             cursor: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
@@ -282,6 +285,21 @@ impl AgentLink {
             FromAgent::FileData { req_id, ok, data } => {
                 self.files.complete(req_id, ok.then_some(data));
             }
+            FromAgent::DriveCall {
+                req_id,
+                drive_id,
+                op,
+            } => {
+                // The client's answer can take a while: not in the reader thread.
+                let this = this.clone();
+                std::thread::spawn(move || {
+                    let result = match this.drives.get(drive_id) {
+                        Some(drive) => crate::drives::execute(&*drive, op),
+                        None => DriveResult::Err(rdsktp_agent_proto::DriveFailure::NotFound),
+                    };
+                    this.send(&ToAgent::DriveReply { req_id, result });
+                });
+            }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
                 if q.open {
@@ -314,6 +332,11 @@ impl AgentLink {
                 self.resize_cv.notify_all();
             }
         }
+    }
+
+    /// Where the drives redirected by the client are announced (the agent mounts them).
+    pub fn drive_host(this: &Arc<Self>) -> Arc<crate::drives::AgentDrives> {
+        Arc::new(crate::drives::AgentDrives(Arc::downgrade(this)))
     }
 
     pub fn set_waker(&self, wake: Arc<rdsktp_core::wake::Wake>) {
@@ -898,5 +921,151 @@ mod tests {
         );
         let (link, _agent) = pair();
         assert!(!link.set_layout(vec![rect(0)], Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn drives_are_announced_to_the_agent_and_served_on_its_calls() {
+        use rdsktp_agent_proto::{read_msg, DriveFailure, DriveOp, DriveResult};
+        use rdsktp_core::error::DriveError;
+        use rdsktp_core::{
+            DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive,
+        };
+
+        struct Fake;
+        impl RemoteDrive for Fake {
+            fn stat(&self, p: &str) -> Result<DriveStat, DriveError> {
+                if p == "a.txt" {
+                    Ok(DriveStat {
+                        size: 4,
+                        ..Default::default()
+                    })
+                } else {
+                    Err(DriveError::NotFound)
+                }
+            }
+            fn list(&self, _: &str) -> Result<Vec<DriveEntry>, DriveError> {
+                Ok(vec![DriveEntry {
+                    name: "a.txt".into(),
+                    stat: DriveStat::default(),
+                }])
+            }
+            fn open(&self, _: &str, _: OpenMode) -> Result<DriveHandle, DriveError> {
+                Ok(DriveHandle(7))
+            }
+            fn read(&self, _: DriveHandle, offset: u64, len: u32) -> Result<Vec<u8>, DriveError> {
+                Ok(vec![offset as u8; len as usize])
+            }
+            fn write(&self, _: DriveHandle, _: u64, d: &[u8]) -> Result<u32, DriveError> {
+                Ok(d.len() as u32)
+            }
+            fn flush(&self, _: DriveHandle) -> Result<(), DriveError> {
+                Ok(())
+            }
+            fn close(&self, _: DriveHandle) {}
+            fn mkdir(&self, _: &str) -> Result<(), DriveError> {
+                Err(DriveError::Exists)
+            }
+            fn remove(&self, _: &str, _: bool) -> Result<(), DriveError> {
+                Ok(())
+            }
+            fn rename(&self, _: &str, _: &str) -> Result<(), DriveError> {
+                Ok(())
+            }
+            fn truncate(&self, _: &str, _: u64) -> Result<(), DriveError> {
+                Ok(())
+            }
+            fn set_modified(&self, _: &str, _: i64) -> Result<(), DriveError> {
+                Ok(())
+            }
+            fn space(&self) -> Result<DriveSpace, DriveError> {
+                Ok(DriveSpace {
+                    total: 10,
+                    available: 5,
+                })
+            }
+        }
+
+        let (link, mut agent) = pair();
+        let host = AgentLink::drive_host(&link);
+        host.added("Docs", Arc::new(Fake));
+        let Some(ToAgent::DriveAdded { drive_id, name }) =
+            read_msg::<_, ToAgent>(&mut agent).unwrap()
+        else {
+            panic!("DriveAdded expected")
+        };
+        assert_eq!(name, "Docs");
+
+        fn call(agent: &mut UnixStream, req_id: u32, drive_id: u32, op: DriveOp) -> DriveResult {
+            use rdsktp_agent_proto::read_msg;
+            write_msg(
+                &mut *agent,
+                &FromAgent::DriveCall {
+                    req_id,
+                    drive_id,
+                    op,
+                },
+            )
+            .unwrap();
+            let Some(ToAgent::DriveReply { req_id: id, result }) =
+                read_msg::<_, ToAgent>(&mut *agent).unwrap()
+            else {
+                panic!("DriveReply expected")
+            };
+            assert_eq!(id, req_id);
+            result
+        }
+        assert!(matches!(
+            call(&mut agent, 1, drive_id, DriveOp::Stat("a.txt".into())),
+            DriveResult::Stat(s) if s.size == 4
+        ));
+        assert_eq!(
+            call(&mut agent, 2, drive_id, DriveOp::Stat("nope".into())),
+            DriveResult::Err(DriveFailure::NotFound)
+        );
+        assert_eq!(
+            call(
+                &mut agent,
+                3,
+                drive_id,
+                DriveOp::Read {
+                    handle: 7,
+                    offset: 2,
+                    len: 3
+                }
+            ),
+            DriveResult::Data(vec![2, 2, 2])
+        );
+        assert_eq!(
+            call(&mut agent, 4, drive_id, DriveOp::Mkdir("d".into())),
+            DriveResult::Err(DriveFailure::Exists)
+        );
+        // A block larger than what one request carries is refused rather than allocated.
+        assert_eq!(
+            call(
+                &mut agent,
+                5,
+                drive_id,
+                DriveOp::Read {
+                    handle: 7,
+                    offset: 0,
+                    len: u32::MAX
+                }
+            ),
+            DriveResult::Err(DriveFailure::Invalid)
+        );
+        assert_eq!(
+            call(&mut agent, 6, drive_id + 9, DriveOp::Space),
+            DriveResult::Err(DriveFailure::NotFound)
+        );
+
+        host.removed("Docs");
+        assert_eq!(
+            read_msg::<_, ToAgent>(&mut agent).unwrap(),
+            Some(ToAgent::DriveRemoved { drive_id })
+        );
+        assert_eq!(
+            call(&mut agent, 7, drive_id, DriveOp::Space),
+            DriveResult::Err(DriveFailure::NotFound)
+        );
     }
 }

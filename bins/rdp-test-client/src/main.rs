@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--drives-only] [--drive-share DIR --drive-mount DIR [--drive-name NAME] [--drive-mib N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
 ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -23,6 +23,7 @@ struct Args {
     cfg: Config,
     mock: bool,
     no_nla: bool,
+    drive: Option<(std::path::PathBuf, String)>,
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
@@ -30,6 +31,8 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     let mut cfg = Config::default();
     let mut mock = false;
     let mut no_nla = false;
+    let (mut share, mut mount, mut drive_name, mut drive_mib) =
+        (None::<String>, None::<String>, "Partage".to_string(), 8u64);
     let (mut host, mut port, mut user) = ("127.0.0.1".to_string(), 3389u16, "test".to_string());
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -51,6 +54,10 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--large-file-mib" => {
                 cfg.large_file_mib = val(&a)?.parse().map_err(|_| "--large-file-mib invalid")?
             }
+            "--drive-share" => share = Some(val(&a)?),
+            "--drive-mount" => mount = Some(val(&a)?),
+            "--drive-name" => drive_name = val(&a)?,
+            "--drive-mib" => drive_mib = val(&a)?.parse().map_err(|_| "--drive-mib invalid")?,
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
             "--port" => port = val(&a)?.parse().map_err(|_| "--port invalid")?,
@@ -73,7 +80,21 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    let drive = match (share, mount) {
+        (Some(share), Some(mount)) => {
+            cfg.drives = Some(rdp_test_client::drives::DrivesCheck {
+                share: share.clone().into(),
+                mount: std::path::Path::new(&mount)
+                    .join(rdsktp_core::drive::directory_name(&drive_name)),
+                big_mib: drive_mib,
+            });
+            Some((share.into(), drive_name))
+        }
+        (None, None) => None,
+        _ => return Err("--drive-share and --drive-mount go together".into()),
+    };
     Ok(Args {
+        drive,
         out: out.ok_or("--out is required")?,
         host,
         port,
@@ -98,6 +119,7 @@ fn real_session(args: &Args) -> Box<dyn Session> {
         width: (args.cfg.width * args.cfg.outputs) as u16,
         height: args.cfg.height as u16,
         keyboard_layout: args.cfg.keyboard_layout,
+        drive: args.drive.clone(),
     }))
 }
 
@@ -142,6 +164,8 @@ fn main() -> ExitCode {
             _ => ExitCode::from(2),
         };
     }
+    let drives_only = raw.iter().any(|a| a == "--drives-only");
+    let raw: Vec<String> = raw.into_iter().filter(|a| a != "--drives-only").collect();
     let args = match parse(raw) {
         Ok(a) => a,
         Err(e) => {
@@ -149,6 +173,21 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if drives_only {
+        // A real RDP client (xfreerdp, Remmina) shares the directory: only the files are checked, on both sides.
+        let Some(check) = &args.cfg.drives else {
+            eprintln!("--drives-only needs --drive-share and --drive-mount");
+            return ExitCode::from(2);
+        };
+        let mut report = Report::default();
+        rdp_test_client::drives::drives(check, args.cfg.timeout, &mut report);
+        println!("{}", report.to_json());
+        return if report.passed("drives") {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
     let mut session: Box<dyn Session> = if args.mock {
         Box::new(MockSession::new(MockFaults::default()))
     } else {

@@ -3,6 +3,7 @@
 
 pub mod cursor;
 pub mod dmabuf;
+pub mod drive;
 pub mod error;
 pub mod files;
 pub mod frame;
@@ -15,7 +16,10 @@ pub mod throttle;
 pub mod wake;
 
 pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
-pub use error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError, LoginError};
+pub use drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive};
+pub use error::{
+    AudioError, CaptureError, ClipboardError, DriveError, EncodeError, InputError, LoginError,
+};
 pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
 pub use keyboard::{klid_to_xkb, XkbLayout};

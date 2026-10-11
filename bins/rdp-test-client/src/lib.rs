@@ -2,6 +2,9 @@
 
 pub mod audio;
 pub mod contract;
+#[cfg(feature = "ironrdp")]
+pub mod drive_client;
+pub mod drives;
 pub mod files;
 #[cfg(feature = "ironrdp")]
 pub mod ironrdp_backend;

@@ -1,0 +1,19 @@
+[package]
+name = "ironrdp-rdpdr"
+version = "0.7.0"
+description = "RDPDR channel implementation (IronRDP master, bidirectional PDU layer and server, copied locally)."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+ironrdp-core = "0.2"
+ironrdp-error = "0.2"
+ironrdp-pdu = "0.9"
+ironrdp-svc = "0.8"
+tracing = { version = "0.1", features = ["log"] }
+bitflags = "2.11"
+getrandom = { version = "0.3", features = ["std"] }

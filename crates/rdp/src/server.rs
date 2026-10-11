@@ -26,6 +26,7 @@ use rdsktp_core::ports::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::clipboard::{announce, Content, LocalContent, RdpClipboard};
+use crate::drive::DriveFactory;
 use crate::pump::{self, PumpParams, PumpPorts, Shared};
 use crate::sound::SoundFactory;
 
@@ -55,6 +56,7 @@ struct SessionSlot {
     input: Slot<Box<dyn InputSink>>,
     clipboard: Slot<Box<dyn ClipboardBackend>>,
     audio: Slot<Arc<dyn AudioProvider>>,
+    drives: Slot<Arc<dyn rdsktp_core::drive::DriveHost>>,
 }
 
 impl SessionSlot {
@@ -64,6 +66,7 @@ impl SessionSlot {
             input: Default::default(),
             clipboard: Default::default(),
             audio: Default::default(),
+            drives: Default::default(),
         }
     }
 
@@ -73,6 +76,7 @@ impl SessionSlot {
         *self.input.lock().expect("input mutex") = Some(ports.input);
         *self.clipboard.lock().expect("clipboard mutex") = Some(ports.clipboard);
         *self.audio.lock().expect("audio mutex") = ports.audio;
+        *self.drives.lock().expect("drives mutex") = ports.drives;
         *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts {
             capture: ports.capture,
             encoders: ports.encoders,
@@ -563,6 +567,10 @@ async fn serve(
                 provider: Arc::new(SlotAudio(slot.audio.clone())),
             }) as Box<dyn ironrdp_server::SoundServerFactory>
         }))
+        .with_rdpdr_factory(Some(Box::new(DriveFactory {
+            shared: shared.clone(),
+            host: slot.drives.clone(),
+        })))
         .with_credential_validator(broker.map(|broker| {
             Arc::new(BrokerValidator {
                 broker,

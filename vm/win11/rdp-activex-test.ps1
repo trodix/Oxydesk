@@ -154,6 +154,31 @@ public class RdpHost : System.Windows.Forms.AxHost {
 }
 "@
 
+Add-Type -TypeDefinition @'
+public static class DrivePattern {
+  static byte At(long i) { return (byte)((i * 31 + 7) % 251); }
+  public static void Write(string path, long size) {
+    using (var f = System.IO.File.Create(path)) {
+      var b = new byte[65536]; long done = 0;
+      while (done < size) { int n = (int)System.Math.Min(b.Length, size - done); for (int i = 0; i < n; i++) b[i] = At(done + i); f.Write(b, 0, n); done += n; }
+    }
+  }
+  // null if the file holds exactly the pattern of `size` bytes, else the first difference.
+  public static string Verify(string path, long size) {
+    using (var f = System.IO.File.OpenRead(path)) {
+      if (f.Length != size) return "size " + f.Length + " instead of " + size;
+      var b = new byte[65536]; long done = 0;
+      while (done < size) {
+        int n = f.Read(b, 0, (int)System.Math.Min(b.Length, size - done));
+        if (n <= 0) return "short read at " + done;
+        for (int i = 0; i < n; i++) if (b[i] != At(done + i)) return "difference at byte " + (done + i);
+        done += n;
+      }
+    }
+    return null;
+  }
+}
+'@
 Emit 'STEP types compiled'
 # Reference tone played locally (not through RDP): shows that the guest/QEMU audio chain records a known 1000 Hz tone (the RDP tone is 440 Hz).
 $rate = 48000; $n = $rate * 2
@@ -188,6 +213,17 @@ $adv.RDPPort = [int]$p.port
 $adv.EnableCredSspSupport = $true       # default mstsc behaviour: offers CredSSP, falls back to TLS
 $adv.AuthenticationLevel = 0            # no server certificate warning (self-signed)
 $adv.RedirectClipboard = $true
+$drivesDir = 'C:\rdsktp\drive'
+if ($p.drives -eq '1') {
+  # Drive redirection: the drives of this machine are mounted by the server. The files the host checks are prepared
+  # here, before the connection (the host reads them through the mount and writes others).
+  $adv.RedirectDrives = $true
+  Remove-Item $drivesDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory $drivesDir | Out-Null
+  [DrivePattern]::Write("$drivesDir\guest.bin", 3MB + 5)
+  [IO.File]::WriteAllText("$drivesDir\guest.txt", 'to delete', [Text.Encoding]::UTF8)
+  [IO.File]::WriteAllText("$drivesDir\to-rename.bin", 'rename me', [Text.Encoding]::UTF8)
+}
 $adv.AudioRedirectionMode = 0   # play on this computer
 $adv.SmartSizing = $false
 # ClearTextPassword lives on the non-scriptable interface (declared above).
@@ -248,6 +284,23 @@ try {
     Check 'keyboard_layout' (Orange $m) "klid $($p.klid): marker pixel $($m.R),$($m.G),$($m.B), expected 255,128,0"
   }
   Check 'heartbeat' ($seen.Count -ge 2) "states seen: $($seen.Keys -join ',')"
+
+  if ($p.drives -eq '1') {
+    # The host (xtask) reads guest.bin through the mount, writes from-host.bin, hostdir\note.txt, deletes guest.txt, then
+    # writes host-done.txt. The redirection is served by the control of this thread: keep pumping while waiting.
+    $got = Pump { Test-Path "$drivesDir\host-done.txt" } 90000
+    $detail = "host finished=$got"
+    $okd = $got
+    if ($got) {
+      $v = [DrivePattern]::Verify("$drivesDir\from-host.bin", 2MB + 17)
+      if ($v) { $okd = $false; $detail += ", from-host.bin: $v" } else { $detail += ', from-host.bin ok' }
+      $note = if (Test-Path "$drivesDir\hostdir\note.txt") { [IO.File]::ReadAllText("$drivesDir\hostdir\note.txt", [Text.Encoding]::UTF8) } else { $null }
+      if ($note -ne ('salut ' + [char]0xE9 + ' ' + [char]0xE0 + ' ' + [char]0xFC)) { $okd = $false; $detail += ", note.txt: '$note'" } else { $detail += ', note.txt ok' }
+      if (Test-Path "$drivesDir\guest.txt") { $okd = $false; $detail += ', guest.txt not deleted' } else { $detail += ', guest.txt deleted' }
+      if (-not (Test-Path "$drivesDir\renamed.bin") -or (Test-Path "$drivesDir\to-rename.bin")) { $okd = $false; $detail += ', rename not seen' } else { $detail += ', rename ok' }
+    }
+    Check 'drives_roundtrip' ([bool]$okd) $detail
+  }
 
   # Clipboard round trip. The test server echoes the text it receives: after our own SetText the
   # clipboard sequence number must change again (the echo announced by the server), and reading the

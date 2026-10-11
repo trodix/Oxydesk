@@ -4,3 +4,5 @@
 *.qcow2
 *.deb
 /iso
+/third_party/*/target
+/third_party/*/Cargo.lock

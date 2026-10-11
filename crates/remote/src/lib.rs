@@ -3,6 +3,7 @@
 //! having no privilege. The desktop ports (`CaptureSource`, `InputSink`, …) are proxies
 //! to the agent; video arrives already encoded.
 
+mod drives;
 mod link;
 mod ports;
 
@@ -14,6 +15,7 @@ use rdsktp_authd_proto::{recv_response, send_request, Request, Response};
 use rdsktp_core::error::LoginError;
 use rdsktp_core::ports::{DesktopPorts, SessionBroker};
 
+pub use drives::AgentDrives;
 pub use link::AgentLink;
 
 pub struct RemoteBroker {

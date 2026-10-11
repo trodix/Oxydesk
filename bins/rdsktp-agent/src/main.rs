@@ -3,6 +3,8 @@
 //! exposes them to `rdsktp` through the `rdsktp-agent-proto` protocol on a Unix socket. One connection at a time:
 //! the most recent one replaces the previous one (reconnection); the desktop session survives disconnections.
 
+mod drives;
+
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -453,6 +455,20 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
         })
     });
+    // Drives of the client: mounted in the session for the duration of the connection.
+    let drives = match rdsktp_drivefs::DriveMounts::new(runtime_dir().join("rdsktp-drives")) {
+        Ok(m) => {
+            let w = writer.clone();
+            Some(drives::Drives::new(
+                Arc::new(m),
+                Arc::new(move |msg: &FromAgent| send(&w, msg)),
+            ))
+        }
+        Err(e) => {
+            tracing::warn!("drive redirection unavailable: {e}");
+            None
+        }
+    };
     // Audio: one stream at a time, stopped by a flag specific to each open.
     let mut audio_stop: Option<Arc<AtomicBool>> = None;
     let mut reader = stream;
@@ -642,6 +658,21 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                     }));
                 }
             }
+            ToAgent::DriveAdded { drive_id, name } => {
+                if let Some(drives) = &drives {
+                    drives.added(drive_id, name);
+                }
+            }
+            ToAgent::DriveRemoved { drive_id } => {
+                if let Some(drives) = &drives {
+                    drives.removed(drive_id);
+                }
+            }
+            ToAgent::DriveReply { req_id, result } => {
+                if let Some(drives) = &drives {
+                    drives.pending.complete(req_id, result);
+                }
+            }
             ToAgent::AudioClose => {
                 if let Some(s) = audio_stop.take() {
                     s.store(true, Ordering::Relaxed);
@@ -651,6 +682,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     }
     stop.store(true, Ordering::Relaxed);
     files.fail_all();
+    if let Some(drives) = &drives {
+        drives.close();
+    }
     if let Some(s) = audio_stop {
         s.store(true, Ordering::Relaxed);
     }

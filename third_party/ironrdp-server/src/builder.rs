@@ -12,7 +12,7 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity};
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
+use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, SoundServerFactory};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -36,6 +36,7 @@ pub struct BuilderDone {
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -134,6 +135,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 handler: self.state.handler,
                 display: Box::new(display),
                 sound_factory: None,
+                rdpdr_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
@@ -156,6 +158,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
+                rdpdr_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
@@ -174,6 +177,12 @@ impl RdpServerBuilder<WantsDisplay> {
 impl RdpServerBuilder<BuilderDone> {
     pub fn with_cliprdr_factory(mut self, cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>) -> Self {
         self.state.cliprdr_factory = cliprdr_factory;
+        self
+    }
+
+    /// rdsktp patch: device redirection (drives) backend, see `RdpdrServerFactory`.
+    pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
+        self.state.rdpdr_factory = rdpdr_factory;
         self
     }
 
@@ -301,6 +310,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.handler,
             self.state.display,
             self.state.sound_factory,
+            self.state.rdpdr_factory,
             self.state.cliprdr_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]

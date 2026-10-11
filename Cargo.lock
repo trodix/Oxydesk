@@ -1708,6 +1708,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpdr"
+version = "0.7.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "getrandom 0.3.4",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpsnd"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1738,6 +1751,7 @@ dependencies = [
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
@@ -2773,7 +2787,9 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
+ "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
  "openh264",
@@ -2797,6 +2813,7 @@ dependencies = [
  "rdsktp-capture",
  "rdsktp-clipboard",
  "rdsktp-core",
+ "rdsktp-drivefs",
  "rdsktp-encode",
  "rdsktp-input",
  "rdsktp-rdp",
@@ -2819,6 +2836,7 @@ dependencies = [
  "rdsktp-capture",
  "rdsktp-clipboard",
  "rdsktp-core",
+ "rdsktp-drivefs",
  "rdsktp-encode",
  "rdsktp-input",
  "rdsktp-scaling",
@@ -2895,6 +2913,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdsktp-drivefs"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "libc",
+ "rdsktp-core",
+ "tracing",
+]
+
+[[package]]
 name = "rdsktp-encode"
 version = "0.1.0"
 dependencies = [
@@ -2926,6 +2954,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-egfx",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
  "ironrdp-server",
  "ironrdp-svc",

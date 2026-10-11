@@ -32,6 +32,7 @@ pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
         })),
         input: Box::new(RemoteInput(link.clone())),
         clipboard: Box::new(RemoteClipboard(link.clone())),
+        drives: Some(AgentLink::drive_host(&link)),
         audio: Some(Arc::new(RemoteAudio(link))),
     }
 }

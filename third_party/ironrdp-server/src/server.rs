@@ -23,9 +23,11 @@ use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpdr as rdpdr;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
+use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpSocket;
@@ -42,7 +44,7 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
-use crate::{SoundServerFactory, builder, capabilities};
+use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
@@ -438,6 +440,7 @@ pub struct RdpServer {
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
@@ -479,6 +482,8 @@ pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    /// Drive request; the tag (if any) is handed to the backend with the request's completion id.
+    Rdpdr(Option<u64>, RdpdrServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
@@ -515,6 +520,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
+        mut rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -528,6 +534,9 @@ impl RdpServer {
         if let Some(snd) = sound_factory.as_mut() {
             snd.set_sender(ev_sender.clone());
         }
+        if let Some(rdpdr) = rdpdr_factory.as_mut() {
+            rdpdr.set_sender(ev_sender.clone());
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
@@ -538,6 +547,7 @@ impl RdpServer {
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
             sound_factory,
+            rdpdr_factory,
             cliprdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
@@ -686,6 +696,12 @@ impl RdpServer {
             let backend = factory.build_backend();
 
             acceptor.attach_static_channel(RdpsndServer::new(backend));
+        }
+
+        if let Some(factory) = self.rdpdr_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
@@ -1147,6 +1163,28 @@ impl RdpServer {
                         .get_channel_id_by_type::<RdpsndServer>()
                         .context("SVC channel not found")?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                    writer.write_all(&data).await?;
+                }
+                ServerEvent::Rdpdr(tag, msg) => {
+                    let Some(rdpdr) = self.get_svc_processor::<RdpdrServer>() else {
+                        warn!("No rdpdr channel, dropping event");
+                        continue;
+                    };
+                    rdpdr.set_next_tag(tag);
+                    let msgs = rdpdr.send_message(msg);
+                    // rdsktp patch: a refused drive request (channel not active yet) fails that request only.
+                    let msgs = match msgs {
+                        Ok(msgs) => msgs,
+                        Err(error) => {
+                            warn!(%error, "rdpdr request refused");
+                            continue;
+                        }
+                    };
+                    let channel_id = self
+                        .get_channel_id_by_type::<RdpdrServer>()
+                        .context("SVC channel not found")?;
+                    let data =
+                        server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
                 ServerEvent::Clipboard(c) => {

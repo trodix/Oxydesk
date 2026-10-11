@@ -9,6 +9,7 @@ members = [
     "crates/scaling",
     "crates/input",
     "crates/clipboard",
+    "crates/drivefs",
     "crates/audio",
     "crates/agent-proto",
     "crates/authd-proto",
@@ -37,6 +38,7 @@ thiserror = "2"
 rdsktp-core = { path = "crates/core" }
 rdsktp-capture = { path = "crates/capture" }
 rdsktp-clipboard = { path = "crates/clipboard" }
+rdsktp-drivefs = { path = "crates/drivefs" }
 rdsktp-audio = { path = "crates/audio" }
 rdsktp-agent-proto = { path = "crates/agent-proto" }
 rdsktp-authd-proto = { path = "crates/authd-proto" }

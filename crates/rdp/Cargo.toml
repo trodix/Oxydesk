@@ -11,6 +11,7 @@ ironrdp-server = { version = "=0.13.0", features = ["egfx", "helper"] }
 ironrdp-egfx = "=0.3.0"
 ironrdp-dvc = "=0.8.0"
 ironrdp-svc = "0.8"
+ironrdp-rdpdr = { path = "../../third_party/ironrdp-rdpdr" }
 ironrdp-cliprdr = "=0.7.0"
 ironrdp-rdpsnd = "0.9"
 ironrdp-core = "0.2"
