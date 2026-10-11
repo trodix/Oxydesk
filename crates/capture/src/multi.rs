@@ -39,6 +39,14 @@ impl CaptureSource for MultiCapture {
         self.waker = Some(wake);
     }
 
+    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+        // The pointer is shown on every output's stream; the latest update found wins.
+        self.sources
+            .iter_mut()
+            .filter_map(|s| s.take_cursor())
+            .last()
+    }
+
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
         match self.sources.as_mut_slice() {
             [single] => single.resize(width, height),

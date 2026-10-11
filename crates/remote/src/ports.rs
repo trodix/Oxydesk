@@ -47,6 +47,10 @@ impl CaptureSource for RemoteCapture {
         self.0.set_raw_pixels(raw);
     }
 
+    fn take_cursor(&mut self) -> Option<rdsktp_core::CursorUpdate> {
+        self.0.take_cursor()
+    }
+
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
         if self
             .0

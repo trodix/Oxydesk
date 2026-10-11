@@ -18,6 +18,7 @@ Serveur RDP (IronRDP 0.13, H.264 via EGFX) pour KDE Plasma Wayland headless, en 
 | Session KDE Wayland | Session KWin virtuelle (`--session kwin`), capture PipeWire/screencast, DMA-BUF avec encodeur GPU. |
 | Mode login distant | PAM (`authd`), un agent par utilisateur, vraie session logind. Validé sur Debian 13 (KWin 6.3). |
 | Clavier et souris | Entrées par `fake_input` de KWin. |
+| Forme du curseur | Le client dessine lui-même le curseur (pas de latence) ; le serveur lui envoie la forme (PDU pointeur RDP) à chaque changement : flèche, texte, main, redimensionnement… Vérifié avec xfreerdp contre KWin 6.7. |
 | Presse-papiers | Texte seul, bidirectionnel, accents et `€`, plus de 64 Kio. |
 | Audio | Sortie son (tonalité 440 Hz contrôlée). |
 | Reconnexion | Reprise après coupure ou fermeture ; la session survit aux déconnexions. |
@@ -41,7 +42,7 @@ Défauts trouvés puis corrigés :
 Limites des replis (derniers recours, bien plus lourds que H.264) : en mode `--login` l'agent n'envoie que du H.264, donc ces clients n'ont rien tant que l'agent n'envoie pas de pixels bruts ; la justesse des pixels n'est pas contrôlée (le test vérifie la réception sans erreur, pas l'image) ; débit élevé (≈ 8 Mo par image en 1080p), régulé par la contre-pression EGFX.
 
 ### Non couvert ou non vérifié
-Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseur distant ; coût CPU de N encodeurs logiciels ; paquet Debian.
+Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseurs animés et curseurs d'applications plus grands que 96 px ; coût CPU de N encodeurs logiciels ; paquet Debian.
 
 ## Plan priorisé
 Efforts estimés, pas mesurés.
@@ -55,7 +56,7 @@ Efforts estimés, pas mesurés.
 **P1 — fonctions de base manquantes**
 4. Presse-papiers d'images, puis fichiers. Moyen.
 5. HiDPI. Moyen.
-6. Curseur distant (vérifier d'abord s'il est déjà couvert). Faible à moyen.
+6. Curseur distant. **Fait** (voir « Curseur distant » ci-dessous).
 7. Plusieurs utilisateurs en parallèle. Moyen.
 
 **P2 — qualité et exploitation**
@@ -67,6 +68,10 @@ Efforts estimés, pas mesurés.
 **P3 — facultatif** : fichiers partagés, imprimantes, microphone, USB, cartes à puce ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
 
 Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 7, le reste selon l'usage.
+
+## Curseur distant
+KWin dessine toujours son propre curseur dans l'image capturée (backend virtuel), quel que soit le mode de pointeur du screencast : il doublerait celui du client RDP, avec une traînée. La session utilise donc un thème de curseur transparent (`crates/session/src/cursor_theme.rs`) où chaque nom de curseur (`left_ptr`, `text`, `pointer`…) est un fichier transparent dont la **largeur code le rang du nom**. Le screencast (mode `metadata`, `SPA_META_Cursor` de PipeWire) livre ce bitmap ; `ThemeResolver` y reconnaît le marqueur et le remplace par l'image du vrai thème de l'utilisateur (`cursorTheme` de `kcminputrc`, `XCURSOR_THEME`, sinon breeze/Adwaita, héritage compris, taille nominale proche de 32). Le résultat part en `DisplayUpdate::RGBAPointer` (ou `HidePointer`) ; en mode `--login`, l'agent l'envoie par `FromAgent::Cursor`.
+Limites : un curseur d'application (bitmap propre) passe tel quel, donc seulement s'il tient dans 96 px, et reste dessiné dans l'image par KWin ; curseurs animés (attente) : première image ; un client qui se connecte reçoit la forme au prochain changement seulement. `RDSKTP_POINTER=hidden` désactive la forme (ancien comportement).
 
 ## Commandes
 - `cargo test --workspace` — tests unitaires (core, client de test + mock, xtask).

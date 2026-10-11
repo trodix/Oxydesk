@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rdsktp_agent_proto::{read_msg, write_msg, FromAgent, ToAgent, MAX_OUTPUTS};
+use rdsktp_agent_proto::{read_msg, write_msg, CursorImage, FromAgent, ToAgent, MAX_OUTPUTS};
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
@@ -223,6 +223,23 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         }
         let round_start = Instant::now();
         let _round = d.round.lock().expect("round mutex");
+        let cursor = d.capture.lock().expect("capture mutex").take_cursor();
+        if let Some(update) = cursor {
+            let msg = FromAgent::Cursor(match update {
+                rdsktp_core::CursorUpdate::Hidden => None,
+                rdsktp_core::CursorUpdate::Shape(s) => Some(CursorImage {
+                    width: s.width,
+                    height: s.height,
+                    hot_x: s.hot_x,
+                    hot_y: s.hot_y,
+                    rgba: s.rgba,
+                }),
+            });
+            if !send(&w, &msg) {
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
         let outputs = d.outputs.load(Ordering::SeqCst) as usize;
         // Encoders follow the number of outputs (a new one starts with a keyframe).
         while encoders.len() < outputs {

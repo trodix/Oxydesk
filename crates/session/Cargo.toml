@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 rdsktp-core.workspace = true
+tracing = "0.1"

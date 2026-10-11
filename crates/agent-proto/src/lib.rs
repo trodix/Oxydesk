@@ -113,6 +113,19 @@ pub enum FromAgent {
         ok: bool,
         outputs: u32,
     },
+    /// The pointer changed: `None` hides it, otherwise a straight RGBA bitmap (`width * height * 4` bytes) and its
+    /// hotspot.
+    Cursor(Option<CursorImage>),
+}
+
+/// Pointer bitmap of `FromAgent::Cursor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorImage {
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    pub rgba: Vec<u8>,
 }
 
 struct Out(Vec<u8>);
@@ -367,6 +380,19 @@ impl Message for FromAgent {
                 o.bytes(data);
                 8
             }
+            Self::Cursor(None) => {
+                o.u8(0);
+                9
+            }
+            Self::Cursor(Some(c)) => {
+                o.u8(1);
+                o.u16(c.width);
+                o.u16(c.height);
+                o.u16(c.hot_x);
+                o.u16(c.hot_y);
+                o.bytes(&c.rgba);
+                9
+            }
         };
         (tag, o.0)
     }
@@ -403,6 +429,24 @@ impl Message for FromAgent {
                 width: i.u32()?,
                 height: i.u32()?,
                 data: i.rest(),
+            },
+            9 => match i.u8()? {
+                0 => Self::Cursor(None),
+                _ => {
+                    let (width, height) = (i.u16()?, i.u16()?);
+                    let (hot_x, hot_y) = (i.u16()?, i.u16()?);
+                    let rgba = i.rest();
+                    if rgba.len() != usize::from(width) * usize::from(height) * 4 {
+                        return Err(ProtoError::Invalid("cursor size"));
+                    }
+                    Self::Cursor(Some(CursorImage {
+                        width,
+                        height,
+                        hot_x,
+                        hot_y,
+                        rgba,
+                    }))
+                }
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -517,6 +561,14 @@ mod tests {
             height: 1,
             data: vec![1, 2, 3, 4, 5, 6, 7, 8],
         });
+        roundtrip(FromAgent::Cursor(None));
+        roundtrip(FromAgent::Cursor(Some(CursorImage {
+            width: 2,
+            height: 1,
+            hot_x: 1,
+            hot_y: 0,
+            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        })));
         roundtrip(FromAgent::ClipboardText("x".into()));
         roundtrip(FromAgent::Audio(vec![1, 2, 3, 4]));
         roundtrip(FromAgent::Fatal("boom".into()));

@@ -35,6 +35,8 @@ pub struct AgentLink {
     /// One mailbox per output; the list follows the layout (`LayoutApplied`).
     video: RwLock<Vec<Mutex<Mailbox>>>,
     clipboard: Mutex<Option<String>>,
+    /// Latest pointer change not yet taken (only the last one matters).
+    cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
     /// Answer of the agent to the last `Resize` (None while pending).
@@ -78,6 +80,7 @@ impl AgentLink {
                     .collect(),
             ),
             clipboard: Mutex::new(None),
+            cursor: Mutex::new(None),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
             resize_reply: Mutex::new(None),
@@ -196,6 +199,19 @@ impl AgentLink {
                 drop(mb);
                 drop(video);
                 self.wake();
+            }
+            FromAgent::Cursor(c) => {
+                let update = match c {
+                    None => Some(rdsktp_core::CursorUpdate::Hidden),
+                    Some(c) => {
+                        rdsktp_core::CursorShape::new(c.width, c.height, c.hot_x, c.hot_y, c.rgba)
+                            .map(rdsktp_core::CursorUpdate::Shape)
+                    }
+                };
+                if let Some(update) = update {
+                    *self.cursor.lock().expect("cursor mutex") = Some(update);
+                    self.wake();
+                }
             }
             FromAgent::ClipboardText(t) => {
                 *self.clipboard.lock().expect("clipboard mutex") = Some(t)
@@ -330,6 +346,10 @@ impl AgentLink {
             .wait_timeout_while(guard, timeout, |r| r.is_none() && !self.is_dead())
             .expect("layout mutex");
         guard.unwrap_or(false)
+    }
+
+    pub fn take_cursor(&self) -> Option<rdsktp_core::CursorUpdate> {
+        self.cursor.lock().expect("cursor mutex").take()
     }
 
     pub fn take_clipboard(&self) -> Option<String> {
@@ -538,6 +558,34 @@ mod tests {
         .unwrap();
         std::thread::sleep(Duration::from_millis(100));
         assert!(link.take_frame(OutputId(0)).is_none());
+    }
+
+    #[test]
+    fn pointer_changes_keep_only_the_latest() {
+        use rdsktp_agent_proto::CursorImage;
+        use rdsktp_core::CursorUpdate;
+        let (link, mut agent) = pair();
+        let image = |w: u16, len: usize| {
+            FromAgent::Cursor(Some(CursorImage {
+                width: w,
+                height: 1,
+                hot_x: 0,
+                hot_y: 0,
+                rgba: vec![7; len],
+            }))
+        };
+        write_msg(&mut agent, &image(1, 4)).unwrap();
+        write_msg(&mut agent, &FromAgent::Cursor(None)).unwrap();
+        write_msg(&mut agent, &image(2, 8)).unwrap();
+        let update = wait_for(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            match link.take_cursor() {
+                Some(CursorUpdate::Shape(s)) if s.width == 2 => Some(s),
+                _ => None,
+            }
+        });
+        assert_eq!(update.rgba.len(), 8);
+        assert!(link.take_cursor().is_none());
     }
 
     #[test]

@@ -84,6 +84,10 @@ impl CaptureSource for ScalingCapture {
         self.inner.set_waker(wake);
     }
 
+    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+        self.inner.take_cursor()
+    }
+
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
         self.state.lock().expect("scaling mutex").multi = None;
         let native = self.state.lock().expect("scaling mutex").native;

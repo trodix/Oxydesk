@@ -14,6 +14,11 @@ pub trait CaptureSource: Send {
     /// (`false`, the default): a source that encodes by itself (the login agent) switches mode. No effect on
     /// sources that always deliver pixels.
     fn set_raw_pixels(&mut self, _raw: bool) {}
+    /// The pointer shape if it changed since the last call. The shape is not part of the frames: the client
+    /// draws it at its own pointer position. `None` by default (sources that do not know the shape).
+    fn take_cursor(&mut self) -> Option<crate::cursor::CursorUpdate> {
+        None
+    }
     /// Resizes the (single) captured desktop. Frames after the call have the new size.
     fn resize(&mut self, _width: u32, _height: u32) -> Result<(), CaptureError> {
         Err(CaptureError::ResizeUnsupported)

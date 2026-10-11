@@ -39,10 +39,19 @@ use proto::zkde_screencast_stream_unstable_v1::{
 };
 use proto::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
-/// `zkde_screencast_unstable_v1.pointer`: cursor absent from the image. The client displays its
-/// local (no latency); embedding it duplicated it with a trail. The cursor shape (metadata
-/// mode + RDP pointer PDU) remains to be done.
+/// `zkde_screencast_unstable_v1.pointer`: the cursor is not in the image (the client draws its own, with no
+/// latency; embedding it duplicated it with a trail). `metadata`: its bitmap comes next to the frames, as the
+/// PipeWire cursor metadata, and goes to the client as the RDP pointer shape.
 const POINTER_HIDDEN: u32 = 1;
+const POINTER_METADATA: u32 = 4;
+
+/// Pointer mode of the streams: the shape is wanted unless `RDSKTP_POINTER=hidden`.
+fn pointer_mode() -> u32 {
+    match std::env::var("RDSKTP_POINTER").as_deref() {
+        Ok("hidden") => POINTER_HIDDEN,
+        _ => POINTER_METADATA,
+    }
+}
 
 #[derive(Default)]
 struct Wl {
@@ -133,6 +142,7 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
 }
 
 type Mailbox = Arc<Mutex<Option<Frame>>>;
+type Cursor = Arc<Mutex<Option<rdsktp_core::cursor::CursorUpdate>>>;
 type Waker = Arc<Mutex<Option<Arc<rdsktp_core::wake::Wake>>>>;
 
 /// Source factory of a `MultiCapture` over a KWin session: the outputs the session started with (`base` of them)
@@ -166,6 +176,7 @@ enum Target {
 
 pub struct KwinCapture {
     mailbox: Mailbox,
+    cursor: Cursor,
     waker: Waker,
     stop: Arc<AtomicBool>,
     dead: Arc<Mutex<Option<String>>>,
@@ -238,18 +249,26 @@ impl KwinCapture {
     ) -> Result<Self, CaptureError> {
         let conn = connect(socket)?;
         let mailbox: Mailbox = Arc::default();
+        let cursor: Cursor = Arc::default();
         let waker: Waker = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let dead: Arc<Mutex<Option<String>>> = Arc::default();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let worker = {
-            let (mailbox, waker, stop, dead) =
-                (mailbox.clone(), waker.clone(), stop.clone(), dead.clone());
+            let (mailbox, cursor, waker, stop, dead) = (
+                mailbox.clone(),
+                cursor.clone(),
+                waker.clone(),
+                stop.clone(),
+                dead.clone(),
+            );
             let target = target.clone();
             std::thread::Builder::new()
                 .name("kwin-capture".into())
                 .spawn(move || {
-                    if let Err(e) = run(conn, &target, dmabuf, mailbox, waker, stop, &ready_tx) {
+                    if let Err(e) = run(
+                        conn, &target, dmabuf, mailbox, cursor, waker, stop, &ready_tx,
+                    ) {
                         let _ = ready_tx.send(Err(e.clone()));
                         *dead.lock().expect("dead") = Some(e);
                     }
@@ -259,6 +278,7 @@ impl KwinCapture {
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(Self {
                 mailbox,
+                cursor,
                 waker,
                 stop,
                 dead,
@@ -278,6 +298,11 @@ impl KwinCapture {
 impl CaptureSource for KwinCapture {
     fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
         *self.waker.lock().expect("waker") = Some(wake);
+    }
+
+    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+        let update = self.cursor.lock().expect("cursor").take()?;
+        rdsktp_core::cursor::resolve(update)
     }
 
     /// The virtual output gets a custom mode of the requested size (`kscreen-doctor`, libkscreen); the
@@ -458,14 +483,52 @@ fn connect(socket: Option<&str>) -> Result<Connection, CaptureError> {
 struct PwData {
     format: VideoInfoRaw,
     mailbox: Mailbox,
+    cursor: Cursor,
     waker: Waker,
+    /// Buffer metadata request (cursor), sent once the format is known.
+    meta_pod: Vec<u8>,
 }
 
+/// Gives the buffer back to the stream when dropped.
+struct Requeue<'a> {
+    stream: &'a pw::stream::Stream,
+    raw: *mut pw::sys::pw_buffer,
+}
+
+impl Drop for Requeue<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `raw` was dequeued from `stream` and is requeued exactly once.
+        unsafe { self.stream.queue_raw_buffer(self.raw) };
+    }
+}
+
+/// The cursor metadata of a buffer, decoded; `None` without metadata or when it only moved the pointer.
+///
+/// # Safety
+/// `buffer` must point to a valid `spa_buffer` whose metadata stay valid for the call.
+unsafe fn cursor_update(
+    buffer: *const spa::sys::spa_buffer,
+) -> Option<rdsktp_core::cursor::CursorUpdate> {
+    let b = &*buffer;
+    if b.metas.is_null() {
+        return None;
+    }
+    for meta in std::slice::from_raw_parts(b.metas, b.n_metas as usize) {
+        if meta.type_ == spa::sys::SPA_META_Cursor && !meta.data.is_null() {
+            let bytes = std::slice::from_raw_parts(meta.data.cast::<u8>(), meta.size as usize);
+            return crate::cursor_meta::parse_cursor_meta(bytes);
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run(
     conn: Connection,
     target: &Target,
     dmabuf: bool,
     mailbox: Mailbox,
+    cursor: Cursor,
     waker: Waker,
     stop: Arc<AtomicBool>,
     ready: &mpsc::Sender<Result<(), String>>,
@@ -499,7 +562,7 @@ fn run(
                 *width as i32,
                 *height as i32,
                 1.0,
-                POINTER_HIDDEN,
+                pointer_mode(),
                 &qh,
                 (),
             )
@@ -510,7 +573,7 @@ fn run(
                 .iter()
                 .position(|n| n == name)
                 .ok_or_else(|| format!("output {name} not found ({:?})", wl.names))?;
-            screencast.stream_output(&wl.outputs[i], POINTER_HIDDEN, &qh, ())
+            screencast.stream_output(&wl.outputs[i], pointer_mode(), &qh, ())
         }
         Target::Rank(output) => {
             // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
@@ -519,7 +582,7 @@ fn run(
             let registry_index = *order.get(*output).ok_or_else(|| {
                 format!("output {output} not found ({} output(s))", wl.outputs.len())
             })?;
-            screencast.stream_output(&wl.outputs[registry_index], POINTER_HIDDEN, &qh, ())
+            screencast.stream_output(&wl.outputs[registry_index], pointer_mode(), &qh, ())
         }
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -557,16 +620,46 @@ fn run(
     )
     .map_err(|e| format!("PipeWire stream: {e}"))?;
 
+    // Room for the cursor bitmap in the buffers (KWin offers 256 px; larger ones than RDP's 96 px are dropped).
+    let meta_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(spa::pod::Object {
+            type_: spa::utils::SpaTypes::ObjectParamMeta.as_raw(),
+            id: spa::param::ParamType::Meta.as_raw(),
+            properties: vec![
+                spa::pod::Property::new(
+                    spa::sys::SPA_PARAM_META_type,
+                    spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Cursor)),
+                ),
+                spa::pod::Property::new(
+                    spa::sys::SPA_PARAM_META_size,
+                    spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                        spa::utils::ChoiceFlags::empty(),
+                        spa::utils::ChoiceEnum::Range {
+                            default: crate::cursor_meta::meta_size(256) as i32,
+                            min: crate::cursor_meta::meta_size(1) as i32,
+                            max: crate::cursor_meta::meta_size(512) as i32,
+                        },
+                    ))),
+                ),
+            ],
+        }),
+    )
+    .map_err(|e| format!("pod : {e:?}"))?
+    .0
+    .into_inner();
     let ready_ok = ready.clone();
     let announced = std::cell::Cell::new(false);
     let _listener = stream
         .add_local_listener_with_user_data(PwData {
             format: Default::default(),
             mailbox,
+            cursor,
             waker,
+            meta_pod: meta_bytes,
         })
         .state_changed(|_, _, old, new| tracing_log(format_args!("pipewire: {old:?} -> {new:?}")))
-        .param_changed(|_, d, id, param| {
+        .param_changed(|stream, d, id, param| {
             let Some(param) = param else { return };
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
@@ -576,14 +669,47 @@ fn run(
                     && st == spa::param::format::MediaSubtype::Raw
                 {
                     let _ = d.format.parse(param);
+                    let size = d.format.size();
+                    let buffers_bytes = buffers_pod(size.width, size.height);
+                    if let (Some(meta), Some(buffers)) = (
+                        Pod::from_bytes(&d.meta_pod),
+                        Pod::from_bytes(&buffers_bytes),
+                    ) {
+                        stream.update_params(&mut [buffers, meta]).ok();
+                    }
                 }
             }
         })
         .process(move |stream, d| {
-            let Some(mut buffer) = stream.dequeue_buffer() else {
+            // SAFETY: the buffer comes from this stream and goes back to it when `_requeue` drops.
+            let raw = unsafe { stream.dequeue_raw_buffer() };
+            if raw.is_null() {
                 return;
+            }
+            let _requeue = Requeue { stream, raw };
+            // SAFETY: `raw` is a valid buffer until it is requeued; its `spa_buffer` is checked for null.
+            let spa_buffer = unsafe { (*raw).buffer };
+            if spa_buffer.is_null() {
+                return;
+            }
+            if let Some(update) = unsafe { cursor_update(spa_buffer) } {
+                *d.cursor.lock().expect("cursor") = Some(update);
+                if let Some(w) = d.waker.lock().expect("waker").as_ref() {
+                    w.notify();
+                }
+            }
+            // SAFETY: `datas` holds `n_datas` entries, valid like the buffer; `Data` wraps `spa_data`.
+            let datas: &mut [spa::buffer::Data] = unsafe {
+                if (*spa_buffer).n_datas == 0 || (*spa_buffer).datas.is_null() {
+                    &mut []
+                } else {
+                    std::slice::from_raw_parts_mut(
+                        (*spa_buffer).datas.cast(),
+                        (*spa_buffer).n_datas as usize,
+                    )
+                }
             };
-            let Some(data) = buffer.datas_mut().first_mut() else {
+            let Some(data) = datas.first_mut() else {
                 return;
             };
             let (size, stride, offset) = {
@@ -780,6 +906,41 @@ fn run(
     mainloop.run();
     drop(conn);
     Ok(())
+}
+
+/// Buffer requirements for CPU-readable frames (shared memory), repeated with the cursor metadata request.
+fn buffers_pod(width: u32, height: u32) -> Vec<u8> {
+    let (stride, size) = (width as i32 * 4, width as i32 * height as i32 * 4);
+    let int = |k, v| spa::pod::Property::new(k, spa::pod::Value::Int(v));
+    spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(spa::pod::Object {
+            type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
+            id: spa::param::ParamType::Buffers.as_raw(),
+            properties: vec![
+                spa::pod::Property::new(
+                    spa::sys::SPA_PARAM_BUFFERS_buffers,
+                    spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                        spa::utils::ChoiceFlags::empty(),
+                        spa::utils::ChoiceEnum::Range {
+                            default: 4,
+                            min: 2,
+                            max: 16,
+                        },
+                    ))),
+                ),
+                int(spa::sys::SPA_PARAM_BUFFERS_blocks, 1),
+                int(spa::sys::SPA_PARAM_BUFFERS_size, size),
+                int(spa::sys::SPA_PARAM_BUFFERS_stride, stride),
+                int(
+                    spa::sys::SPA_PARAM_BUFFERS_dataType,
+                    (1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr),
+                ),
+            ],
+        }),
+    )
+    .map(|(c, _)| c.into_inner())
+    .unwrap_or_default()
 }
 
 fn tracing_log(args: std::fmt::Arguments<'_>) {

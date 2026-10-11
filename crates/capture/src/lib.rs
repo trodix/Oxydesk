@@ -1,5 +1,6 @@
 //! `CaptureSource` adapters. For now: synthetic source (test mode).
 
+mod cursor_meta;
 mod synthetic;
 
 pub use synthetic::{

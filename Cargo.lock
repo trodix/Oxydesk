@@ -2824,6 +2824,7 @@ name = "rdsktp-session"
 version = "0.1.0"
 dependencies = [
  "rdsktp-core",
+ "tracing",
 ]
 
 [[package]]

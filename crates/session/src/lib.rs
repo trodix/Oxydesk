@@ -3,6 +3,8 @@
 //! M3 = autologin: the process already runs as the target user (systemd service, linger). Remote
 //! login with PAM arrives in M7.
 
+mod cursor_theme;
+
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -101,90 +103,8 @@ impl KwinSession {
     }
 }
 
-const BLANK_ICONS_DIR: &str = "rdsktp-icons";
-const BLANK_THEME: &str = "rdsktp-blank";
-/// Cursor names requested by KWin/Qt; all point to the same transparent file.
-const CURSOR_NAMES: &[&str] = &[
-    "default",
-    "arrow",
-    "top_left_arrow",
-    "pointer",
-    "text",
-    "xterm",
-    "ibeam",
-    "hand1",
-    "hand2",
-    "pointing_hand",
-    "watch",
-    "wait",
-    "progress",
-    "crosshair",
-    "cross",
-    "fleur",
-    "move",
-    "size_all",
-    "size_hor",
-    "size_ver",
-    "sb_h_double_arrow",
-    "sb_v_double_arrow",
-    "size_fdiag",
-    "size_bdiag",
-    "not-allowed",
-    "forbidden",
-    "question_arrow",
-    "help",
-    "grab",
-    "grabbing",
-    "openhand",
-    "closedhand",
-    "copy",
-    "alias",
-    "context-menu",
-    "cell",
-    "vertical-text",
-    "col-resize",
-    "row-resize",
-    "e-resize",
-    "w-resize",
-    "n-resize",
-    "s-resize",
-    "ne-resize",
-    "nw-resize",
-    "se-resize",
-    "sw-resize",
-    "ew-resize",
-    "ns-resize",
-    "nesw-resize",
-    "nwse-resize",
-];
-
-/// Xcursor file of a fully transparent 1x1 image (nominal size 24).
-fn blank_xcursor() -> Vec<u8> {
-    let le = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
-    let mut out = b"Xcur".to_vec();
-    out.extend(le(&[16, 0x1_0000, 1])); // header, version, 1 entry
-    out.extend(le(&[0xfffd_0002, 24, 28])); // image type, nominal size, chunk offset
-    out.extend(le(&[36, 0xfffd_0002, 24, 1, 1, 1, 0, 0, 0])); // chunk: w=h=1, hotspot 0, delay 0
-    out.extend(le(&[0])); // transparent ARGB pixel
-    out
-}
-
-fn write_blank_cursor_theme(runtime: &std::path::Path) -> std::io::Result<()> {
-    let dir = runtime.join(BLANK_ICONS_DIR).join(BLANK_THEME);
-    let cursors = dir.join("cursors");
-    std::fs::create_dir_all(&cursors)?;
-    std::fs::write(
-        dir.join("index.theme"),
-        format!("[Icon Theme]\nName={BLANK_THEME}\n"),
-    )?;
-    std::fs::write(cursors.join("left_ptr"), blank_xcursor())?;
-    for name in CURSOR_NAMES {
-        let link = cursors.join(name);
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink("left_ptr", link)?;
-    }
-    Ok(())
-}
+const BLANK_ICONS_DIR: &str = cursor_theme::ICONS_DIR;
+const BLANK_THEME: &str = cursor_theme::THEME;
 
 impl SessionProvider for KwinSession {
     fn start(&mut self) -> Result<(), String> {
@@ -199,7 +119,9 @@ impl SessionProvider for KwinSession {
         check_version(version)?;
 
         // A failure here is harmless: the server cursor will simply be visible in the image.
-        let _ = write_blank_cursor_theme(&runtime);
+        if cursor_theme::write_marker_theme(&runtime).is_ok() {
+            cursor_theme::install_resolver();
+        }
 
         // The service cache must know our .desktop before KWin starts.
         let mut sycoca = Command::new("kbuildsycoca6");
@@ -287,16 +209,6 @@ impl Drop for KwinSession {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn blank_xcursor_is_well_formed() {
-        let b = super::blank_xcursor();
-        assert_eq!(&b[..4], b"Xcur");
-        assert_eq!(b.len(), 16 + 12 + 36 + 4);
-        assert_eq!(&b[b.len() - 4..], &[0, 0, 0, 0]);
-        // the announced offset (28) does point at the chunk (16 header bytes + 12 of table)
-        assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()), 36);
-    }
-
     use super::*;
 
     #[test]

@@ -67,6 +67,23 @@ struct OutputState {
 /// How long a connection may go without a ready EGFX before falling back to bitmap updates.
 const LEGACY_AFTER: Duration = Duration::from_secs(3);
 
+/// The RDP pointer PDU for a cursor change (a single cache slot: the client keeps the latest shape).
+fn pointer_update(update: &rdsktp_core::CursorUpdate) -> ironrdp_server::DisplayUpdate {
+    match update {
+        rdsktp_core::CursorUpdate::Hidden => ironrdp_server::DisplayUpdate::HidePointer,
+        rdsktp_core::CursorUpdate::Shape(s) => {
+            ironrdp_server::DisplayUpdate::RGBAPointer(ironrdp_server::RGBAPointer {
+                cache_index: 0,
+                width: s.width,
+                height: s.height,
+                hot_x: s.hot_x,
+                hot_y: s.hot_y,
+                data: s.rgba.clone(),
+            })
+        }
+    }
+}
+
 /// Sends the outputs as uncompressed bitmap updates (clients without EGFX; IronRDP encodes them).
 /// `false`: the capture is lost.
 fn send_bitmaps(
@@ -178,6 +195,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let mut warned_encoded = false;
             // What the source was last asked for: uncompressed pixels (client without H.264) or its own stream.
             let mut raw_requested = false;
+            let mut cursor: Option<rdsktp_core::CursorUpdate> = None;
+            let mut cursor_pending = false;
             let mut repeat = false;
             let mut report = Instant::now();
             let (mut seen, mut drain) = (0u64, false);
@@ -197,6 +216,31 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     }
                 }
                 let sent_before = sent;
+                if let Some(src) = capture.as_mut() {
+                    if let Some(update) = src.take_cursor() {
+                        match &update {
+                            rdsktp_core::CursorUpdate::Shape(s) => tracing::debug!(
+                                w = s.width,
+                                h = s.height,
+                                hot_x = s.hot_x,
+                                hot_y = s.hot_y,
+                                "pointer shape"
+                            ),
+                            rdsktp_core::CursorUpdate::Hidden => tracing::debug!("pointer hidden"),
+                        }
+                        cursor = Some(update);
+                        cursor_pending = true;
+                    }
+                }
+                if cursor_pending {
+                    if let (Some(update), Some(tx)) = (
+                        cursor.as_ref(),
+                        shared.display.lock().expect("display mutex").as_ref(),
+                    ) {
+                        let _ = tx.send(pointer_update(update));
+                        cursor_pending = false;
+                    }
+                }
                 if let Some(new) = shared.ports.lock().expect("ports mutex").take() {
                     if new.encoders.len() != p.layout.outputs.len() {
                         tracing::error!(
@@ -561,6 +605,23 @@ mod tests {
     use super::*;
     use rdsktp_core::error::{CaptureError, EncodeError};
     use rdsktp_core::ports::EncodedFrame;
+
+    #[test]
+    fn pointer_pdu_carries_the_shape_and_hidden_hides() {
+        let shape =
+            rdsktp_core::CursorShape::new(2, 1, 1, 0, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        match pointer_update(&rdsktp_core::CursorUpdate::Shape(shape)) {
+            ironrdp_server::DisplayUpdate::RGBAPointer(p) => {
+                assert_eq!((p.width, p.height, p.hot_x, p.hot_y), (2, 1, 1, 0));
+                assert_eq!(p.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+            }
+            other => panic!("pointer shape expected, got {other:?}"),
+        }
+        assert!(matches!(
+            pointer_update(&rdsktp_core::CursorUpdate::Hidden),
+            ironrdp_server::DisplayUpdate::HidePointer
+        ));
+    }
 
     struct Capture {
         refuse_above: usize,
