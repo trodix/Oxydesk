@@ -64,6 +64,73 @@ struct OutputState {
     last: Option<rdsktp_core::Frame>,
 }
 
+/// How long a connection may go without a ready EGFX before falling back to bitmap updates.
+const LEGACY_AFTER: Duration = Duration::from_secs(3);
+
+/// Sends the outputs as uncompressed bitmap updates (clients without EGFX; IronRDP encodes them).
+/// `false`: the capture is lost.
+fn send_bitmaps(
+    tx: &UnboundedSender<ironrdp_server::DisplayUpdate>,
+    capture: &mut dyn CaptureSource,
+    outputs: &mut [OutputState],
+    layout: &Layout,
+    repeat: &mut bool,
+    warned_encoded: &mut bool,
+) -> bool {
+    use std::num::{NonZeroU16, NonZeroUsize};
+    for (i, out) in outputs.iter_mut().enumerate() {
+        let info = &layout.outputs[i];
+        match capture.recv_latest(OutputId(i as u32)) {
+            Ok(Some(f)) if (f.width, f.height) == (info.width, info.height) => out.last = Some(f),
+            Ok(Some(_)) => continue,
+            Ok(None) if *repeat && out.last.is_some() => {}
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::error!("capture: {e}");
+                return false;
+            }
+        }
+        let Some(frame) = out.last.as_ref() else {
+            continue;
+        };
+        let pixels = match crate::raw::to_bgra(frame) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                if !std::mem::replace(warned_encoded, true) {
+                    tracing::warn!(
+                        "client without EGFX: frames already encoded by the agent cannot be sent"
+                    );
+                }
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("raw frame: {e}");
+                continue;
+            }
+        };
+        let (Some(width), Some(height), Some(stride)) = (
+            NonZeroU16::new(info.width as u16),
+            NonZeroU16::new(info.height as u16),
+            NonZeroUsize::new(info.width as usize * 4),
+        ) else {
+            continue;
+        };
+        let _ = tx.send(ironrdp_server::DisplayUpdate::Bitmap(
+            ironrdp_server::BitmapUpdate {
+                x: info.x.max(0) as u16,
+                y: info.y.max(0) as u16,
+                width,
+                height,
+                format: ironrdp_server::PixelFormat::BgrA32,
+                data: pixels.into(),
+                stride,
+            },
+        ));
+    }
+    *repeat = false;
+    true
+}
+
 pub(crate) fn monitors(layout: &Layout) -> Vec<Monitor> {
     layout
         .outputs
@@ -105,6 +172,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // Current connection and one EGFX surface per output (empty until created).
             let mut current: Option<(GfxServerHandle, Vec<u16>)> = None;
             let (mut sent, mut dropped) = (0u64, 0u64);
+            // Client without EGFX (or never ready): bitmap updates after `LEGACY_AFTER`, from the start of the connection.
+            let (mut loops_seen, mut connected_at) = (0u64, Instant::now());
+            let mut legacy_repeat = true;
+            let mut warned_encoded = false;
             let mut repeat = false;
             let mut report = Instant::now();
             let (mut seen, mut drain) = (0u64, false);
@@ -242,9 +313,34 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 if reactivation.is_some() {
                     continue; // the client is renegotiating the desktop size
                 }
+                let loops = shared.client_loops.load(Ordering::SeqCst);
+                if loops != loops_seen {
+                    (loops_seen, connected_at) = (loops, Instant::now());
+                    legacy_repeat = true;
+                }
                 let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
                     continue;
                 };
+                if !handle.lock().expect("gfx handle mutex").is_ready() {
+                    if connected_at.elapsed() >= LEGACY_AFTER && loops > 0 {
+                        let tx = shared.display.lock().expect("display mutex").clone();
+                        if let Some(tx) = tx {
+                            if !send_bitmaps(
+                                &tx,
+                                capture_src.as_mut(),
+                                &mut outputs,
+                                &layout,
+                                &mut legacy_repeat,
+                                &mut warned_encoded,
+                            ) {
+                                capture = None;
+                                outputs.clear();
+                                current = None;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if !current
                     .as_ref()
                     .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
@@ -252,11 +348,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     current = Some((handle.clone(), Vec::new())); // new connection
                 }
                 let (handle, surfaces) = current.as_mut().expect("set above");
+                // A client that declared it cannot decode H.264 gets uncompressed pixels.
+                let h264;
                 {
                     let mut g = handle.lock().expect("gfx handle mutex");
-                    if !g.is_ready() || !g.supports_avc420() {
-                        continue;
-                    }
+                    h264 = g.supports_avc420();
                     if surfaces.is_empty() {
                         // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
                         if layout.outputs.len() > 1 || reset_graphics {
@@ -358,12 +454,28 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         continue;
                     };
                     let pre_encoded = matches!(frame.data, FrameData::Encoded { .. });
-                    let encoded = match out.encoder.encode(frame) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            tracing::error!("encoding: {e}");
-                            lost = true;
-                            break;
+                    let payload = if h264 {
+                        match out.encoder.encode(frame) {
+                            Ok(e) => e.data,
+                            Err(e) => {
+                                tracing::error!("encoding: {e}");
+                                lost = true;
+                                break;
+                            }
+                        }
+                    } else {
+                        match crate::raw::to_bgra(frame) {
+                            Ok(Some(pixels)) => pixels,
+                            Ok(None) => {
+                                if !std::mem::replace(&mut warned_encoded, true) {
+                                    tracing::warn!("client without H.264: frames already encoded by the agent cannot be sent");
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::error!("raw frame: {e}");
+                                continue;
+                            }
                         }
                     };
                     if pre_encoded {
@@ -376,9 +488,18 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         let region =
                             Avc420Region::full_frame(info.width as u16, info.height as u16, 22);
                         let ts = started.elapsed().as_millis() as u32;
-                        if g.send_avc420_frame(surfaces[i], &encoded.data, &[region], ts)
-                            .is_none()
-                        {
+                        let queued = if h264 {
+                            g.send_avc420_frame(surfaces[i], &payload, &[region], ts)
+                        } else {
+                            g.send_uncompressed_frame(
+                                surfaces[i],
+                                &payload,
+                                info.width as u16,
+                                info.height as u16,
+                                ts,
+                            )
+                        };
+                        if queued.is_none() {
                             dropped += 1;
                             continue;
                         }

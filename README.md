@@ -33,10 +33,12 @@ Serveur RDP (IronRDP 0.13, H.264 via EGFX) pour KDE Plasma Wayland headless, en 
 
 ### Compatibilité FreeRDP (test automatisé, `sdl-freerdp` 3.32)
 Validé : TLS, EGFX V8.1/V10.7 avec AVC420 (≈ 45 trames en 6 s en synthétique, ≈ 28 sur KWin réel), canal audio, 2 écrans (bureau 3840×1080, 2 surfaces), reconnexion, NLA avec bon mot de passe accepté et mauvais refusé.
-Défauts trouvés, non corrigés :
-- **Le serveur ignore `AVC_DISABLED`** : un client qui déclare ne pas vouloir de H.264 reçoit quand même du H.264 (FreeRDP le décode car il en a un ; un client sans décodeur H.264 afficherait n'importe quoi).
-- **Pas de repli sans GFX** : avec `/network:modem` (GFX désactivé), le client ne reçoit aucune trame. Un client dont GFX est désactivé (profil réseau lent, réglage de Remmina) n'affiche rien. Seul le chemin EGFX/H.264 existe.
-- Corrigé au passage : `rdsktp` ne s'arrêtait proprement que sur Ctrl-C ; sur SIGTERM (arrêt de service) la session KWin et ses applications restaient orphelines.
+Défauts trouvés puis corrigés :
+- **`AVC_DISABLED` perdu à la négociation** : la bibliothèque EGFX intersecte les drapeaux du client avec ceux du serveur, et le serveur n'avait pas ce drapeau. Le serveur le reprend maintenant du client (`GfxHandler::preferred_capabilities`) ; un client sans H.264 reçoit des pixels non compressés par EGFX.
+- **Pas de repli sans GFX** : un client sans EGFX (`/network:modem`) ne recevait rien. Après 3 s sans EGFX prêt, la pompe envoie des mises à jour bitmap non compressées (IronRDP les encode).
+- **SIGTERM** : `rdsktp` ne s'arrêtait proprement que sur Ctrl-C ; la session KWin et ses applications restaient orphelines à l'arrêt d'un service.
+
+Limites des replis (derniers recours, bien plus lourds que H.264) : en mode `--login` l'agent n'envoie que du H.264, donc ces clients n'ont rien tant que l'agent n'envoie pas de pixels bruts ; la justesse des pixels n'est pas contrôlée (le test vérifie la réception sans erreur, pas l'image) ; débit élevé (≈ 8 Mo par image en 1080p), régulé par la contre-pression EGFX.
 
 ### Non couvert ou non vérifié
 Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; plusieurs utilisateurs ou clients simultanés ; verrouillage de session et SDDM ; HiDPI ; Remmina lui-même et les clients mobiles ; curseur distant ; coût CPU de N encodeurs logiciels ; paquet Debian.
@@ -46,7 +48,7 @@ Efforts estimés, pas mesurés.
 
 **P0 — bloquants pour un usage réel**
 1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. Reste : clavier, souris, presse-papiers et redimensionnement (il faut un client qui pilote un affichage), le mode `--login` sur la VM, et Remmina lui-même (non installé ici ; il repose sur libfreerdp, donc la pile testée est la même).
-1bis. **Repli sans H.264 / sans GFX** (trouvé par ce test) : voir « Compatibilité FreeRDP ». Effort moyen à élevé.
+1bis. **Repli sans H.264 / sans GFX** : fait en synthétique et en session KWin (voir « Compatibilité FreeRDP »). Reste : le mode `--login` (pixels bruts ou décodage H.264 côté serveur) et le contrôle des pixels reçus.
 2. Verrouillage de session et SDDM : verrouiller, se reconnecter, déverrouiller sans perdre la session. Effort moyen.
 3. Durcissement du mode login : limitation des essais par IP et par compte, journalisation des échecs. Effort moyen.
 

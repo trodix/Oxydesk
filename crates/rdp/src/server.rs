@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_displaycontrol::pdu::{DisplayControlMonitorLayout, MonitorLayoutEntry};
-use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitySet};
+use ironrdp_egfx::pdu::{
+    CapabilitiesAdvertisePdu, CapabilitiesV107Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
+    CapabilitiesV8Flags, CapabilitySet,
+};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_server::{
     CliprdrServerFactory, Credentials, DesktopSize, DisplayUpdate, GfxDvcBridge, GfxServerFactory,
@@ -125,11 +128,56 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
     }
 }
 
-struct GfxHandler;
+/// EGFX negotiation. The library intersects the client's flags with the server's: `AVC_DISABLED` is lost
+/// when the server does not list it, and the client would be sent H.264 it declared it cannot decode. The
+/// server's preferences therefore repeat the client's `AVC_DISABLED` of the same version.
+#[derive(Default)]
+struct GfxHandler {
+    client: Vec<CapabilitySet>,
+}
+
+impl GfxHandler {
+    fn avc_disabled(&self, version: impl Fn(&CapabilitySet) -> Option<bool>) -> bool {
+        self.client.iter().filter_map(version).any(|off| off)
+    }
+}
 
 impl GraphicsPipelineHandler for GfxHandler {
     fn capabilities_advertise(&mut self, pdu: &CapabilitiesAdvertisePdu) {
         tracing::debug!("egfx caps client: {pdu:?}");
+        self.client = pdu
+            .0
+            .iter()
+            .filter_map(|raw| raw.parsed().ok().flatten())
+            .collect();
+    }
+    fn preferred_capabilities(&self) -> Vec<CapabilitySet> {
+        let off_107 = self.avc_disabled(|c| match c {
+            CapabilitySet::V10_7 { flags } => {
+                Some(flags.contains(CapabilitiesV107Flags::AVC_DISABLED))
+            }
+            _ => None,
+        });
+        let off_10 = self.avc_disabled(|c| match c {
+            CapabilitySet::V10 { flags } => {
+                Some(flags.contains(CapabilitiesV10Flags::AVC_DISABLED))
+            }
+            _ => None,
+        });
+        let mut v107 = CapabilitiesV107Flags::SMALL_CACHE;
+        v107.set(CapabilitiesV107Flags::AVC_DISABLED, off_107);
+        let mut v10 = CapabilitiesV10Flags::SMALL_CACHE;
+        v10.set(CapabilitiesV10Flags::AVC_DISABLED, off_10);
+        vec![
+            CapabilitySet::V10_7 { flags: v107 },
+            CapabilitySet::V10 { flags: v10 },
+            CapabilitySet::V8_1 {
+                flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::SMALL_CACHE,
+            },
+        ]
     }
     fn on_ready(&mut self, negotiated: &CapabilitySet) {
         tracing::info!("egfx ready: {negotiated:?}");
@@ -146,11 +194,11 @@ impl ServerEventSender for GfxFactory {
 
 impl GfxServerFactory for GfxFactory {
     fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler> {
-        Box::new(GfxHandler)
+        Box::new(GfxHandler::default())
     }
     fn build_server_with_handle(&self) -> Option<(GfxDvcBridge, GfxServerHandle)> {
         let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(Box::new(
-            GfxHandler,
+            GfxHandler::default(),
         ))));
         *self.0.gfx.lock().expect("gfx mutex") = Some(server.clone());
         Some((GfxDvcBridge::new(server.clone()), server))
@@ -476,4 +524,44 @@ async fn serve(
     let _ = pump.join();
     let _ = poller.join();
     result
+}
+
+#[cfg(test)]
+mod gfx_tests {
+    use super::*;
+    use ironrdp_egfx::pdu::CapabilitiesAdvertisePdu;
+
+    fn advertise(caps: &[CapabilitySet]) -> GfxHandler {
+        let mut h = GfxHandler::default();
+        h.capabilities_advertise(&CapabilitiesAdvertisePdu::from_typed(caps));
+        h
+    }
+
+    #[test]
+    fn a_client_without_h264_keeps_avc_disabled_in_the_preferences() {
+        let h = advertise(&[
+            CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::SMALL_CACHE | CapabilitiesV107Flags::AVC_DISABLED,
+            },
+            CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::SMALL_CACHE,
+            },
+        ]);
+        let prefs = h.preferred_capabilities();
+        assert!(matches!(&prefs[0], CapabilitySet::V10_7 { flags }
+            if flags.contains(CapabilitiesV107Flags::AVC_DISABLED)));
+        assert!(matches!(&prefs[1], CapabilitySet::V10 { flags }
+            if !flags.contains(CapabilitiesV10Flags::AVC_DISABLED)));
+    }
+
+    #[test]
+    fn a_client_with_h264_is_left_alone() {
+        let h = advertise(&[CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::SMALL_CACHE,
+        }]);
+        assert!(
+            matches!(&h.preferred_capabilities()[0], CapabilitySet::V10_7 { flags }
+            if !flags.contains(CapabilitiesV107Flags::AVC_DISABLED))
+        );
+    }
 }

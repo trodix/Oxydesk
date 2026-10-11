@@ -49,7 +49,7 @@ stop_server() { # name
 
 client() { # logfile, extra args... ; returns the client's exit code (124 = still connected at the end)
   local log="$1"; shift
-  timeout "$SECONDS_RUN" "$FREERDP" /v:127.0.0.1:"$PORT" /u:test /p:"${FREERDP_PASSWORD:-x}" /cert:ignore \
+  timeout "${CLIENT_SECONDS:-$SECONDS_RUN}" "$FREERDP" /v:127.0.0.1:"$PORT" /u:test /p:"${FREERDP_PASSWORD:-x}" /cert:ignore \
     /log-level:WARN "$FILTERS" "$@" >"$log" 2>&1
 }
 
@@ -69,6 +69,21 @@ check graphics_reset "$(grep -q "RecvResetGraphicsPdu: width: 1920 height: 1080"
 check h264_frames "$([[ $n -ge 20 ]] && echo 0 || echo 1)" "$n AVC420 frames in ${SECONDS_RUN}s (>= 20)"
 check audio_stream "$(grep -q "audio: stream started" "$OUT/tls.server.log"; echo $?)" "server opened the sound channel"
 check client_no_error "$([[ -z "$(client_errors "$OUT/tls.client.log")" ]]; echo $?)" "$(client_errors "$OUT/tls.client.log" | head -1)"
+
+# 1b. Client that declares it cannot decode H.264: uncompressed pixels through EGFX, no AVC420
+start_server nohh264 || exit 1
+client "$OUT/nohh264.client.log" "/gfx:AVC420:off,AVC444:off"
+stop_server nohh264
+u=$(grep -c "Got GFX RDPGFX_CODECID_UNCOMPRESSED" "$OUT/nohh264.client.log")
+check h264_declined "$([[ $u -ge 10 && $(frames "$OUT/nohh264.client.log") -eq 0 ]] && echo 0 || echo 1)" "$u uncompressed frame(s), $(frames "$OUT/nohh264.client.log") H.264"
+check h264_declined_flag "$(grep -q "AVC_DISABLED" "$OUT/nohh264.server.log"; echo $?)" "AVC_DISABLED kept in the confirmed capabilities"
+
+# 1c. Client without EGFX (slow network profile): bitmap updates after the fallback delay
+start_server nogfx || exit 1
+CLIENT_SECONDS=$((SECONDS_RUN + 5)) client "$OUT/nogfx.client.log" /network:modem "/log-filters:com.freerdp.gdi:DEBUG"
+stop_server nogfx
+b=$(grep -c "gdi_surface_bits" "$OUT/nogfx.client.log")
+check no_gfx_bitmaps "$([[ $b -ge 10 && $(frames "$OUT/nogfx.client.log") -eq 0 ]] && echo 0 || echo 1)" "$b bitmap update(s) without EGFX"
 
 # 2. Two outputs: one surface per output in a desktop twice as wide
 start_server outputs --outputs 2 || exit 1

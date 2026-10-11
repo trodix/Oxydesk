@@ -3,6 +3,7 @@
 
 pub mod clipboard;
 mod pump;
+mod raw;
 mod server;
 mod sound;
 
