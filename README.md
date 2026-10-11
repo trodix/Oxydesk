@@ -47,7 +47,7 @@ Transfert de fichiers, imprimantes, lecteurs, cartes à puce, microphone, USB ; 
 Efforts estimés, pas mesurés.
 
 **P0 — bloquants pour un usage réel**
-1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. Reste : clavier, souris, presse-papiers et redimensionnement (il faut un client qui pilote un affichage), le mode `--login` sur la VM, et Remmina lui-même (non installé ici ; il repose sur libfreerdp, donc la pile testée est la même).
+1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. **Fait** : clavier, presse-papiers, redimensionnement et Remmina via `ci/clients-test.sh` (conteneur Docker ou Podman, Xvfb + xdotool). Reste : souris, le mode `--login` sur la VM.
 1bis. **Repli sans H.264 / sans GFX** : fait en synthétique et en session KWin (voir « Compatibilité FreeRDP »). Reste : le mode `--login` (pixels bruts ou décodage H.264 côté serveur) et le contrôle des pixels reçus.
 2. Verrouillage de session et SDDM : verrouiller, se reconnecter, déverrouiller sans perdre la session. Effort moyen.
 3. Durcissement du mode login : limitation des essais par IP et par compte, journalisation des échecs. Effort moyen.
@@ -70,8 +70,9 @@ Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 
 
 ## Commandes
 - `cargo test --workspace` — tests unitaires (core, client de test + mock, xtask).
-- `cargo xtask test` — tests unitaires seulement (rapide) ; `--server` ajoute le test serveur (VM Debian 13, `vm-test`), `--client` le test client (client Windows mstsc, lent : snapshot QEMU Windows 11, session RDP avec le moteur du client Microsoft : connexion, images, presse-papiers, audio, demande de redimensionnement). `--freerdp` le test de compatibilité FreeRDP (voir plus bas). `--integration` lance les trois, indépendants. Prérequis : KVM, qemu ; VM Debian créée une fois (`bash vm/vm.sh create`), VM Windows installée une fois (`bash vm/win11.sh install`, avec swtpm).
+- `cargo xtask test` — tests unitaires seulement (rapide) ; `--server` ajoute le test serveur (VM Debian 13, `vm-test`), `--client` le test client (client Windows mstsc, lent : snapshot QEMU Windows 11, session RDP avec le moteur du client Microsoft : connexion, images, presse-papiers, audio, demande de redimensionnement). `--freerdp` le test de compatibilité FreeRDP (voir plus bas). `--clients` les vrais clients xfreerdp et Remmina dans un conteneur (voir plus bas). `--integration` lance les quatre, indépendants. Prérequis : KVM, qemu ; VM Debian créée une fois (`bash vm/vm.sh create`), VM Windows installée une fois (`bash vm/win11.sh install`, avec swtpm).
 - `bash ci/freerdp-test.sh` — compatibilité FreeRDP (`sdl-freerdp` sans affichage, `FREERDP_SESSION=kwin` pour une vraie session KWin) : connexion TLS, EGFX/H.264, 2 écrans, audio, reconnexion, NLA accepté/refusé. Journaux dans `artifacts/freerdp-test/`.
+- `bash ci/clients-test.sh [xfreerdp|remmina]` — vrais clients (xfreerdp 3 et Remmina) dans un conteneur Debian 13 (`docker/clients/`) : Xvfb, openbox, xdotool, xclip. Contre le bureau synthétique, il vérifie comme un utilisateur la taille et les images affichées, le clavier (couleur du marqueur), le presse-papiers (aller-retour) et le redimensionnement dynamique (xfreerdp). Seul Docker **ou** Podman est requis sur la machine (`CONTAINER_ENGINE=docker|podman` pour forcer ; Podman préféré, sans root). Journaux et captures dans `artifacts/clients-test/`.
 - `cargo run -p rdp-test-client -- --mock --out /tmp/out` — client de test contre le mock.
 - `bash vm/vm.sh create` — télécharge/provisionne la VM Debian 13 (une fois, état dans `vm/state/`).
 - `cargo xtask vm-test` — cycle complet build → VM → client → rapport (`artifacts/vm-test/latest.json`).
