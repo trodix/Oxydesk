@@ -140,7 +140,7 @@ impl SessionProvider for KwinSession {
                 &self.cfg.height.to_string(),
             ])
             .args(["--output-count", &self.cfg.outputs.max(1).to_string()])
-            .args(["--no-lockscreen", "--no-global-shortcuts"])
+            .args(["--no-global-shortcuts"])
             .env_remove("WAYLAND_DISPLAY")
             .stdin(Stdio::null());
         let mut child = kwin

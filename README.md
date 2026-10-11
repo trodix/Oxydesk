@@ -50,7 +50,7 @@ Efforts estimés, pas mesurés.
 **P0 — bloquants pour un usage réel**
 1. Tests avec FreeRDP et Remmina. **Fait en partie** : `ci/freerdp-test.sh` (synthétique et KWin réel) couvre connexion, EGFX/H.264, 2 écrans, audio, reconnexion, NLA. **Fait** : clavier, souris, presse-papiers, redimensionnement, xfreerdp et Remmina via `ci/clients-test.sh` (conteneur Docker ou Podman, Xvfb + xdotool). Mode `--login` sur la VM : `ci/freerdp-login-test.sh` (voir plus bas).
 1bis. **Repli sans H.264 / sans GFX** : fait en synthétique et en session KWin (voir « Compatibilité FreeRDP »). **Fait aussi en mode `--login`** : l'agent envoie des pixels bruts (`ToAgent::SetPixels`, `FromAgent::VideoRaw`) quand le client ne sait pas décoder le H.264, et revient au flux H.264 ensuite ; ils partent en EGFX non compressé ou en bitmaps selon le client. Reste : le contrôle des pixels reçus par ces replis (les clients ne sont comptés que par leurs traces) et les écrans 4K (une trame brute dépasse les 32 Mo du protocole agent).
-2. Verrouillage de session et SDDM : verrouiller, se reconnecter, déverrouiller sans perdre la session. Effort moyen.
+2. Verrouillage de session et SDDM : **fait** (voir « Verrouillage de session » ci-dessous).
 3. Durcissement du mode login : **fait** (voir « Limitation des essais » ci-dessous).
 
 **P1 — fonctions de base manquantes**
@@ -68,6 +68,11 @@ Efforts estimés, pas mesurés.
 **P3 — facultatif** : fichiers partagés, imprimantes, microphone, USB, cartes à puce ; NLA en mode login (dépend d'IronRDP) ; abandon du repli de mise à l'échelle quand KWin ≥ 6.7 sera la cible.
 
 Ordre conseillé : 1 puis 6 (vérifications rapides), puis 2 et 3, puis 4, 5 et 7, le reste selon l'usage.
+
+## Verrouillage de session
+KWin n'est plus lancé avec `--no-lockscreen` : l'écran de verrouillage (`kscreenlocker_greet`) fait partie de la session, donc il apparaît dans l'image capturée, le clavier et la souris RDP l'atteignent, et le mot de passe tapé est vérifié par PAM. Le verrou survit à la déconnexion : le client qui revient retrouve le même KWin, toujours verrouillé, et le déverrouille avec le mot de passe du compte. Test (VM Debian 13, xfreerdp en conteneur) : `RDP_TEST_PASSWORD=... bash ci/lock-test.sh` (verrou affiché, persistance à la reconnexion avec le même KWin, mauvais mot de passe refusé, déverrouillage).
+Comment verrouiller : le bouton « Verrouiller » du lanceur Plasma, `loginctl lock-session` ou `dbus-send --session --type=method_call --dest=org.freedesktop.ScreenSaver /ScreenSaver org.freedesktop.ScreenSaver.Lock`. Limites : les raccourcis globaux sont désactivés (`--no-global-shortcuts`), donc Meta+L ne verrouille pas (mstsc garde de toute façon Win+L pour la machine locale) ; pas de verrouillage automatique sur inactivité (pas de PowerDevil dans la session).
+**SDDM** n'a pas de rôle dans cette architecture : `rdsktp-authd` (PAM) remplace l'écran de connexion et ouvre une vraie session logind par utilisateur, sans gestionnaire d'affichage. La session RDP est indépendante d'une éventuelle session SDDM de la même machine.
 
 ## Limitation des essais (mode `--login`)
 Après `--max-login-failures` (5 par défaut) mots de passe refusés depuis une même adresse, ou `--max-user-failures` (10) contre un même compte, en moins de 5 minutes, l'adresse ou le compte est bloqué `--login-lockout-secs` (300 s). Une adresse bloquée est coupée dès l'acceptation TCP ; un compte bloqué est refusé sans interroger PAM, même avec le bon mot de passe. Un succès remet les compteurs à zéro. Les échecs, blocages et connexions réussies sont journalisés avec l'adresse et le compte (échappé). Les tables sont bornées (4096 entrées). Le seuil par compte est plus haut car il permet à quiconque connaît un nom de verrouiller son titulaire ; derrière un proxy ou un NAT, toutes les connexions partagent une même adresse. Logique dans `crates/core/src/throttle.rs`, branchement dans `crates/rdp/src/server.rs`. Les compteurs sont en mémoire : un redémarrage les efface. Test : `ci/freerdp-login-test.sh`.
