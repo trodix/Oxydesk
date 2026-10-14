@@ -21,11 +21,21 @@ struct Mailbox {
     queue: VecDeque<Frame>,
     /// Gap in the inter-frame stream: everything is ignored until the next keyframe.
     wait_key: bool,
+    /// The backlog overflowed: the keyframe is asked for when the consumer is back for frames, not before (a
+    /// keyframe asked while it is still held back by a slow link only makes the congestion worse).
+    resync_pending: bool,
+    /// The agent was asked to stop encoding this output (see `HOLD_AT`).
+    held: bool,
 }
 
 /// Beyond this, the consumer is too slow (EGFX back-pressure): drop the queue and restart from a keyframe
 /// rather than accumulating latency.
 const MAX_QUEUE: usize = 4;
+
+/// From this many frames waiting, the agent is told to stop encoding the output until the queue is empty again: the
+/// consumer is held back (slow link), and frames made meanwhile could only be dropped, after which a keyframe
+/// would have to follow. Holding keeps the stream intact: no gap, no keyframe, no encoder time wasted.
+const HOLD_AT: usize = 2;
 
 #[derive(Default)]
 struct AudioQueue {
@@ -199,15 +209,19 @@ impl AgentLink {
                 } else if mb.queue.len() >= MAX_QUEUE {
                     mb.queue.clear();
                     mb.wait_key = true;
-                    drop(mb);
-                    drop(video);
-                    self.send(&ToAgent::RequestKeyframe { output });
+                    mb.resync_pending = true;
                     return;
                 } else {
                     mb.queue.push_back(frame);
                 }
+                // Also renewed while held: the agent's hold expires if it is not (frames arriving anyway).
+                let hold = mb.queue.len() >= HOLD_AT;
+                mb.held |= hold;
                 drop(mb);
                 drop(video);
+                if hold {
+                    self.send(&ToAgent::Hold { output, held: true });
+                }
                 self.wake();
             }
             FromAgent::VideoRaw {
@@ -383,14 +397,28 @@ impl AgentLink {
     }
 
     pub fn take_frame(&self, output: OutputId) -> Option<Frame> {
-        self.video
-            .read()
-            .expect("video lock")
-            .get(output.0 as usize)?
-            .lock()
-            .expect("mailbox mutex")
-            .queue
-            .pop_front()
+        let video = self.video.read().expect("video lock");
+        let mut mb = video.get(output.0 as usize)?.lock().expect("mailbox mutex");
+        let resync = std::mem::take(&mut mb.resync_pending);
+        let frame = mb.queue.pop_front();
+        let release = mb.held && mb.queue.is_empty();
+        mb.held &= !release;
+        drop(mb);
+        drop(video);
+        if release {
+            self.send(&ToAgent::Hold {
+                output: output.0,
+                held: false,
+            });
+        }
+        if resync {
+            tracing::debug!(
+                output = output.0,
+                "agent backlog overflowed: asking for a keyframe"
+            );
+            self.send(&ToAgent::RequestKeyframe { output: output.0 });
+        }
+        frame
     }
 
     /// Asks the agent for uncompressed pixels (clients without H.264) or, with `false`, for its H.264 stream again.
@@ -420,6 +448,7 @@ impl AgentLink {
             let mut mb = slot.lock().expect("mailbox mutex");
             mb.queue.clear();
             mb.wait_key = true;
+            mb.resync_pending = false;
         }
         self.send(&ToAgent::RequestKeyframe { output: output.0 });
     }
@@ -739,8 +768,39 @@ mod tests {
             write_msg(&mut agent, &video(false, t)).unwrap(); // never consumed
         }
         agent
+            .set_read_timeout(Some(Duration::from_millis(600)))
+            .unwrap();
+        // The consumer is held back (slow link): the agent is told to stop, and no keyframe is asked for yet
+        // (it would only add to the congestion).
+        let hold = ToAgent::Hold {
+            output: 0,
+            held: true,
+        };
+        let mut holds = 0;
+        loop {
+            let m: Result<Option<ToAgent>, _> = read_msg(&mut agent);
+            match m {
+                Ok(Some(m)) if m == hold => holds += 1,
+                Ok(other) => {
+                    panic!("keyframe requested while the consumer was held back: {other:?}")
+                }
+                Err(_) => break, // quiet: nothing else was asked
+            }
+        }
+        assert!(holds >= 1);
+        // It is back for frames: now the resync keyframe is requested.
+        assert!(link.take_frame(OutputId(0)).is_none());
+        agent
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
+        let released: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        assert_eq!(
+            released,
+            ToAgent::Hold {
+                output: 0,
+                held: false
+            }
+        );
         let req: ToAgent = read_msg(&mut agent).unwrap().unwrap();
         assert_eq!(req, ToAgent::RequestKeyframe { output: 0 });
         write_msg(&mut agent, &video(false, 90)).unwrap(); // still waiting for a keyframe: ignored
@@ -748,6 +808,41 @@ mod tests {
         let got = wait_for(|| link.take_frame(OutputId(0)).map(tag));
         assert_eq!(got, (true, 91), "only the resync keyframe must come out");
         assert!(link.take_frame(OutputId(0)).is_none());
+    }
+
+    #[test]
+    fn a_filling_queue_holds_the_agent_and_draining_it_releases_it() {
+        let (link, mut agent) = pair();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_msg(&mut agent, &video(true, 1)).unwrap();
+        write_msg(&mut agent, &video(false, 2)).unwrap();
+        let held: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        assert_eq!(
+            held,
+            ToAgent::Hold {
+                output: 0,
+                held: true
+            }
+        );
+        // Both frames are still delivered, in order, without any keyframe: nothing was lost.
+        assert_eq!(
+            wait_for(|| link.take_frame(OutputId(0)).map(tag)),
+            (true, 1)
+        );
+        assert_eq!(
+            wait_for(|| link.take_frame(OutputId(0)).map(tag)),
+            (false, 2)
+        );
+        let released: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        assert_eq!(
+            released,
+            ToAgent::Hold {
+                output: 0,
+                held: false
+            }
+        );
     }
 
     #[test]

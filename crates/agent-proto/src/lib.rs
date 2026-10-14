@@ -267,6 +267,12 @@ pub enum ToAgent {
     SetBitrate {
         bitrate_bps: u32,
     },
+    /// The server's queue of an output is filling up (`held`) or is empty again: the agent stops encoding that
+    /// output meanwhile instead of making frames the server would have to throw away, with a keyframe to follow.
+    Hold {
+        output: u32,
+        held: bool,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -904,6 +910,11 @@ impl Message for ToAgent {
                 o.u32(*bitrate_bps);
                 23
             }
+            Self::Hold { output, held } => {
+                o.u32(*output);
+                o.u8(u8::from(*held));
+                24
+            }
         };
         (tag, o.0)
     }
@@ -1001,6 +1012,10 @@ impl Message for ToAgent {
             },
             23 => Self::SetBitrate {
                 bitrate_bps: i.u32()?,
+            },
+            24 => Self::Hold {
+                output: i.u32()?,
+                held: i.u8()? != 0,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -1307,6 +1322,10 @@ mod tests {
         roundtrip(ToAgent::RequestKeyframe { output: 1 });
         roundtrip(ToAgent::SetBitrate {
             bitrate_bps: 2_500_000,
+        });
+        roundtrip(ToAgent::Hold {
+            output: 1,
+            held: true,
         });
         roundtrip(ToAgent::ClipboardSet("Café 😀 日本".into()));
         roundtrip(ToAgent::ClipboardImageSet(vec![137, 80, 78, 71]));

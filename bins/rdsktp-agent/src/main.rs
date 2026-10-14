@@ -10,7 +10,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -200,7 +200,32 @@ fn button(b: u8) -> Option<PointerButton> {
 }
 
 /// Capture -> encode -> send, at a fixed rate. A keyframe is produced on connection and on request.
-fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<Vec<AtomicBool>>) {
+/// A hold asked for by the server lasts at most this long without being renewed (a lost release must not freeze
+/// the video).
+const HOLD_MAX_MS: u64 = 1000;
+
+fn now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+        + 1
+}
+
+/// `since` is the time of the hold (0 = not held).
+fn held(since: &AtomicU64) -> bool {
+    let t = since.load(Ordering::Relaxed);
+    t != 0 && now_ms().saturating_sub(t) < HOLD_MAX_MS
+}
+
+fn video_loop(
+    d: Arc<Desktop>,
+    w: Writer,
+    stop: Arc<AtomicBool>,
+    keyframes: Arc<Vec<AtomicBool>>,
+    holds: Arc<Vec<AtomicU64>>,
+) {
     let fps = d.fps;
     let mut encoders: Vec<Box<dyn FrameEncoder>> = Vec::new();
     let mut last: Vec<Option<rdsktp_core::Frame>> = Vec::new();
@@ -269,6 +294,7 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         last.resize_with(outputs, || None);
         if d.resized.swap(false, Ordering::SeqCst) {
             last.iter_mut().for_each(|l| *l = None);
+            holds.iter().for_each(|h| h.store(0, Ordering::Relaxed));
             keyframes
                 .iter()
                 .for_each(|k| k.store(true, Ordering::Relaxed));
@@ -277,6 +303,8 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
             let wanted_key = first || keyframes[i].swap(false, Ordering::Relaxed);
             if wanted_key {
                 encoders[i].request_keyframe();
+            } else if held(&holds[i]) {
+                continue; // the server has frames enough waiting: the next ones would only be thrown away
             }
             let fresh = match d
                 .capture
@@ -332,6 +360,9 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
                     return;
                 }
             };
+            if encoded.data.is_empty() {
+                continue; // frame skipped by the rate control
+            }
             let msg = FromAgent::Video {
                 output: i as u32,
                 keyframe: encoded.keyframe,
@@ -340,9 +371,6 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
                 data: encoded.data,
             };
             if !send(&w, &msg) {
-            if encoded.data.is_empty() {
-                continue; // frame skipped by the rate control
-            }
                 stop.store(true, Ordering::Relaxed);
                 return;
             }
@@ -422,9 +450,12 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     let files = Arc::new(FileExchange::default());
     let keyframes: Arc<Vec<AtomicBool>> =
         Arc::new((0..MAX_OUTPUTS).map(|_| AtomicBool::new(true)).collect());
+    let holds: Arc<Vec<AtomicU64>> =
+        Arc::new((0..MAX_OUTPUTS).map(|_| AtomicU64::new(0)).collect());
     let mut threads = vec![{
         let (d, w, stop, kf) = (d.clone(), writer.clone(), stop.clone(), keyframes.clone());
-        std::thread::spawn(move || video_loop(d, w, stop, kf))
+        let holds = holds.clone();
+        std::thread::spawn(move || video_loop(d, w, stop, kf, holds))
     }];
     threads.push({
         let (d, w, stop, files) = (d.clone(), writer.clone(), stop.clone(), files.clone());
@@ -612,6 +643,11 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::SetBitrate { bitrate_bps } => {
                 d.bitrate.store(bitrate_bps, Ordering::Relaxed);
+            }
+            ToAgent::Hold { output, held } => {
+                if let Some(h) = holds.get(output as usize) {
+                    h.store(if held { now_ms() } else { 0 }, Ordering::Relaxed);
+                }
             }
             ToAgent::RequestKeyframe { output } => {
                 if let Some(k) = keyframes.get(output as usize) {
