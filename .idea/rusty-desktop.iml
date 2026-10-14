@@ -25,7 +25,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/session/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/xtask/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bins/rdp-test-client/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/rdsktp-cups-backend/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/drivefs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/spool/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

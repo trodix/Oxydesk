@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::ops::Not;
 use std::path::PathBuf;
@@ -334,12 +335,35 @@ impl CliprdrBackendFactory for ClipFactory {
 
 impl CliprdrServerFactory for ClipFactory {}
 
-struct Input(Slot<Box<dyn InputSink>>);
+struct Input {
+    slot: Slot<Box<dyn InputSink>>,
+    keys: HeldKeys,
+}
+
+/// The keys the client holds down. A lost key release (focus change on the client, a dropped fast-path PDU) would
+/// leave a key stuck in the session: the client's synchronize event releases whatever is still believed held.
+#[derive(Default)]
+struct HeldKeys(BTreeSet<u16>);
+
+impl HeldKeys {
+    fn track(&mut self, scancode: u16, pressed: bool) {
+        if pressed {
+            self.0.insert(scancode);
+        } else {
+            self.0.remove(&scancode);
+        }
+    }
+
+    /// The keys to release, in a stable order; none is held afterwards.
+    fn take(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.0).into_iter().collect()
+    }
+}
 
 impl Input {
     /// Applies `f` to the input port of the current session (ignored while no session is open).
     fn with<R>(&self, f: impl FnOnce(&mut dyn InputSink) -> R) -> Option<R> {
-        self.0
+        self.slot
             .lock()
             .expect("input mutex")
             .as_mut()
@@ -352,9 +376,25 @@ impl RdpServerInputHandler for Input {
         let (code, extended, pressed) = match event {
             KeyboardEvent::Pressed { code, extended } => (code, extended, true),
             KeyboardEvent::Released { code, extended } => (code, extended, false),
+            KeyboardEvent::Synchronize(_) => {
+                let stuck = self.keys.take();
+                if !stuck.is_empty() {
+                    tracing::debug!(
+                        "keyboard synchronize: releasing {} held key(s)",
+                        stuck.len()
+                    );
+                }
+                for scancode in stuck {
+                    if let Some(Err(e)) = self.with(|i| i.key(scancode, false)) {
+                        tracing::warn!("input: {e}");
+                    }
+                }
+                return;
+            }
             _ => return,
         };
         let scancode = u16::from(code) | if extended { 0xE000 } else { 0 };
+        self.keys.track(scancode, pressed);
         if let Some(Err(e)) = self.with(|i| i.key(scancode, pressed)) {
             tracing::warn!("input: {e}");
         }
@@ -556,7 +596,10 @@ async fn serve(
     };
     let send = clip_factory.send_fn();
     let mut server = builder
-        .with_input_handler(Input(slot.input.clone()))
+        .with_input_handler(Input {
+            slot: slot.input.clone(),
+            keys: HeldKeys::default(),
+        })
         .with_display_handler(Display {
             initial: DesktopSize {
                 width: desktop.0 as u16,
@@ -686,5 +729,122 @@ mod gfx_tests {
             matches!(&h.preferred_capabilities()[0], CapabilitySet::V10_7 { flags }
             if !flags.contains(CapabilitiesV107Flags::AVC_DISABLED))
         );
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use ironrdp_pdu::input::fast_path::SynchronizeFlags;
+    use rdsktp_core::error::InputError;
+
+    type Log = Arc<Mutex<Vec<(u16, bool)>>>;
+
+    struct Recorder(Log);
+
+    impl InputSink for Recorder {
+        fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+            self.0.lock().unwrap().push((scancode, pressed));
+            Ok(())
+        }
+        fn pointer_move(&mut self, _: i32, _: i32) -> Result<(), InputError> {
+            Ok(())
+        }
+    }
+
+    fn input() -> (Input, Log) {
+        let log = Log::default();
+        let slot: Slot<Box<dyn InputSink>> =
+            Arc::new(Mutex::new(Some(Box::new(Recorder(log.clone())))));
+        (
+            Input {
+                slot,
+                keys: HeldKeys::default(),
+            },
+            log,
+        )
+    }
+
+    fn press(i: &mut Input, code: u8, extended: bool) {
+        i.keyboard(KeyboardEvent::Pressed { code, extended });
+    }
+
+    fn release(i: &mut Input, code: u8, extended: bool) {
+        i.keyboard(KeyboardEvent::Released { code, extended });
+    }
+
+    fn sync(i: &mut Input) {
+        i.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::empty()));
+    }
+
+    #[test]
+    fn synchronize_releases_the_keys_still_held() {
+        let (mut i, log) = input();
+        press(&mut i, 0x38, false); // Alt
+        press(&mut i, 0x1D, true); // right Ctrl (extended)
+        press(&mut i, 0x1E, false); // A
+        release(&mut i, 0x1E, false);
+        log.lock().unwrap().clear();
+        sync(&mut i);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![(0x38, false), (0xE01D, false)],
+            "only Alt and right Ctrl, in a stable order, as releases"
+        );
+    }
+
+    #[test]
+    fn synchronize_releases_a_key_only_once() {
+        let (mut i, log) = input();
+        press(&mut i, 0x2A, false);
+        sync(&mut i);
+        log.lock().unwrap().clear();
+        sync(&mut i);
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn synchronize_without_held_keys_sends_nothing() {
+        let (mut i, log) = input();
+        press(&mut i, 0x1E, false);
+        release(&mut i, 0x1E, false);
+        log.lock().unwrap().clear();
+        sync(&mut i);
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_released_key_is_no_longer_tracked() {
+        let (mut i, log) = input();
+        press(&mut i, 0x38, false);
+        release(&mut i, 0x38, false);
+        press(&mut i, 0x3A, false); // Caps Lock, still held
+        log.lock().unwrap().clear();
+        sync(&mut i);
+        assert_eq!(*log.lock().unwrap(), vec![(0x3A, false)]);
+    }
+
+    #[test]
+    fn extended_and_plain_keys_with_the_same_code_are_distinct() {
+        let (mut i, log) = input();
+        press(&mut i, 0x1D, false); // left Ctrl
+        press(&mut i, 0x1D, true); // right Ctrl
+        release(&mut i, 0x1D, true);
+        log.lock().unwrap().clear();
+        sync(&mut i);
+        assert_eq!(*log.lock().unwrap(), vec![(0x1D, false)]);
+    }
+
+    #[test]
+    fn without_a_session_synchronize_is_harmless() {
+        let (mut i, _) = input();
+        press(&mut i, 0x38, false);
+        *i.slot.lock().unwrap() = None;
+        sync(&mut i);
+        // The held keys were dropped with the release that had nowhere to go.
+        let log = Log::default();
+        *i.slot.lock().unwrap() = Some(Box::new(Recorder(log.clone())));
+        sync(&mut i);
+        assert!(log.lock().unwrap().is_empty());
     }
 }
