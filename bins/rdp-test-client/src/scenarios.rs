@@ -86,6 +86,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
             "first_frame",
             "frames_flow",
             "key_to_pixel",
+            "key_sync_release",
             "clipboard_roundtrip",
             "clipboard_roundtrip_large",
             "clipboard_image_roundtrip",
@@ -114,6 +115,7 @@ pub fn run_all(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
     }
     frames_flow(s, cfg, r);
     key_to_pixel(s, cfg, r);
+    key_sync_release(s, cfg, r);
     clipboard(s, cfg, "clipboard_roundtrip", &short_text(), r);
     clipboard(s, cfg, "clipboard_roundtrip_large", &large_text(), r);
     clipboard_image(s, cfg, "clipboard_image_roundtrip", 37, 23, r);
@@ -397,6 +399,47 @@ fn frames_flow(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
         transitions >= 10,
         format!("{transitions} alternations over {frames} frames"),
     );
+}
+
+/// A key whose release never arrives (lost on the way, focus taken by another window): the synchronize event the
+/// client sends when it regains the focus must release it. The probe key shows white while the session believes it
+/// is down and black once released.
+fn key_sync_release(s: &mut dyn Session, cfg: &Config, r: &mut Report) {
+    if let Err(e) = s.send_key(PROBE_KEY, true) {
+        r.check("key_sync_release", false, e);
+        return;
+    }
+    if !wait_marker(s, cfg, PROBE_COLOR) {
+        r.check("key_sync_release", false, "the pressed key never showed");
+        return;
+    }
+    if let Err(e) = s.send_sync() {
+        r.check("key_sync_release", false, e);
+        return;
+    }
+    let released = wait_marker(s, cfg, [0, 0, 0]);
+    r.check(
+        "key_sync_release",
+        released,
+        if released {
+            "held key released by the synchronize event".to_string()
+        } else {
+            "the key stayed down after the synchronize event".to_string()
+        },
+    );
+}
+
+/// Waits for the marker to take `color`.
+fn wait_marker(s: &mut dyn Session, cfg: &Config, color: [u8; 3]) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < cfg.timeout {
+        match s.next_frame(cfg.timeout) {
+            Ok(f) if marker(&f).is_some_and(|m| close_to(m, color)) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn key_to_pixel(s: &mut dyn Session, cfg: &Config, r: &mut Report) {

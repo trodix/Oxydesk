@@ -7,7 +7,7 @@ mod synthetic;
 pub use synthetic::echo_copy;
 pub use synthetic::{
     SyntheticDesktop, SyntheticSource, BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS,
-    PALETTE,
+    PALETTE, PROBE_COLOR, PROBE_KEY,
 };
 
 #[cfg(feature = "kwin")]

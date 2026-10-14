@@ -9,7 +9,9 @@ use std::os::unix::fs::FileExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rdsktp_capture::{BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE};
+use rdsktp_capture::{
+    BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE, PROBE_COLOR, PROBE_KEY,
+};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool,
     wl_surface,
@@ -208,18 +210,28 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
     ) {
         let wl_keyboard::Event::Key {
             key,
-            state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+            state: WEnum::Value(state),
             ..
         } = ev
         else {
             return;
         };
-        let Some(i) = KEYS.iter().position(|&k| u32::from(k) == key) else {
+        let pressed = state == wl_keyboard::KeyState::Pressed;
+        let color = if u32::from(PROBE_KEY) == key {
+            // White while the probe key is down, black once released (see `PROBE_KEY`).
+            if pressed {
+                PROBE_COLOR
+            } else {
+                [0, 0, 0]
+            }
+        } else if let (true, Some(i)) = (pressed, KEYS.iter().position(|&k| u32::from(k) == key)) {
+            PALETTE[i]
+        } else {
             return;
         };
         if let Some(c) = s.canvases.first() {
             let c = c.lock().expect("canvas");
-            c.fill_block(MARKER_POS, PALETTE[i]);
+            c.fill_block(MARKER_POS, color);
             c.commit();
         }
     }

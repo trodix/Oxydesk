@@ -10,6 +10,10 @@ pub const BLOCK: u32 = 32;
 pub const MARKER_POS: (u32, u32) = (0, 0);
 pub const HEARTBEAT_POS: (u32, u32) = (32, 0);
 pub const KEYS: [u16; 8] = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
+/// Probe key (`9`): while down the marker is white, once released it is black. Unlike the keys of `KEYS`, whose marker
+/// stays after the release, it tells whether the session believes the key is still held down.
+pub const PROBE_KEY: u16 = 0x0A;
+pub const PROBE_COLOR: [u8; 3] = [255, 255, 255];
 pub const PALETTE: [[u8; 3]; 8] = [
     [255, 0, 0],
     [0, 255, 0],
@@ -39,6 +43,8 @@ pub struct SyntheticSource {
     height: u32,
     tick: u64,
     marker: Option<usize>,
+    /// State of the probe key, once used (it then overrides `marker` until a key of `KEYS` is pressed).
+    probe: Option<bool>,
     noise: bool,
     /// Rank of the output: outputs after the first carry an identity block (`IDENTITY_POS`).
     index: u32,
@@ -60,6 +66,7 @@ impl SyntheticSource {
             height,
             tick: 0,
             marker: None,
+            probe: None,
             noise: false,
             index: 0,
             pointer: None,
@@ -97,6 +104,12 @@ impl SyntheticSource {
     /// Press of key `index` (0..8): the marker takes the corresponding color.
     pub fn set_marker(&mut self, index: usize) {
         self.marker = Some(index % PALETTE.len());
+        self.probe = None;
+    }
+
+    /// Press (`true`) or release of the probe key.
+    pub fn set_probe(&mut self, down: bool) {
+        self.probe = Some(down);
     }
 
     pub fn render(&mut self) -> Frame {
@@ -139,7 +152,11 @@ impl SyntheticSource {
             };
             fill(&mut px, w, pos, color);
         }
-        let marker = self.marker.map_or([0, 0, 0], |i| PALETTE[i]);
+        let marker = match self.probe {
+            Some(true) => PROBE_COLOR,
+            Some(false) => [0, 0, 0],
+            None => self.marker.map_or([0, 0, 0], |i| PALETTE[i]),
+        };
         fill(&mut px, w, MARKER_POS, marker);
         let beat = if self.tick.is_multiple_of(2) {
             HEARTBEAT_ON
@@ -253,6 +270,7 @@ impl CaptureSource for SyntheticDesktop {
                 Some(old) => {
                     let mut s = SyntheticSource {
                         marker: old.marker,
+                        probe: old.probe,
                         tick: old.tick,
                         pointer: old.pointer,
                         buttons: old.buttons,
@@ -276,6 +294,12 @@ impl CaptureSource for SyntheticDesktop {
 
 impl InputSink for SyntheticDesktop {
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+        if scancode == PROBE_KEY {
+            self.state()
+                .sources
+                .iter_mut()
+                .for_each(|s| s.set_probe(pressed));
+        }
         if pressed {
             if let Some(i) = KEYS.iter().position(|&k| k == scancode) {
                 self.state()
@@ -515,6 +539,28 @@ mod tests {
         s.set_marker(2);
         assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2]);
         assert_eq!(pixel(&s.render(), 5, 5), PALETTE[2], "the color persists");
+    }
+
+    fn shown(d: &mut SyntheticDesktop) -> [u8; 3] {
+        pixel(&d.recv_latest(OutputId(0)).unwrap().unwrap(), 5, 5)
+    }
+
+    #[test]
+    fn probe_key_is_white_while_down_and_black_once_released() {
+        let mut d = SyntheticDesktop::new(256, 128);
+        d.key(KEYS[1], true).unwrap();
+        d.key(KEYS[1], false).unwrap();
+        assert_eq!(
+            shown(&mut d),
+            PALETTE[1],
+            "a release does not clear the marker of the keys 1..8"
+        );
+        d.key(PROBE_KEY, true).unwrap();
+        assert_eq!(shown(&mut d), PROBE_COLOR);
+        d.key(PROBE_KEY, false).unwrap();
+        assert_eq!(shown(&mut d), [0, 0, 0]);
+        d.key(KEYS[3], true).unwrap();
+        assert_eq!(shown(&mut d), PALETTE[3], "a key press takes over");
     }
 
     #[test]

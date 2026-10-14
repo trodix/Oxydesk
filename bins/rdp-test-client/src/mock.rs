@@ -15,6 +15,8 @@ pub struct MockFaults {
     pub tone_hz: f64,
     /// The server refuses any connection after the first one.
     pub no_reconnect: bool,
+    /// The server ignores the synchronize event (a held key stays down).
+    pub ignore_sync: bool,
 }
 
 impl Default for MockFaults {
@@ -25,6 +27,7 @@ impl Default for MockFaults {
             desktop: (1920, 1080),
             tone_hz: crate::audio::TONE_HZ,
             no_reconnect: false,
+            ignore_sync: false,
         }
     }
 }
@@ -34,6 +37,8 @@ pub struct MockSession {
     faults: MockFaults,
     marker: [u8; 3],
     pending: Option<(Instant, [u8; 3])>,
+    /// Keys held down, as the server tracks them.
+    held: Vec<u16>,
     beat: bool,
     clip: VecDeque<String>,
     clip_images: VecDeque<Vec<u8>>,
@@ -49,6 +54,7 @@ impl MockSession {
             faults,
             marker: BLACK,
             pending: None,
+            held: Vec::new(),
             beat: false,
             clip: VecDeque::new(),
             clip_images: VecDeque::new(),
@@ -65,6 +71,16 @@ fn fill(f: &mut Frame, x0: u32, y0: u32, c: [u8; 3]) {
         for x in x0..x0 + BLOCK {
             let i = ((y * f.width + x) * 4) as usize;
             f.rgba[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+}
+
+impl MockSession {
+    /// Release of the probe key: the marker goes black.
+    fn release(&mut self, scancode: u16) {
+        self.held.retain(|&k| k != scancode);
+        if scancode == PROBE_KEY {
+            self.marker = BLACK;
         }
     }
 }
@@ -155,10 +171,27 @@ impl Session for MockSession {
     }
 
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String> {
-        if pressed {
+        if scancode == PROBE_KEY {
+            if pressed {
+                self.marker = PROBE_COLOR;
+                self.held.push(scancode);
+            } else {
+                self.release(scancode);
+            }
+        } else if pressed {
             if let Some(i) = KEYS.iter().position(|&k| k == scancode) {
                 self.pending = Some((Instant::now() + self.faults.key_delay, PALETTE[i]));
             }
+        }
+        Ok(())
+    }
+
+    fn send_sync(&mut self) -> Result<(), String> {
+        if self.faults.ignore_sync {
+            return Ok(());
+        }
+        for scancode in std::mem::take(&mut self.held) {
+            self.release(scancode);
         }
         Ok(())
     }
@@ -238,9 +271,9 @@ mod tests {
     }
 
     #[test]
-    fn healthy_server_passes_all_eleven() {
+    fn healthy_server_passes_all_twelve() {
         let r = run(MockFaults::default(), fast());
-        assert_eq!(r.checks.len(), 11);
+        assert_eq!(r.checks.len(), 12);
         assert!(failed(&r).is_empty(), "{:?}", r.checks);
     }
 
@@ -279,6 +312,18 @@ mod tests {
                 "clipboard_files"
             ]
         );
+    }
+
+    #[test]
+    fn a_server_ignoring_synchronize_fails_key_sync_release() {
+        let r = run(
+            MockFaults {
+                ignore_sync: true,
+                ..Default::default()
+            },
+            fast(),
+        );
+        assert_eq!(failed(&r), vec!["key_sync_release"]);
     }
 
     #[test]

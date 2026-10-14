@@ -44,6 +44,10 @@ pub trait Session {
     fn connect(&mut self) -> Result<(u32, u32), String>;
     fn next_frame(&mut self, timeout: Duration) -> Result<Frame, String>;
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String>;
+    /// Synchronize event of the client: what a real client sends when it regains the focus.
+    fn send_sync(&mut self) -> Result<(), String> {
+        Err("synchronize event not supported by this backend".into())
+    }
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String>;
     fn next_clipboard_text(&mut self, timeout: Duration) -> Result<Option<String>, String>;
     /// Puts an image (PNG file) on the client's clipboard.

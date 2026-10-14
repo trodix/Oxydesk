@@ -12,6 +12,9 @@ pub const TOLERANCE: u8 = 48;
 /// Scancodes (set 1): 1..8.
 pub const KEYS: [u16; 8] = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
 /// Widely separated RGB colors, one per key.
+/// Probe key (`9`): white marker while down, black once released (see `rdsktp_capture::PROBE_KEY`).
+pub const PROBE_KEY: u16 = 0x0A;
+pub const PROBE_COLOR: [u8; 3] = [255, 255, 255];
 pub const PALETTE: [[u8; 3]; 8] = [
     [255, 0, 0],
     [0, 255, 0],

@@ -98,6 +98,7 @@ impl Shared {
 
 enum Command {
     Key(u16, bool),
+    Sync,
     Clipboard(String),
     ClipboardImage(Vec<u8>),
     ClipboardFiles(rdsktp_core::FileList),
@@ -191,6 +192,10 @@ impl Session for IronRdpSession {
 
     fn send_key(&mut self, scancode: u16, pressed: bool) -> Result<(), String> {
         self.send(Command::Key(scancode, pressed))
+    }
+
+    fn send_sync(&mut self) -> Result<(), String> {
+        self.send(Command::Sync)
     }
 
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
@@ -880,6 +885,13 @@ fn run_worker(
                         Operation::KeyReleased(sc)
                     };
                     let events = input.apply([op]);
+                    let outs = stage
+                        .process_fastpath_input(&mut image, &events)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    write_outputs(&mut framed, outs)?;
+                }
+                Command::Sync => {
+                    let events = [ironrdp_input::synchronize_event(false, false, false, false)];
                     let outs = stage
                         .process_fastpath_input(&mut image, &events)
                         .map_err(|e| anyhow!("{e}"))?;
