@@ -133,3 +133,8 @@ Architecture : `docs/decisions/001-architecture-hexagonale.md`.
 
 ## Nommage
 Le projet s'appelle **RustyDesktop**. Le serveur RDP est le binaire (et service) `rdsktp` ; le démon privilégié sera `rdsktp-authd`.
+
+## Régulation du débit vidéo selon le réseau
+
+`--adaptive-bitrate on|off` (défaut `on`). Le serveur lit toutes les 2 s le temps d'aller-retour des trames (accusés EGFX, `qoe_snapshot`). La file d'attente (RTT moyen − meilleur RTT) pilote un contrôleur pur (`crates/core/src/rate.rs`) : débit ×0,75 en cas de congestion, ×1,1 après quelques mesures calmes (entre 1 Mbit/s et le débit configuré) ; la fenêtre de trames en vol passe à 1 pendant la congestion, puis est calée sur le meilleur RTT. Le débit est appliqué à l'encodeur en marche (openh264 : `ENCODER_OPTION_BITRATE`, VAAPI : contrôle de débit renvoyé sur une trame non-IDR) et, en mode `--login`, transmis à l'agent (`SetBitrate`). Le journal `frame-pump` donne `rtt_ms`, `best_rtt_ms` et `bitrate_bps`.
+Limites mesurées : openh264 sans saut de trames ne tient pas le débit demandé (avertissement du codec), VAAPI plafonne vers 11 Kio par trame ; le gain vient surtout de la fenêtre. `ci/rate-test.sh` (sdl-freerdp derrière `ci/throttle-proxy.py`, lien 1,5 Mbit/s + 20 ms) : RTT moyen 730 ms sans régulation, ≈ 350 ms avec.

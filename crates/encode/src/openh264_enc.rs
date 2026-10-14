@@ -76,7 +76,7 @@ impl OpenH264Encoder {
             .bitrate(BitRate::from_bps(cfg.bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(cfg.fps))
             .complexity(Complexity::Low)
-            .skip_frames(false)
+            .skip_frames(true) // without it the codec cannot hold a bitrate; a skipped frame comes out empty
             .intra_frame_period(period);
         let inner = Encoder::with_api_config(api, config)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
@@ -94,6 +94,22 @@ impl OpenH264Encoder {
 impl FrameEncoder for OpenH264Encoder {
     fn request_keyframe(&mut self) {
         self.force_keyframe();
+    }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        use openh264_sys2::{SBitrateInfo, ENCODER_OPTION_BITRATE, SPATIAL_LAYER_ALL};
+        let mut info = SBitrateInfo {
+            iLayer: SPATIAL_LAYER_ALL,
+            iBitrate: bitrate_bps.min(i32::MAX as u32) as i32,
+        };
+        // SAFETY: `info` is the structure the option expects and outlives the call; the encoder is ours.
+        // A refusal keeps the previous bitrate: nothing to do about it.
+        let _status = unsafe {
+            self.inner.raw_api().set_option(
+                ENCODER_OPTION_BITRATE,
+                std::ptr::addr_of_mut!(info).cast::<std::ffi::c_void>(),
+            )
+        };
     }
 
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {

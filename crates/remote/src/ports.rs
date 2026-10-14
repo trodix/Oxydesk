@@ -121,6 +121,13 @@ impl FrameEncoder for PassthroughEncoder {
     fn request_keyframe(&mut self) {
         self.link.request_keyframe(self.output);
     }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        // One message for all outputs: the agent applies it to each of its encoders.
+        if self.output.0 == 0 {
+            self.link.set_bitrate(bitrate_bps);
+        }
+    }
 }
 
 struct RemoteInput(Arc<AgentLink>);

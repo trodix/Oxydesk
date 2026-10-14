@@ -12,7 +12,7 @@ use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_server::{EgfxServerMessage, GfxServerHandle, ServerEvent};
 use rdsktp_core::layout::{Layout, OutputId};
 use rdsktp_core::ports::{CaptureSource, EncoderFactory, FrameEncoder};
-use rdsktp_core::FrameData;
+use rdsktp_core::{FrameData, NetSample, RateConfig, RateController, DEFAULT_BITRATE_BPS};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// State shared between the IronRDP factories (created per connection) and the worker threads.
@@ -56,7 +56,12 @@ pub struct PumpParams {
     pub fps: f32,
     /// `true`: the pump is woken by the capture instead of a fixed rate (`fps` becomes a maximum wait delay).
     pub event: bool,
+    /// Regulate the bitrate and the window of frames in flight from the client's acknowledgements.
+    pub adaptive: bool,
 }
+
+/// How often the regulation looks at what the client acknowledged.
+const RATE_EVERY: Duration = Duration::from_millis(500);
 
 /// One output = one encoder + its last frame (re-encoded for a new client if the desktop is static).
 struct OutputState {
@@ -195,6 +200,9 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let mut warned_encoded = false;
             // What the source was last asked for: uncompressed pixels (client without H.264) or its own stream.
             let mut raw_requested = false;
+            // Rate regulation of the current connection (restarted with it).
+            let mut rate: Option<RateController> = None;
+            let mut rate_at = Instant::now();
             let mut cursor: Option<rdsktp_core::CursorUpdate> = None;
             let mut cursor_pending = false;
             let mut repeat = false;
@@ -305,8 +313,12 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                 outputs.truncate(new.outputs.len());
                                 while outputs.len() < new.outputs.len() {
                                     let make = make_encoder.as_ref().expect("checked above");
+                                    let mut encoder = make(OutputId(outputs.len() as u32));
+                                    if let Some(rc) = &rate {
+                                        encoder.set_bitrate(rc.target().bitrate_bps);
+                                    }
                                     outputs.push(OutputState {
-                                        encoder: make(OutputId(outputs.len() as u32)),
+                                        encoder,
                                         last: None,
                                     });
                                 }
@@ -398,6 +410,14 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
                 {
                     current = Some((handle.clone(), Vec::new())); // new connection
+                    rate = p.adaptive.then(|| {
+                        RateController::new(RateConfig::new(p.fps, DEFAULT_BITRATE_BPS))
+                    });
+                    rate_at = Instant::now();
+                    // Whatever the previous connection left: back to the ceiling.
+                    for o in &mut outputs {
+                        o.encoder.set_bitrate(DEFAULT_BITRATE_BPS);
+                    }
                 }
                 let (handle, surfaces) = current.as_mut().expect("set above");
                 // A client that declared it cannot decode H.264 gets uncompressed pixels.
@@ -434,6 +454,33 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             o.encoder.request_keyframe();
                         }
                         repeat = true;
+                    }
+                    if let (Some(rc), true) = (rate.as_mut(), rate_at.elapsed() >= RATE_EVERY) {
+                        rate_at = Instant::now();
+                        if let Some(q) = g.qoe_snapshot() {
+                            let sample = NetSample {
+                                avg_rtt_ms: q.avg_rtt_ms,
+                                min_rtt_ms: q.min_rtt_ms,
+                                rtt_samples: q.total_rtt_samples,
+                                sent,
+                                dropped,
+                            };
+                            if let Some(t) = rc.update(&sample) {
+                                tracing::info!(
+                                    bitrate_bps = t.bitrate_bps,
+                                    max_in_flight = t.max_in_flight,
+                                    rtt_ms = q.avg_rtt_ms,
+                                    best_rtt_ms = q.min_rtt_ms,
+                                    sent,
+                                    dropped,
+                                    "rate regulation"
+                                );
+                                g.set_max_frames_in_flight(t.max_in_flight);
+                                for o in &mut outputs {
+                                    o.encoder.set_bitrate(t.bitrate_bps);
+                                }
+                            }
+                        }
                     }
                     if g.should_backpressure() {
                         dropped += 1;
@@ -513,6 +560,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     let pre_encoded = matches!(frame.data, FrameData::Encoded { .. });
                     let payload = if h264 {
                         match out.encoder.encode(frame) {
+                            // An empty payload is a frame the rate control skipped.
+                            Ok(e) if e.data.is_empty() => continue,
                             Ok(e) => e.data,
                             Err(e) => {
                                 tracing::error!("encoding: {e}");
@@ -592,7 +641,15 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 drain = sent > sent_before; // frames may still be waiting: no sleep
                 repeat = false;
                 if report.elapsed() >= Duration::from_secs(10) {
-                    tracing::info!(sent, dropped, "frame-pump");
+                    let q = handle.lock().expect("gfx handle mutex").qoe_snapshot();
+                    tracing::info!(
+                        sent,
+                        dropped,
+                        rtt_ms = q.as_ref().map_or(0.0, |q| q.avg_rtt_ms),
+                        best_rtt_ms = q.as_ref().map_or(0.0, |q| q.min_rtt_ms),
+                        bitrate_bps = rate.as_ref().map_or(0, |r| r.target().bitrate_bps),
+                        "frame-pump"
+                    );
                     report = Instant::now();
                 }
             }
@@ -675,6 +732,7 @@ mod tests {
                 layout: Layout::side_by_side(1, 800, 600),
                 fps: 200.0,
                 event: false,
+                adaptive: false,
             },
         );
         // The session is adopted (and any pending request dropped) on the first tick.

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use rdsktp_capture::SyntheticDesktop;
 use rdsktp_core::layout::Layout;
+use rdsktp_core::DEFAULT_BITRATE_BPS;
 use rdsktp_encode::{AutoEncoder, EncoderChoice};
 use rdsktp_rdp::{Ports, ServerConfig};
 
@@ -21,6 +22,7 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --dmabuf      auto (default) | on | off: offer DMA-BUF capture buffers (auto: only with a GPU encoder)
   --drives-dir DIR   drive redirection: the client's drives are mounted (FUSE) under DIR/<name> (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-drives; `off` disables)
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-printers; `off` disables)
+  --adaptive-bitrate on|off  bitrate and frames in flight follow what the client's link carries (default: on)
   --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
   --printer-mode SPEC     format of the jobs of the printers: auto (default), raw, raw:ps|pcl|text, xps; per printer with
                           PATTERN=MODE (`*` matches anything), comma-separated: xps,HP*=raw:pcl. auto = raw when the
@@ -136,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             nla,
             throttle,
             printer_modes: printer_modes(&args)?,
+            adaptive_bitrate: adaptive_bitrate(&args)?,
         };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
@@ -156,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let encoders = (0..outputs)
         .map(|_| {
-            Box::new(AutoEncoder::new(choice, fps, 8_000_000))
+            Box::new(AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS))
                 as Box<dyn rdsktp_core::ports::FrameEncoder>
         })
         .collect::<Vec<_>>();
@@ -265,7 +268,7 @@ async fn main() -> anyhow::Result<()> {
         capture,
         encoders,
         make_encoder: Some(Box::new(move |_| {
-            Box::new(AutoEncoder::new(choice, fps, 8_000_000))
+            Box::new(AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS))
                 as Box<dyn rdsktp_core::ports::FrameEncoder>
         })),
         input,
@@ -283,10 +286,20 @@ async fn main() -> anyhow::Result<()> {
         nla,
         throttle,
         printer_modes: printer_modes(&args)?,
+        adaptive_bitrate: adaptive_bitrate(&args)?,
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
         _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
+    }
+}
+
+/// `--adaptive-bitrate on|off` (default on).
+fn adaptive_bitrate(args: &[String]) -> anyhow::Result<bool> {
+    match arg::<String>(args, "--adaptive-bitrate").as_deref() {
+        None | Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(other) => anyhow::bail!("--adaptive-bitrate: '{other}' (on|off)"),
     }
 }
 

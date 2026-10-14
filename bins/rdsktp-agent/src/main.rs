@@ -22,7 +22,7 @@ use rdsktp_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
     PointerButton,
 };
-use rdsktp_core::{FileEntry, FileExchange, RangeRequest, RangeSender};
+use rdsktp_core::{FileEntry, FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
 use rdsktp_encode::{AutoEncoder, EncoderChoice};
 
 const AUDIO_PACKET_MS: u32 = 20;
@@ -48,6 +48,8 @@ struct Desktop {
     resized: AtomicBool,
     /// A client that cannot decode H.264: the frames go out as uncompressed pixels.
     raw: AtomicBool,
+    /// Target bitrate of each encoder, set by the server from what the client's link carries.
+    bitrate: AtomicU32,
     /// Held by the video loop during a round and by a layout change: after the answer, no frame of the old
     /// layout is sent any more.
     round: Mutex<()>,
@@ -113,6 +115,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         _session: Mutex::new(keep),
         resized: AtomicBool::new(false),
         raw: AtomicBool::new(false),
+        bitrate: AtomicU32::new(DEFAULT_BITRATE_BPS),
         round: Mutex::new(()),
     };
     match session.as_str() {
@@ -213,6 +216,7 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         .set_waker(wake.clone());
     let mut next = Instant::now();
     let mut first = true;
+    let mut applied_bitrate = d.bitrate.load(Ordering::Relaxed);
     let mut seen = 0u64;
     while !stop.load(Ordering::Relaxed) {
         if d.event {
@@ -249,10 +253,19 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
         let outputs = d.outputs.load(Ordering::SeqCst) as usize;
         // Encoders follow the number of outputs (a new one starts with a keyframe).
         while encoders.len() < outputs {
-            encoders.push(Box::new(AutoEncoder::new(d.encoder, fps, 8_000_000)));
+            encoders.push(Box::new(AutoEncoder::new(
+                d.encoder,
+                fps,
+                d.bitrate.load(Ordering::Relaxed),
+            )));
             keyframes[encoders.len() - 1].store(true, Ordering::Relaxed);
         }
         encoders.truncate(outputs);
+        let bitrate = d.bitrate.load(Ordering::Relaxed);
+        if bitrate != applied_bitrate {
+            applied_bitrate = bitrate;
+            encoders.iter_mut().for_each(|e| e.set_bitrate(bitrate));
+        }
         last.resize_with(outputs, || None);
         if d.resized.swap(false, Ordering::SeqCst) {
             last.iter_mut().for_each(|l| *l = None);
@@ -327,6 +340,9 @@ fn video_loop(d: Arc<Desktop>, w: Writer, stop: Arc<AtomicBool>, keyframes: Arc<
                 data: encoded.data,
             };
             if !send(&w, &msg) {
+            if encoded.data.is_empty() {
+                continue; // frame skipped by the rate control
+            }
                 stop.store(true, Ordering::Relaxed);
                 return;
             }
@@ -400,6 +416,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     }
     // The agent outlives the connections: every server starts with the H.264 stream.
     d.raw.store(false, Ordering::SeqCst);
+    d.bitrate.store(DEFAULT_BITRATE_BPS, Ordering::SeqCst);
     let stop = Arc::new(AtomicBool::new(false));
     // Ranges of the file lists exchanged with the server (the lists die with the connection).
     let files = Arc::new(FileExchange::default());
@@ -592,6 +609,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                         .iter()
                         .for_each(|k| k.store(true, Ordering::Relaxed));
                 }
+            }
+            ToAgent::SetBitrate { bitrate_bps } => {
+                d.bitrate.store(bitrate_bps, Ordering::Relaxed);
             }
             ToAgent::RequestKeyframe { output } => {
                 if let Some(k) = keyframes.get(output as usize) {

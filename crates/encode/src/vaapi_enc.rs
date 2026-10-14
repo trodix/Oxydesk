@@ -66,6 +66,8 @@ pub struct VaapiEncoder {
     aligned_h: u32,
     profile: va::VAProfile::Type,
     bitrate_bps: u32,
+    /// The bitrate changed since the last rate-control buffers were given to the driver.
+    rc_dirty: bool,
     fps: u32,
     force_idr: bool,
     /// Index in `recon` of the last reconstruction, valid when `frame_num > 0` or after an IDR.
@@ -225,6 +227,7 @@ impl VaapiEncoder {
             aligned_h,
             profile,
             bitrate_bps: cfg.bitrate_bps,
+            rc_dirty: false,
             fps: cfg.fps.round().max(1.0) as u32,
             force_idr: true,
             last_recon: 1,
@@ -628,6 +631,32 @@ impl VaapiEncoder {
                 h264_headers::sps_pps(&params),
                 None,
             )?;
+            self.rc_dirty = false;
+        } else if std::mem::take(&mut self.rc_dirty) {
+            // New target bitrate without an IDR: rate control and HRD buffers alone, as on an IDR.
+            for t in [
+                BufferType::EncMiscParameter(EncMiscParameter::RateControl(
+                    EncMiscParameterRateControl::new(
+                        self.bitrate_bps,
+                        100,
+                        1000,
+                        26,
+                        10,
+                        0,
+                        RcFlags::new(1, 0, 0, 0, 0, 0, 0, 0, 0),
+                        0,
+                        51,
+                        0,
+                        0,
+                    ),
+                )),
+                BufferType::EncMiscParameter(EncMiscParameter::HRD(EncMiscParameterHRD::new(
+                    self.bitrate_bps / 2,
+                    self.bitrate_bps,
+                ))),
+            ] {
+                pic.add_buffer(self.context.create_buffer(t).map_err(backend("buffer"))?);
+            }
         }
 
         let mut refs: [PictureH264; 16] = std::array::from_fn(|_| Self::invalid_pic());
@@ -744,6 +773,13 @@ impl VaapiEncoder {
 impl FrameEncoder for VaapiEncoder {
     fn request_keyframe(&mut self) {
         self.force_idr = true;
+    }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if bitrate_bps != self.bitrate_bps {
+            self.bitrate_bps = bitrate_bps;
+            self.rc_dirty = true;
+        }
     }
 
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError> {

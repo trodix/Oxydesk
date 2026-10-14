@@ -44,6 +44,8 @@ pub struct ServerConfig {
     pub throttle: rdsktp_core::ThrottleConfig,
     /// Format of the jobs of each redirected printer (ADR 015).
     pub printer_modes: rdsktp_core::PrinterModes,
+    /// Bitrate and frames in flight follow what the client's link carries (`--adaptive-bitrate`).
+    pub adaptive_bitrate: bool,
 }
 
 /// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
@@ -652,6 +654,7 @@ async fn serve(
             event: std::env::var("RDSKTP_PUMP")
                 .is_ok_and(|v| v == "tick")
                 .not(),
+            adaptive: config.adaptive_bitrate,
         },
     );
     // Local -> remote text: poll the port, announce the delayed copy.

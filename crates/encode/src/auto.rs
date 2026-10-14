@@ -145,4 +145,12 @@ impl FrameEncoder for AutoEncoder {
             None => self.keyframe_pending = true,
         }
     }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        // Remembered for an encoder created later (resize).
+        self.bitrate_bps = bitrate_bps;
+        if let Some(e) = self.inner.as_mut() {
+            e.set_bitrate(bitrate_bps);
+        }
+    }
 }

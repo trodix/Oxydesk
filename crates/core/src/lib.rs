@@ -12,6 +12,7 @@ pub mod layout;
 pub mod pixels;
 pub mod ports;
 pub mod printer;
+pub mod rate;
 pub mod scale;
 pub mod throttle;
 pub mod wake;
@@ -30,5 +31,6 @@ pub use printer::{
     document_only_driver, printer_name, resolve_format, ModeError, PrintFormat, PrintJob,
     PrintLanguage, PrintMode, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter, XpsConverter,
 };
+pub use rate::{NetSample, RateConfig, RateController, RateTarget, DEFAULT_BITRATE_BPS};
 pub use scale::ScaleMap;
 pub use throttle::{LoginThrottle, ThrottleConfig};

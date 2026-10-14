@@ -404,6 +404,11 @@ impl AgentLink {
         }
     }
 
+    /// Asks the agent for another target bitrate for its H.264 streams.
+    pub fn set_bitrate(&self, bitrate_bps: u32) {
+        self.send(&ToAgent::SetBitrate { bitrate_bps });
+    }
+
     /// The next `take_frame` will only return a keyframe, requested from the agent.
     pub fn request_keyframe(&self, output: OutputId) {
         if let Some(slot) = self

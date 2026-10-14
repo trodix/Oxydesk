@@ -254,3 +254,71 @@ fn run(dmabuf: bool) {
         "decoded picture too far from the source: {max_err:.2}"
     );
 }
+
+/// Detailed content that changes at every frame, so that the rate control has something to limit.
+fn grainy(n: u32) -> Frame {
+    let mut state = n.wrapping_mul(2_654_435_761).wrapping_add(12345);
+    let mut px = vec![255u8; (W * H * 4) as usize];
+    for (i, p) in px.chunks_exact_mut(4).enumerate() {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let base = ((i as u32 % W) / 3 + (i as u32 / W) / 2 + n) as u8;
+        let grain = (state >> 29) as u8;
+        p[..3].copy_from_slice(&[
+            base.wrapping_add(grain),
+            (base / 2).wrapping_add(grain),
+            (255 - base).wrapping_add(grain),
+        ]);
+    }
+    Frame {
+        output: OutputId(0),
+        width: W,
+        height: H,
+        stride: W * 4,
+        format: PixelFormat::Bgra8,
+        data: FrameData::Shm(px),
+    }
+}
+
+/// A new target bitrate without a keyframe: the frames get smaller and an independent decoder takes the whole stream.
+#[test]
+fn a_lower_bitrate_makes_smaller_frames_without_a_keyframe() {
+    let cfg = VaapiConfig {
+        bitrate_bps: 12_000_000,
+        fps: 30.0,
+        ..VaapiConfig::default()
+    };
+    let Ok(mut enc) = VaapiEncoder::new(&cfg, W, H) else {
+        eprintln!("SKIPPED: no usable VA-API H.264 encoder");
+        return;
+    };
+    let Some(mut dec) = decoder() else {
+        eprintln!("SKIPPED: libopenh264 missing");
+        return;
+    };
+    let mut sizes = Vec::new();
+    for n in 0..120u32 {
+        if n == 60 {
+            enc.set_bitrate(1_000_000);
+        }
+        let out = enc.encode(&grainy(n)).expect("encode");
+        if n > 0 {
+            assert!(
+                !out.keyframe,
+                "frame {n}: the new bitrate needs no keyframe"
+            );
+        }
+        dec.decode(&out.data)
+            .unwrap_or_else(|e| panic!("frame {n} does not decode: {e}"));
+        sizes.push(out.data.len() as f64);
+    }
+    let median = |r: std::ops::Range<usize>| {
+        let mut v = sizes[r].to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    let (before, after) = (median(30..60), median(90..120));
+    assert!(
+        after < before * 0.5,
+        "frames of {before:.0} bytes before, {after:.0} after the drop to a twelfth of the bitrate"
+    );
+}

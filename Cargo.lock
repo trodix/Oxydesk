@@ -2946,6 +2946,7 @@ dependencies = [
  "cros-libva",
  "libc",
  "openh264",
+ "openh264-sys2",
  "rdsktp-core",
 ]
 

@@ -53,6 +53,8 @@ pub trait FrameEncoder: Send {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, EncodeError>;
     /// The next `encode` must produce a standalone keyframe (new client).
     fn request_keyframe(&mut self) {}
+    /// New target bitrate of the stream (the link carries less or more than before). Ignored by default.
+    fn set_bitrate(&mut self, _bitrate_bps: u32) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

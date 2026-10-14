@@ -263,6 +263,10 @@ pub enum ToAgent {
         req_id: u32,
         result: PrintResult,
     },
+    /// Target bitrate of each output's H.264 stream (the link of the client carries less or more than before).
+    SetBitrate {
+        bitrate_bps: u32,
+    },
 }
 
 /// Messages from the agent to the server.
@@ -896,6 +900,10 @@ impl Message for ToAgent {
                 o.print_result(result);
                 22
             }
+            Self::SetBitrate { bitrate_bps } => {
+                o.u32(*bitrate_bps);
+                23
+            }
         };
         (tag, o.0)
     }
@@ -990,6 +998,9 @@ impl Message for ToAgent {
             22 => Self::PrintReply {
                 req_id: i.u32()?,
                 result: i.print_result()?,
+            },
+            23 => Self::SetBitrate {
+                bitrate_bps: i.u32()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -1294,6 +1305,9 @@ mod tests {
         });
         roundtrip(ToAgent::Wheel { dx: 0, dy: -120 });
         roundtrip(ToAgent::RequestKeyframe { output: 1 });
+        roundtrip(ToAgent::SetBitrate {
+            bitrate_bps: 2_500_000,
+        });
         roundtrip(ToAgent::ClipboardSet("Café 😀 日本".into()));
         roundtrip(ToAgent::ClipboardImageSet(vec![137, 80, 78, 71]));
         roundtrip(ToAgent::FilesSet {
