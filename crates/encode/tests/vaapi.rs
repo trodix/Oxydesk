@@ -259,6 +259,7 @@ fn run(dmabuf: bool) {
 fn grainy(n: u32) -> Frame {
     let mut state = n.wrapping_mul(2_654_435_761).wrapping_add(12345);
     let mut px = vec![255u8; (W * H * 4) as usize];
+    #[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks_mut` needs a newer MSRV
     for (i, p) in px.chunks_exact_mut(4).enumerate() {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let base = ((i as u32 % W) / 3 + (i as u32 / W) / 2 + n) as u8;
