@@ -16,10 +16,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: ubuntu-latest, arch: x86_64 }
-          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+        arch: [x86_64, aarch64]
         format: [deb, rpm, tar]
+        include:
+          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -51,6 +52,9 @@ jobs:
           pattern: pkg-${{ matrix.arch }}-*
           path: packages
           merge-multiple: true
+      - name: All three formats are there
+        run: |
+          for f in deb rpm tar.gz; do ls packages/*."$f" >/dev/null; done
       - run: ENGINE=docker ci/package-test.sh packages
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -69,6 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd packages
+          for f in deb rpm tar.gz; do [ "$(ls *."$f" | wc -l)" = 2 ] || { echo "expected 2 .$f (x86_64 and aarch64)" >&2; ls; exit 1; }; done
           cat SHA256SUMS-*.txt > SHA256SUMS
           rm SHA256SUMS-*.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes ./*
