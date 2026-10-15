@@ -143,3 +143,19 @@ Limites mesurées : openh264 sans saut de trames ne tient pas le débit demandé
 
 Côté serveur, chaque sortie a une file de trames H.264 de l'agent (4 au plus, vidée à chaque image clé) ; en mode kwin, KWin ne garde qu'une trame (la dernière). Quand le lien du client est lent, la contre-pression EGFX arrête la consommation de la file : avant, elle débordait en quelques trames et chaque débordement coûtait une image clé (grosse) demandée aussitôt, donc encore plus de congestion. Maintenant : dès 2 trames en attente le serveur dit à l'agent de suspendre l'encodage de la sortie (`Hold`) et le lui rend quand la file est vide ; aucune trame n'est perdue, aucune image clé n'est nécessaire, et l'agent ne dépense plus de CPU pour des trames jetées. Une suspension expire d'elle-même après 1 s si elle n'est pas renouvelée (un message perdu ne gèle pas la vidéo). En cas de débordement quand même, l'image clé n'est demandée que lorsque le consommateur revient chercher des trames.
 Mesure (VM Debian en mode login, sdl-freerdp derrière `ci/throttle-proxy.py`, 1,5 Mbit/s + 20 ms, 45 s) : 68 trames reçues et RTT ≈ 900 ms avant, 559 trames et RTT ≈ 60 ms après (avec le saut de trames d'openh264 du commit précédent).
+
+## Licence
+
+RustyDesktop est distribué sous licence **GNU AGPL v3 uniquement** (`AGPL-3.0-only`, texte dans `LICENSE`). Le code source correspondant à une version est celui du dépôt https://github.com/trodix/RustyDesktop (tag de la version) ; quiconque modifie le serveur et le propose à des utilisateurs distants doit leur offrir le source modifié (AGPL §13).
+Les dépendances et les copies adaptées de `third_party/` gardent leur propre licence, toutes permissives et compatibles avec l'AGPL v3 : MIT, Apache-2.0 (IronRDP et la plupart des crates), BSD-3-Clause (`cros-libva`), BSD-2-Clause (openh264, la bibliothèque Cisco `libopenh264` n'est que chargée à l'exécution), ISC, Zlib, Unicode-3.0. Aucun code de KRdp (LGPL) n'est repris, seulement des idées. Les versions publiées avant ce changement restent sous leur licence d'origine (MIT OR Apache-2.0).
+
+## Livrables (tar.gz, .deb, .rpm ; x86_64 et aarch64)
+
+Publiés sur GitHub Releases à chaque tag `vX.Y.Z` (le tag doit être égal à la version du workspace) par `.github/workflows/package.yml`.
+| Format | Construit dans | Installé et testé sur |
+|---|---|---|
+| `.deb` | Debian 13 | Debian 13 |
+| `.rpm` | Rocky 9 (glibc 2.34, le plus ancien visé) | Fedora, Rocky 9, Rocky 10 (RHEL : considéré couvert par Rocky et Fedora) |
+| `.tar.gz` | Rocky 9 | Debian 13, Fedora, Rocky 9, Rocky 10 (`./install.sh`, `./uninstall.sh`) |
+Les piles PAM diffèrent (Debian : `common-*`, Fedora/RHEL : `system-auth`) : chaque paquet embarque la bonne, le tar.gz choisit à l'installation.
+Tests en local (podman ou docker) : `ci/package-container.sh deb|rpm|tar OUT` (construction dans un conteneur propre), puis `ci/package-test.sh OUT` (installation dans des conteneurs propres de chaque famille, `ci/package-check.sh` : fichiers et modes, utilisateur système, piles PAM résolues, bibliothèques, architecture ELF, unités systemd, le serveur démarre et écoute en mode test, désinstallation propre). Non couvert : SELinux en mode enforcing sur Fedora/Rocky (la politique n'est pas fournie), et l'exécution complète d'une session KDE dans une VM Fedora.

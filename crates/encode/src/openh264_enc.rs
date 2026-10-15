@@ -32,10 +32,13 @@ impl Default for OpenH264Config {
 }
 
 const CANDIDATES: &[&str] = &[
+    // Fedora / RHEL (lib64) and Debian multiarch, x86_64 then aarch64.
     "/usr/lib64/libopenh264.so.8",
     "/usr/lib/x86_64-linux-gnu/libopenh264.so.8",
+    "/usr/lib/aarch64-linux-gnu/libopenh264.so.8",
     "/usr/lib64/libopenh264.so",
     "/usr/lib/x86_64-linux-gnu/libopenh264.so",
+    "/usr/lib/aarch64-linux-gnu/libopenh264.so",
 ];
 
 fn locate(cfg: &OpenH264Config) -> Result<PathBuf, EncodeError> {

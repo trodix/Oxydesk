@@ -36,7 +36,7 @@ rcgen = "0.14"
 features = ["kwin"]
 name = "rdsktp"
 maintainer = "Sébastien Vallet <sebastien.vallet89@gmail.com>"
-copyright = "RustyDesktop contributors"
+copyright = "2026 Sébastien Vallet, AGPL-3.0-only"
 extended-description = "Headless RDP server for KDE Plasma (Wayland)."
 section = "net"
 priority = "optional"
@@ -44,6 +44,7 @@ depends = "$auto, libopenh264-8, libkscreen-bin, fuse3"
 recommends = "cups, cups-filters, ghostscript"
 assets = [
     ["target/release/rdsktp", "usr/bin/", "755"],
+    ["../../LICENSE", "usr/share/doc/rdsktp/LICENSE", "644"],
     ["target/release/rdsktp-testapp", "usr/lib/rdsktp/", "755"],
     ["../../dist/rdsktp.desktop", "usr/share/applications/", "644"],
     ["../../dist/rdsktp-agent.desktop", "usr/share/applications/", "644"],
@@ -58,3 +59,39 @@ assets = [
     ["target/release/rdsktp-cups-backend", "usr/lib/cups/backend/rdsktp", "700"],
 ]
 maintainer-scripts = "../../dist/debian/"
+
+# RPM (Fedora, RHEL, Rocky) built with cargo-generate-rpm from the same binaries as the .deb. The files that differ from the
+# Debian package: PAM stacks (system-auth instead of common-*), unit directory (/usr/lib/systemd/system), package names.
+[package.metadata.generate-rpm]
+name = "rdsktp"
+summary = "Headless RDP server for KDE Plasma (Wayland)"
+license = "AGPL-3.0-only"
+auto-req = "auto"
+post_install_script = "dist/rpm/post.sh"
+assets = [
+    { source = "target/release/rdsktp", dest = "/usr/bin/rdsktp", mode = "755" },
+    { source = "LICENSE", dest = "/usr/share/doc/rdsktp/LICENSE", mode = "644", doc = true },
+    { source = "target/release/rdsktp-testapp", dest = "/usr/lib/rdsktp/rdsktp-testapp", mode = "755" },
+    { source = "target/release/rdsktp-authd", dest = "/usr/bin/rdsktp-authd", mode = "755" },
+    { source = "target/release/rdsktp-agent", dest = "/usr/bin/rdsktp-agent", mode = "755" },
+    { source = "target/release/rdsktp-cups-backend", dest = "/usr/lib/cups/backend/rdsktp", mode = "700" },
+    { source = "dist/rdsktp.desktop", dest = "/usr/share/applications/rdsktp.desktop", mode = "644" },
+    { source = "dist/rdsktp-agent.desktop", dest = "/usr/share/applications/rdsktp-agent.desktop", mode = "644" },
+    { source = "dist/rdsktp.service", dest = "/usr/lib/systemd/system/rdsktp.service", mode = "644" },
+    { source = "dist/rdsktp-authd.service", dest = "/usr/lib/systemd/system/rdsktp-authd.service", mode = "644" },
+    { source = "dist/rdsktp-agent@.service", dest = "/usr/lib/systemd/system/rdsktp-agent@.service", mode = "644" },
+    { source = "dist/pam/rpm/rdsktp", dest = "/etc/pam.d/rdsktp", mode = "644", config = true },
+    { source = "dist/pam/rpm/rdsktp-session", dest = "/etc/pam.d/rdsktp-session", mode = "644", config = true },
+    { source = "dist/sysusers/rdsktp.conf", dest = "/usr/lib/sysusers.d/rdsktp.conf", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+fuse3 = "*"
+pam = "*"
+systemd = "*"
+
+[package.metadata.generate-rpm.recommends]
+openh264 = "*"
+libkscreen = "*"
+cups = "*"
+ghostscript = "*"
