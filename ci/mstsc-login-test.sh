@@ -4,7 +4,6 @@
 # tests, done from here through SSH (sshfs for the mount, `ssh -L` for the socket of the printer). Needs:
 #   RDP_TEST_PASSWORD=... cargo xtask vm-test --session login --keep      (Debian VM up, in login mode, with CUPS)
 #   a Windows VM image prepared as for `cargo xtask test --client` (vm/win11.sh)
-# Run it once per `vm-test`: from the second mstsc session of the same VM boot, `resize_request_survives` can fail (heartbeat).
 # usage: RDP_TEST_PASSWORD=... ci/mstsc-login-test.sh [out-dir]
 # env: VM_RDP_PORT (3390) VM_USER (dev) VM_SSH_PORT (2222) WIN_PRINTERS (1: raw jobs to RdsktpTest, 2: XPS jobs to RdsktpXps)
 set -uo pipefail

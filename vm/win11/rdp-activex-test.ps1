@@ -536,9 +536,16 @@ public static class FileDiff {
   try { $ocx.UpdateSessionDisplaySettings(1024, 576, 0, 0, 0, 100, 100) } catch { $resize = "refused ($($_.Exception.Message.Trim()))" }
   # The control centers a desktop smaller than its window: offsets of the 1024x576 desktop.
   $ox = [int](($w - 1024) / 2); $oy = [int](($h - 576) / 2)
-  if ($p.expect_resize -eq '0') { $ox = 0; $oy = 0 }   # desktop unchanged: still at the window origin
-  $seen2 = @{}
-  $null = Pump { $c = PixelAt (48 + $ox) (16 + $oy); $seen2[[string]($c.R -gt 150)] = $true; $seen2.Count -ge 2 -or -not $state.connected } 8000
+  # WIN_EXPECT_RESIZE=0 (login mode): whether the desktop shrinks, and when, depends on the server; the heartbeat is then
+  # looked for at the origin as well as where a centered 1024x576 desktop would put it.
+  $ox0 = 0; $oy0 = 0
+  if ($p.expect_resize -eq '0') { $ox0 = $ox; $oy0 = $oy; $ox = 0; $oy = 0 }
+  $seen2 = @{}; $seen3 = @{}
+  $null = Pump {
+    $c = PixelAt (48 + $ox) (16 + $oy); $seen2[[string]($c.R -gt 150)] = $true
+    if ($p.expect_resize -eq '0') { $c = PixelAt (48 + $ox0) (16 + $oy0); $seen3[[string]($c.R -gt 150)] = $true }
+    $seen2.Count -ge 2 -or $seen3.Count -ge 2 -or -not $state.connected } 8000
+  if ($seen3.Count -gt $seen2.Count) { $seen2 = $seen3 }
   $box = $null
   $null = Pump { $script:box = MagentaBox; ($box -and $box[2] -ge ($ox + 1024 - 8) -and $box[2] -lt ($ox + 1024) -and $box[3] -ge ($oy + 576 - 8) -and $box[3] -lt ($oy + 576)) -or -not $state.connected } 8000
   $cornerOk = [bool]($box -and $box[2] -ge ($ox + 1024 - 8) -and $box[2] -lt ($ox + 1024) -and $box[3] -ge ($oy + 576 - 8) -and $box[3] -lt ($oy + 576))
