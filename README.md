@@ -144,6 +144,19 @@ Limites mesurées : openh264 sans saut de trames ne tient pas le débit demandé
 Côté serveur, chaque sortie a une file de trames H.264 de l'agent (4 au plus, vidée à chaque image clé) ; en mode kwin, KWin ne garde qu'une trame (la dernière). Quand le lien du client est lent, la contre-pression EGFX arrête la consommation de la file : avant, elle débordait en quelques trames et chaque débordement coûtait une image clé (grosse) demandée aussitôt, donc encore plus de congestion. Maintenant : dès 2 trames en attente le serveur dit à l'agent de suspendre l'encodage de la sortie (`Hold`) et le lui rend quand la file est vide ; aucune trame n'est perdue, aucune image clé n'est nécessaire, et l'agent ne dépense plus de CPU pour des trames jetées. Une suspension expire d'elle-même après 1 s si elle n'est pas renouvelée (un message perdu ne gèle pas la vidéo). En cas de débordement quand même, l'image clé n'est demandée que lorsque le consommateur revient chercher des trames.
 Mesure (VM Debian en mode login, sdl-freerdp derrière `ci/throttle-proxy.py`, 1,5 Mbit/s + 20 ms, 45 s) : 68 trames reçues et RTT ≈ 900 ms avant, 559 trames et RTT ≈ 60 ms après (avec le saut de trames d'openh264 du commit précédent).
 
+## Fichier de configuration (`/etc/rdsktp/rdsktp.conf`)
+
+Le serveur se règle par un fichier `clé = valeur` : les clés sont les options longues de `rdsktp` sans le `--` (`listen`, `fps`, `printer-mode`, `session-app`…). Le paquet installe `/etc/rdsktp/rdsktp.conf`, entièrement commenté (rôle de chaque paramètre, valeur par défaut, exemple) ; il est marqué fichier de configuration : une mise à jour ne l'écrase pas (deb : conffile, rpm : `noreplace`, tar.gz : conservé s'il existe).
+
+Priorité de chargement, de la plus forte à la plus faible :
+
+1. les options de la ligne de commande (elles remplacent la valeur du fichier pour la même clé ; pour `session-app`, la liste entière) ;
+2. les fragments `/etc/rdsktp/rdsktp.conf.d/*.conf`, dans l'ordre alphabétique (clé par clé) : c'est là que mettre les réglages locaux ;
+3. `/etc/rdsktp/rdsktp.conf` ;
+4. les valeurs par défaut du programme.
+
+Les clés qui choisissent le mode (`test-mode`, `login`, `session`) se remplacent en bloc : `--session kwin` en ligne de commande l'emporte sur `login = yes` du fichier. Une clé inconnue ou une ligne mal formée arrête le démarrage avec le fichier et la ligne en cause (une faute de frappe n'est jamais ignorée en silence). `--config FICHIER` désigne un autre fichier (son dossier de fragments est alors `FICHIER.d`) ; sans `--config`, l'absence du fichier par défaut est permise, avec `--config` elle est une erreur. Pas de commentaire en fin de ligne (une valeur peut contenir `#`). Le mot de passe NLA n'est pas dans le fichier (variable `RDSKTP_PASSWORD`). L'unité `rdsktp.service` lit ce fichier (mode `login = yes` par défaut : l'unité dépend de `rdsktp-authd` et tourne sous le compte `rdsktp`) ; les changements s'appliquent au redémarrage du service. L'analyse est un module pur testé (`crates/core/src/config.rs`).
+
 ## Licence
 
 RustyDesktop est distribué sous licence **GNU AGPL v3 uniquement** (`AGPL-3.0-only`, texte dans `LICENSE`). Le code source correspondant à une version est celui du dépôt https://github.com/trodix/RustyDesktop (tag de la version) ; quiconque modifie le serveur et le propose à des utilisateurs distants doit leur offrir le source modifié (AGPL §13).

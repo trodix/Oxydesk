@@ -1,6 +1,7 @@
 //! Server domain and ports. No heavy technical dependency here:
 //! adapters (capture, encoding, RDP, ...) implement these traits.
 
+pub mod config;
 pub mod cursor;
 pub mod dmabuf;
 pub mod drive;

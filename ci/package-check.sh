@@ -45,6 +45,15 @@ pid=$!
 listening=1; for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/3399) 2>/dev/null && { listening=0; break; }; sleep 0.2; done
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 [ $listening -eq 0 ] && ok "server listens" || bad "server listens" "$(tail -3 /tmp/rdsktp.log)"
+# The installed configuration file alone gives the mode (login; it only listens, PAM is asked at the first login); the command line only moves the port and wins over it.
+check "config file" "test -f /etc/rdsktp/rdsktp.conf"
+RUST_LOG=info /usr/bin/rdsktp --listen 127.0.0.1:3398 --state-dir /tmp/st >/tmp/rdsktp-conf.log 2>&1 &
+pid=$!
+listening=1; for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/3398) 2>/dev/null && { listening=0; break; }; sleep 0.2; done
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
+[ $listening -eq 0 ] && ok "server starts from /etc/rdsktp/rdsktp.conf" || bad "server starts from /etc/rdsktp/rdsktp.conf" "$(tail -3 /tmp/rdsktp-conf.log)"
+printf 'lisen = 1\n' >/tmp/bad.conf
+/usr/bin/rdsktp --config /tmp/bad.conf >/tmp/bad.log 2>&1; grep -q 'unknown key' /tmp/bad.log && ok "unknown key refused" || bad "unknown key refused" "$(cat /tmp/bad.log)"
 /usr/bin/rdsktp --help >/dev/null 2>&1 && ok "rdsktp --help" || bad "rdsktp --help"
 [ $fail -eq 0 ] && echo "== $FORMAT: passed" || echo "== $FORMAT: FAILED"
 exit $fail

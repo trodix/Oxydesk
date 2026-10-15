@@ -51,6 +51,7 @@ case "$FORMAT" in
     install -m644 dist/pam/rdsktp dist/pam/rdsktp-session "$STAGE/pam/debian/"
     install -m644 dist/pam/rpm/rdsktp dist/pam/rpm/rdsktp-session "$STAGE/pam/rpm/"
     install -m644 dist/rdsktp.desktop dist/rdsktp-agent.desktop dist/sysusers/rdsktp.conf "$STAGE/share/"
+    install -m644 dist/rdsktp.conf "$STAGE/share/rdsktp-server.conf"
     install -m755 dist/tar/install.sh "$STAGE/install.sh"
     install -m755 dist/tar/uninstall.sh "$STAGE/uninstall.sh"
     install -m644 README.md LICENSE "$STAGE/"

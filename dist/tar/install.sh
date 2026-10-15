@@ -14,6 +14,7 @@ install -m644 systemd/* "$ROOT/usr/lib/systemd/system/"
 for f in rdsktp rdsktp-session; do
   [ -e "$ROOT/etc/pam.d/$f" ] || install -m644 "pam/$PAM/$f" "$ROOT/etc/pam.d/$f"   # an existing (edited) stack is kept
 done
+[ -e "$ROOT/etc/rdsktp/rdsktp.conf" ] || { install -d "$ROOT/etc/rdsktp"; install -m644 share/rdsktp-server.conf "$ROOT/etc/rdsktp/rdsktp.conf"; }   # an edited file is kept
 install -m644 share/rdsktp.conf "$ROOT/usr/lib/sysusers.d/rdsktp.conf"
 install -m644 share/rdsktp.desktop share/rdsktp-agent.desktop "$ROOT/usr/share/applications/"
 if [ -z "$ROOT" ]; then

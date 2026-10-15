@@ -1,5 +1,5 @@
 #!/bin/sh
-# Removes what install.sh installed (the PAM stacks too, the user data in /var/lib/rdsktp is kept). usage: ./uninstall.sh [ROOT]
+# Removes what install.sh installed (the PAM stacks too; /etc/rdsktp/rdsktp.conf and the user data in /var/lib/rdsktp are kept). usage: ./uninstall.sh [ROOT]
 set -eu
 ROOT="${1:-}"
 [ -z "$ROOT" ] && command -v systemctl >/dev/null 2>&1 && systemctl disable --now rdsktp-authd rdsktp 2>/dev/null || true

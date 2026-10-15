@@ -1,11 +1,13 @@
 [Unit]
 Description=RustyDesktop (rdsktp) - RDP server
-After=network.target
+Requires=rdsktp-authd.service
+After=network.target rdsktp-authd.service
 
 [Service]
-# M2: test mode only (synthetic capture). The real session arrives in M3.
-ExecStart=/usr/bin/rdsktp --test-mode --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
-DynamicUser=yes
+# Mode, address and the other settings come from /etc/rdsktp/rdsktp.conf (and rdsktp.conf.d/*.conf); remote login by default.
+ExecStart=/usr/bin/rdsktp
+# Unprivileged account created by sysusers; the PAM login and the sessions are rdsktp-authd's job.
+User=rdsktp
 StateDirectory=rdsktp
 Restart=on-failure
 NoNewPrivileges=yes

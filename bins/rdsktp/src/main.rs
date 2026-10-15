@@ -12,6 +12,7 @@ use rdsktp_encode::{AutoEncoder, EncoderChoice};
 use rdsktp_rdp::{Ports, ServerConfig};
 
 const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] | --session kwin [--kwin-socket NAME] [--session-app \"CMD ARGS\"]...) [--listen ADDR:PORT]
+  --config FILE   configuration file (default: /etc/rdsktp/rdsktp.conf if present, plus FILE.d/*.conf); the command line wins over it\n\
   --test-mode   synthetic desktop\n\
   --login       remote login: PAM through rdsktp-authd, one session per user (TLS, no NLA)\n\
   --session kwin  starts kwin_wayland --virtual (+ --session-app programs) and captures it\n\
@@ -27,6 +28,44 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --printer-mode SPEC     format of the jobs of the printers: auto (default), raw, raw:ps|pcl|text, xps; per printer with
                           PATTERN=MODE (`*` matches anything), comma-separated: xps,HP*=raw:pcl. auto = raw when the
                           driver name states a language, XPS otherwise (if the client takes it), else the printer is refused";
+
+/// Default configuration file; its drop-ins are in `<file>.d/*.conf`.
+const DEFAULT_CONFIG: &str = "/etc/rdsktp/rdsktp.conf";
+
+/// The command line completed with the configuration file's settings it does not give (command line first, so it wins).
+fn with_config_file(cli: &[String]) -> anyhow::Result<Vec<String>> {
+    let explicit: Option<PathBuf> = arg(cli, "--config");
+    let path = explicit.clone().unwrap_or_else(|| DEFAULT_CONFIG.into());
+    let mut layers = Vec::new();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => layers.push(rdsktp_core::config::parse(
+            &text,
+            &path.display().to_string(),
+        )?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {}
+        Err(e) => anyhow::bail!("configuration file {}: {e}", path.display()),
+    }
+    let mut dropins: Vec<PathBuf> = match std::fs::read_dir(format!("{}.d", path.display())) {
+        Ok(dir) => dir
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "conf"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    dropins.sort();
+    for p in dropins {
+        let text = std::fs::read_to_string(&p)
+            .map_err(|e| anyhow::anyhow!("configuration file {}: {e}", p.display()))?;
+        layers.push(rdsktp_core::config::parse(&text, &p.display().to_string())?);
+    }
+    if !layers.is_empty() {
+        tracing::info!(file = %path.display(), "configuration file loaded");
+    }
+    Ok(rdsktp_core::config::merge_args(
+        cli,
+        &rdsktp_core::config::combine(&layers),
+    )?)
+}
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
@@ -71,18 +110,17 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli: Vec<String> = std::env::args().skip(1).collect();
+    if cli.iter().any(|a| a == "--help" || a == "-h") {
+        eprintln!("{USAGE}");
+        std::process::exit(0);
+    }
+    let args = with_config_file(&cli)?;
     let kwin_mode = arg::<String>(&args, "--session").as_deref() == Some("kwin");
     let login_mode = args.iter().any(|a| a == "--login");
-    if args.iter().any(|a| a == "--help" || a == "-h")
-        || !(kwin_mode || login_mode || args.iter().any(|a| a == "--test-mode"))
-    {
+    if !(kwin_mode || login_mode || args.iter().any(|a| a == "--test-mode")) {
         eprintln!("{USAGE}");
-        std::process::exit(if args.iter().any(|a| a == "--help") {
-            0
-        } else {
-            2
-        });
+        std::process::exit(2);
     }
     let addr: SocketAddr =
         arg(&args, "--listen").unwrap_or_else(|| "0.0.0.0:3389".parse().expect("addr"));
