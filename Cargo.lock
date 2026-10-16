@@ -245,7 +245,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-capture",
  "rdsktp-core",
@@ -2780,7 +2780,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-test-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ironrdp-blocking",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "rcgen",
@@ -2834,7 +2834,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -2856,21 +2856,21 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-agent-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "rdsktp-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-core",
 ]
 
 [[package]]
 name = "rdsktp-authd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-authd-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nix 0.30.1",
  "serde",
@@ -2892,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-capture"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pipewire",
  "rdsktp-core",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-clipboard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fuser",
  "rdsktp-core",
@@ -2915,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
@@ -2923,7 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-cups-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "rdsktp-spool",
@@ -2931,7 +2931,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-drivefs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fuser",
  "libc",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-encode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cros-libva",
  "libc",
@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-input"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-core",
  "wayland-backend",
@@ -2962,7 +2962,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-rdp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-remote"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-agent-proto",
  "rdsktp-authd-proto",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-scaling"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-core",
  "tracing",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-session"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-core",
  "tracing",
@@ -3011,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-spool"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "rdsktp-core",
@@ -3021,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "rdsktp-testapp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rdsktp-audio",
  "rdsktp-capture",
@@ -4687,7 +4687,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
