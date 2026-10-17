@@ -20,7 +20,7 @@ Tested with Windows `mstsc`, FreeRDP (`xfreerdp`, `sdl-freerdp`) and Remmina.
 
 ## Install
 
-Packages for **x86_64** and **aarch64** are attached to each [GitHub release](../../releases):
+Packages for **x86_64** and **aarch64** are attached to each [GitHub release](https://github.com/trodix/RustyDesktop/releases):
 
 | Format | Targets |
 |---|---|
@@ -87,5 +87,5 @@ and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|t
 
 ## License
 
-[AGPL-3.0-only](LICENSE). Dependencies are permissive (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0); `libopenh264`
+[AGPL-3.0-only](https://github.com/trodix/RustyDesktop/blob/develop/LICENSE). Dependencies are permissive (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0); `libopenh264`
 is loaded at run time only; `third_party/` keeps the licenses of its crates.
