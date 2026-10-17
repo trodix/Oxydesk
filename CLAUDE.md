@@ -4,6 +4,16 @@
 
 Everything written in the repository (README, ADRs, code comments, scripts, help and log messages) is in **English**.
 
+## Commits
+
+Commit messages are in **English** and follow Conventional Commits: `type(scope): summary`, or `type: summary` when no scope
+fits. Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`. Imperative mood, one line under about
+72 characters, details in the body.
+
+- Scope is the crate, binary or area touched: `fix(rdp): ...`, `feat(spool): ...`, `chore(vm): ...`, `docs(adr): ...`.
+- When a ticket exists, put its number right after the type: `fix: #12345 thing not working`, `feat(clipboard): #87 ...`.
+- No attribution trailer (`Co-Authored-By`) unless the tooling configuration adds one.
+
 ## Architecture
 
 Hexagonal (see `docs/decisions/001-hexagonal-architecture.md`): `crates/core` holds the domain and the ports; the other
