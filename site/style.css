@@ -48,4 +48,5 @@ th{color:var(--muted);font-weight:600;font-size:14px;text-transform:uppercase;le
 .credit b{display:block}.credit span{color:var(--muted);font-size:15px}
 footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:15px}
 footer .wrap{display:flex;gap:18px;flex-wrap:wrap;justify-content:space-between}
+.fr{display:inline-flex;align-items:center;gap:7px}
 @media(max-width:640px){nav a.l.h{display:none}.hero{padding-top:50px}section{padding:52px 0}}
