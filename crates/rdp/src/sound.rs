@@ -149,3 +149,66 @@ impl Drop for SoundHandler {
         self.stop();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdsktp_core::error::AudioError;
+    use rdsktp_core::ports::AudioSource;
+
+    struct Nothing;
+
+    impl AudioProvider for Nothing {
+        fn open(&self, _: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
+            Err(AudioError::Backend("no device".into()))
+        }
+    }
+
+    fn handler() -> Box<dyn RdpsndServerHandler> {
+        SoundFactory {
+            shared: Arc::new(Shared::default()),
+            provider: Arc::new(Nothing),
+        }
+        .build_backend()
+    }
+
+    #[test]
+    fn the_formats_offered_are_pcm_stereo_with_44_1_khz_first() {
+        let h = handler();
+        let formats = h.get_formats();
+        assert_eq!(formats.len(), 2);
+        assert_eq!(formats[0].n_samples_per_sec, 44_100);
+        assert_eq!(formats[1].n_samples_per_sec, 48_000);
+        for f in formats {
+            assert_eq!(f.n_channels, 2);
+            assert_eq!(f.bits_per_sample, 16);
+            assert_eq!(f.n_block_align, 4);
+            assert_eq!(f.n_avg_bytes_per_sec, f.n_samples_per_sec * 4);
+        }
+    }
+
+    #[test]
+    fn without_a_common_format_nothing_is_chosen() {
+        assert!(handler().choose_format(&[]).is_none());
+    }
+
+    #[test]
+    fn stopping_a_stream_that_never_started_is_harmless() {
+        let mut h = handler();
+        h.stop();
+        h.stop();
+        assert!(format!("{h:?}").contains("SoundHandler"));
+    }
+
+    #[test]
+    fn the_factory_gives_the_sender_of_the_connection_to_the_shared_state() {
+        let shared = Arc::new(Shared::default());
+        let mut factory = SoundFactory {
+            shared: shared.clone(),
+            provider: Arc::new(Nothing),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        factory.set_sender(tx);
+        assert!(shared.sender.lock().unwrap().is_some());
+    }
+}

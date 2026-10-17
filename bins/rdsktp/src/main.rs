@@ -400,3 +400,129 @@ fn printers_host(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rdsktp-main-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn options_are_parsed_by_name_and_type() {
+        let a = args(&[
+            "--fps",
+            "24.5",
+            "--width",
+            "abc",
+            "--listen",
+            "127.0.0.1:3390",
+        ]);
+        assert_eq!(arg::<f32>(&a, "--fps"), Some(24.5));
+        // A value of the wrong type is absent (the default applies), not a crash.
+        assert_eq!(arg::<u16>(&a, "--width"), None);
+        assert_eq!(
+            arg::<SocketAddr>(&a, "--listen"),
+            Some("127.0.0.1:3390".parse().unwrap())
+        );
+        assert_eq!(arg::<String>(&a, "--missing"), None);
+    }
+
+    #[test]
+    fn the_timeouts_have_documented_defaults_and_can_be_switched_off() {
+        assert_eq!(reconnect_timeout(&[]).unwrap(), Duration::from_secs(10));
+        assert_eq!(dead_peer_timeout(&[]), Duration::from_secs(8));
+        let a = args(&["--reconnect-timeout", "0", "--dead-peer-timeout", "30"]);
+        assert_eq!(reconnect_timeout(&a).unwrap(), Duration::ZERO);
+        assert_eq!(dead_peer_timeout(&a), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn adaptive_bitrate_is_on_unless_switched_off_and_rejects_other_words() {
+        assert!(adaptive_bitrate(&[]).unwrap());
+        assert!(adaptive_bitrate(&args(&["--adaptive-bitrate", "on"])).unwrap());
+        assert!(!adaptive_bitrate(&args(&["--adaptive-bitrate", "off"])).unwrap());
+        let e = adaptive_bitrate(&args(&["--adaptive-bitrate", "maybe"])).unwrap_err();
+        assert!(e.to_string().contains("maybe"));
+    }
+
+    #[test]
+    fn printer_modes_come_from_the_option_and_a_bad_spec_names_the_option() {
+        assert!(printer_modes(&[]).is_ok());
+        assert!(printer_modes(&args(&["--printer-mode", "xps,HP*=raw:pcl"])).is_ok());
+        let e = printer_modes(&args(&["--printer-mode", "nonsense"])).unwrap_err();
+        assert!(e.to_string().starts_with("--printer-mode:"));
+    }
+
+    #[test]
+    fn printers_are_not_redirected_when_switched_off_or_not_asked_for() {
+        assert!(printers_host(&args(&["--printers", "off"]), true).is_none());
+        // Outside a KWin session nothing is redirected unless a directory is given.
+        assert!(printers_host(&[], false).is_none());
+    }
+
+    #[test]
+    fn the_certificate_is_generated_once_with_a_private_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("cert");
+        let (cert, key) = ensure_cert(&dir.join("state")).unwrap();
+        assert!(std::fs::read_to_string(&cert)
+            .unwrap()
+            .contains("BEGIN CERTIFICATE"));
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // A second start keeps the identity the clients have already trusted.
+        let before = std::fs::read(&cert).unwrap();
+        ensure_cert(&dir.join("state")).unwrap();
+        assert_eq!(std::fs::read(&cert).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_configuration_file_completes_the_command_line_which_wins() {
+        let dir = temp("conf");
+        let file = dir.join("rdsktp.conf");
+        std::fs::write(&file, "fps = 24\nwidth = 1280\n").unwrap();
+        std::fs::create_dir_all(dir.join("rdsktp.conf.d")).unwrap();
+        std::fs::write(
+            dir.join("rdsktp.conf.d/10-b.conf"),
+            "width = 1600\nheight = 900\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("rdsktp.conf.d/ignored.txt"), "width = 1\n").unwrap();
+        let cli = args(&["--config", file.to_str().unwrap(), "--fps", "60"]);
+        let merged = with_config_file(&cli).unwrap();
+        assert_eq!(arg::<u32>(&merged, "--fps"), Some(60), "command line first");
+        assert_eq!(
+            arg::<u32>(&merged, "--width"),
+            Some(1600),
+            "drop-in overrides the file"
+        );
+        assert_eq!(arg::<u32>(&merged, "--height"), Some(900));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_explicit_file_or_a_bad_key_stops_the_start() {
+        let dir = temp("conf-bad");
+        let missing = dir.join("absent.conf");
+        let e = with_config_file(&args(&["--config", missing.to_str().unwrap()])).unwrap_err();
+        assert!(e.to_string().contains("absent.conf"));
+        let bad = dir.join("bad.conf");
+        std::fs::write(&bad, "lisen = 1\n").unwrap();
+        let e = with_config_file(&args(&["--config", bad.to_str().unwrap()])).unwrap_err();
+        assert!(e.to_string().contains("unknown key"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

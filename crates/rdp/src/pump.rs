@@ -969,4 +969,206 @@ mod tests {
         assert_eq!(*shared.desktop.lock().unwrap(), Some((800, 600)));
         stop(&shared, handle);
     }
+
+    // --- clients without EGFX: bitmap updates -------------------------------------------------------------------
+
+    use rdsktp_core::{Frame, FrameData, PixelFormat};
+    use std::collections::VecDeque;
+
+    /// A capture that answers from a script, one answer per call.
+    struct Scripted(VecDeque<Result<Option<Frame>, CaptureError>>);
+
+    impl CaptureSource for Scripted {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            self.0.pop_front().unwrap_or(Ok(None))
+        }
+        fn apply_layout(&mut self, _: &Layout) -> Result<(), CaptureError> {
+            Ok(())
+        }
+    }
+
+    fn frame(w: u32, h: u32, data: FrameData) -> Frame {
+        Frame {
+            output: OutputId(0),
+            width: w,
+            height: h,
+            stride: w * 4,
+            format: PixelFormat::Rgba8,
+            data,
+        }
+    }
+
+    fn pixels(w: u32, h: u32) -> FrameData {
+        FrameData::Shm(
+            (0..w * h)
+                .flat_map(|i| [1, 2, 3, (i % 256) as u8])
+                .collect(),
+        )
+    }
+
+    fn outputs(n: usize) -> Vec<OutputState> {
+        (0..n)
+            .map(|_| OutputState {
+                encoder: Box::new(Encoder),
+                last: None,
+            })
+            .collect()
+    }
+
+    struct Run {
+        sent: Vec<ironrdp_server::DisplayUpdate>,
+        alive: bool,
+        repeat: bool,
+        warned: bool,
+    }
+
+    fn send(
+        script: Vec<Result<Option<Frame>, CaptureError>>,
+        layout: &Layout,
+        state: &mut [OutputState],
+        repeat: bool,
+    ) -> Run {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut repeat, mut warned) = (repeat, false);
+        let alive = send_bitmaps(
+            &tx,
+            &mut Scripted(script.into()),
+            state,
+            layout,
+            &mut repeat,
+            &mut warned,
+        );
+        let mut sent = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            sent.push(u);
+        }
+        Run {
+            sent,
+            alive,
+            repeat,
+            warned,
+        }
+    }
+
+    #[test]
+    fn a_frame_is_sent_as_a_bitmap_at_the_position_of_its_output() {
+        let layout = Layout::side_by_side(2, 4, 2);
+        let mut state = outputs(2);
+        let run = send(
+            vec![
+                Ok(Some(frame(4, 2, pixels(4, 2)))),
+                Ok(Some(frame(4, 2, pixels(4, 2)))),
+            ],
+            &layout,
+            &mut state,
+            false,
+        );
+        assert!(run.alive && !run.repeat);
+        assert_eq!(run.sent.len(), 2);
+        let positions: Vec<(u16, u16, u16, u16)> = run
+            .sent
+            .iter()
+            .map(|u| match u {
+                ironrdp_server::DisplayUpdate::Bitmap(b) => {
+                    assert_eq!(b.data.len(), 4 * 2 * 4);
+                    assert_eq!(b.stride.get(), 16);
+                    (b.x, b.y, b.width.get(), b.height.get())
+                }
+                other => panic!("bitmap expected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(positions, vec![(0, 0, 4, 2), (4, 0, 4, 2)]);
+    }
+
+    #[test]
+    fn the_pixels_are_sent_as_bgra() {
+        let layout = Layout::side_by_side(1, 1, 1);
+        let mut state = outputs(1);
+        let f = frame(1, 1, FrameData::Shm(vec![10, 20, 30, 40]));
+        let run = send(vec![Ok(Some(f))], &layout, &mut state, false);
+        match &run.sent[0] {
+            ironrdp_server::DisplayUpdate::Bitmap(b) => assert_eq!(&b.data[..], &[30, 20, 10, 40]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_frame_of_another_size_is_ignored_and_a_missing_one_is_not_repeated() {
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        let run = send(
+            vec![Ok(Some(frame(8, 8, pixels(8, 8))))],
+            &layout,
+            &mut state,
+            false,
+        );
+        assert!(run.alive && run.sent.is_empty());
+        assert!(state[0].last.is_none());
+        let run = send(vec![Ok(None)], &layout, &mut state, false);
+        assert!(run.alive && run.sent.is_empty());
+    }
+
+    #[test]
+    fn a_new_client_gets_the_last_picture_again_even_if_the_desktop_is_static() {
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        send(
+            vec![Ok(Some(frame(4, 2, pixels(4, 2))))],
+            &layout,
+            &mut state,
+            false,
+        );
+        // No new frame, but the connection is new: `repeat` sends what was kept, once.
+        let run = send(vec![Ok(None)], &layout, &mut state, true);
+        assert_eq!(run.sent.len(), 1);
+        assert!(!run.repeat);
+        let run = send(vec![Ok(None)], &layout, &mut state, false);
+        assert!(run.sent.is_empty());
+    }
+
+    #[test]
+    fn a_lost_capture_is_reported_to_the_caller() {
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        let run = send(
+            vec![Err(CaptureError::ResizeUnsupported)],
+            &layout,
+            &mut state,
+            false,
+        );
+        assert!(!run.alive);
+        assert!(run.sent.is_empty());
+    }
+
+    #[test]
+    fn frames_already_encoded_by_the_agent_cannot_be_sent_as_bitmaps() {
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        let encoded = FrameData::Encoded {
+            keyframe: true,
+            data: vec![0, 0, 0, 1],
+        };
+        let run = send(
+            vec![Ok(Some(frame(4, 2, encoded)))],
+            &layout,
+            &mut state,
+            false,
+        );
+        assert!(run.alive && run.sent.is_empty());
+        assert!(run.warned, "the limitation is reported");
+    }
+
+    #[test]
+    fn a_truncated_buffer_is_skipped_without_stopping_the_stream() {
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        let short = FrameData::Shm(vec![0; 8]);
+        let run = send(
+            vec![Ok(Some(frame(4, 2, short)))],
+            &layout,
+            &mut state,
+            false,
+        );
+        assert!(run.alive && run.sent.is_empty());
+    }
 }

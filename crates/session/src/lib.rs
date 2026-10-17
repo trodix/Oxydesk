@@ -363,4 +363,42 @@ mod tests {
         })
         .is_ok());
     }
+
+    #[test]
+    fn the_patch_number_is_optional_and_a_truncated_version_is_refused() {
+        assert_eq!(
+            parse_kwin_version("kwin 6.4"),
+            Some(KwinVersion {
+                major: 6,
+                minor: 4,
+                patch: 0
+            })
+        );
+        assert_eq!(parse_kwin_version("kwin 6"), None);
+        assert_eq!(parse_kwin_version("kwin six.three"), None);
+    }
+
+    #[test]
+    fn the_lowest_supported_version_is_accepted_and_the_refusal_names_the_version() {
+        assert!(check_version(KwinVersion {
+            major: 6,
+            minor: 3,
+            patch: 0
+        })
+        .is_ok());
+        let err = check_version(KwinVersion {
+            major: 6,
+            minor: 2,
+            patch: 5,
+        })
+        .unwrap_err();
+        assert!(err.contains("6.2.5") && err.contains("6.3"), "{err}");
+        // A future major is not assumed compatible: the interfaces are KDE internals.
+        assert!(check_version(KwinVersion {
+            major: 7,
+            minor: 0,
+            patch: 0
+        })
+        .is_err());
+    }
 }

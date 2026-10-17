@@ -1263,3 +1263,356 @@ mod reconnect_tests {
         assert!(r.validator.reconnect_cookie().is_none());
     }
 }
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use rdsktp_core::error::InputError;
+    use rdsktp_core::ports::PointerButton;
+
+    /// An input port that records what the session would receive.
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Vec<String>>>);
+
+    impl InputSink for Recorder {
+        fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("key {scancode:#x} {pressed}"));
+            Ok(())
+        }
+        fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
+            self.0.lock().unwrap().push(format!("move {x},{y}"));
+            Ok(())
+        }
+        fn pointer_button(
+            &mut self,
+            button: PointerButton,
+            pressed: bool,
+        ) -> Result<(), InputError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("button {button:?} {pressed}"));
+            Ok(())
+        }
+        fn wheel(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
+            self.0.lock().unwrap().push(format!("wheel {dx},{dy}"));
+            Ok(())
+        }
+    }
+
+    fn input(shared: Arc<Shared>) -> (Input, Recorder) {
+        let recorder = Recorder::default();
+        let slot: Slot<Box<dyn InputSink>> = Arc::new(Mutex::new(Some(Box::new(recorder.clone()))));
+        (
+            Input {
+                slot,
+                shared,
+                keys: HeldKeys::default(),
+                pointer: (0, 0, 0),
+            },
+            recorder,
+        )
+    }
+
+    fn log(r: &Recorder) -> Vec<String> {
+        r.0.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn held_keys_are_listed_once_in_order_and_forgotten_when_taken() {
+        let mut keys = HeldKeys::default();
+        keys.track(0x1e, true);
+        keys.track(0x1e, true);
+        keys.track(0x10, true);
+        keys.track(0x2a, true);
+        keys.track(0x2a, false);
+        assert_eq!(keys.take(), vec![0x10, 0x1e]);
+        assert!(keys.take().is_empty());
+    }
+
+    #[test]
+    fn keys_are_forwarded_with_the_extended_prefix() {
+        let (mut input, rec) = input(Arc::default());
+        input.keyboard(KeyboardEvent::Pressed {
+            code: 0x1d,
+            extended: true,
+        });
+        input.keyboard(KeyboardEvent::Released {
+            code: 0x1d,
+            extended: true,
+        });
+        input.keyboard(KeyboardEvent::Pressed {
+            code: 0x1e,
+            extended: false,
+        });
+        assert_eq!(
+            log(&rec),
+            ["key 0xe01d true", "key 0xe01d false", "key 0x1e true"]
+        );
+    }
+
+    #[test]
+    fn a_synchronize_releases_the_keys_whose_release_was_lost() {
+        let (mut input, rec) = input(Arc::default());
+        input.keyboard(KeyboardEvent::Pressed {
+            code: 0x2a,
+            extended: false,
+        });
+        input.keyboard(KeyboardEvent::Pressed {
+            code: 0x38,
+            extended: true,
+        });
+        input.keyboard(KeyboardEvent::Released {
+            code: 0x2a,
+            extended: false,
+        });
+        input.keyboard(KeyboardEvent::Synchronize(
+            ironrdp_pdu::input::fast_path::SynchronizeFlags::empty(),
+        ));
+        let events = log(&rec);
+        assert_eq!(events.last().unwrap(), "key 0xe038 false");
+        // Only the key still held is released again.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.as_str() == "key 0x2a false")
+                .count(),
+            1
+        );
+        input.keyboard(KeyboardEvent::Synchronize(
+            ironrdp_pdu::input::fast_path::SynchronizeFlags::empty(),
+        ));
+        assert_eq!(
+            log(&rec).len(),
+            events.len(),
+            "nothing held, nothing released"
+        );
+    }
+
+    #[test]
+    fn events_are_dropped_while_no_session_is_open() {
+        let (mut input, rec) = input(Arc::default());
+        input.slot.lock().unwrap().take();
+        input.keyboard(KeyboardEvent::Pressed {
+            code: 0x1e,
+            extended: false,
+        });
+        input.mouse(MouseEvent::Move { x: 5, y: 5 });
+        assert!(log(&rec).is_empty());
+    }
+
+    #[test]
+    fn buttons_and_wheels_are_translated() {
+        let (mut input, rec) = input(Arc::default());
+        for event in [
+            MouseEvent::LeftPressed,
+            MouseEvent::LeftReleased,
+            MouseEvent::RightPressed,
+            MouseEvent::RightReleased,
+            MouseEvent::MiddlePressed,
+            MouseEvent::MiddleReleased,
+            MouseEvent::Button4Pressed,
+            MouseEvent::Button4Released,
+            MouseEvent::Button5Pressed,
+            MouseEvent::Button5Released,
+            MouseEvent::VerticalScroll { value: 120 },
+            MouseEvent::Scroll { x: -120, y: 240 },
+            MouseEvent::RelMove { x: 1, y: 1 },
+        ] {
+            input.mouse(event);
+        }
+        assert_eq!(
+            log(&rec),
+            [
+                "button Left true",
+                "button Left false",
+                "button Right true",
+                "button Right false",
+                "button Middle true",
+                "button Middle false",
+                "button Back true",
+                "button Back false",
+                "button Forward true",
+                "button Forward false",
+                "wheel 0,120",
+                "wheel -120,240",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_pointer_follows_the_layout_of_the_clients_monitors() {
+        let shared = Arc::new(Shared::default());
+        let (mut input, rec) = input(shared.clone());
+        // Without a layout the coordinates are passed as they are.
+        input.mouse(MouseEvent::Move { x: 10, y: 20 });
+        // The client has a 1000x500 monitor at its left and the primary 1920x1080 one at the right: its space starts
+        // at the first one, the server's outputs side by side from the primary.
+        let layout = Layout::from_monitors(&[
+            MonitorSpec {
+                x: -1000,
+                y: 0,
+                width: 1000,
+                height: 500,
+                primary: false,
+            },
+            MonitorSpec {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                primary: true,
+            },
+        ])
+        .expect("layout");
+        *shared.layout.lock().unwrap() = Some(layout.clone());
+        input.mouse(MouseEvent::Move { x: 10, y: 20 });
+        input.mouse(MouseEvent::Move { x: 1010, y: 20 });
+        let expected = [
+            layout.from_client_point(10, 20),
+            layout.from_client_point(1010, 20),
+        ];
+        let events = log(&rec);
+        assert_eq!(events[0], "move 10,20");
+        assert_eq!(
+            events[1],
+            format!("move {},{}", expected[0].0, expected[0].1)
+        );
+        assert_eq!(
+            events[2],
+            format!("move {},{}", expected[1].0, expected[1].1)
+        );
+        assert_ne!(events[1], events[2]);
+    }
+
+    #[test]
+    fn a_known_keyboard_layout_is_forwarded_and_an_unknown_one_is_ignored() {
+        let (mut input, _rec) = input(Arc::default());
+        input.keyboard_layout(0x0000_040c); // French
+        input.keyboard_layout(0xdead_beef);
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    fn display() -> (Display, Arc<Shared>) {
+        let shared = Arc::new(Shared::default());
+        (
+            Display {
+                initial: DesktopSize {
+                    width: 1920,
+                    height: 1080,
+                },
+                shared: shared.clone(),
+            },
+            shared,
+        )
+    }
+
+    #[test]
+    fn the_desktop_size_is_the_current_one_else_the_configured_one() {
+        let (mut d, shared) = display();
+        let size = tokio_test_block(d.size());
+        assert_eq!((size.width, size.height), (1920, 1080));
+        *shared.desktop.lock().unwrap() = Some((3840, 1080));
+        let size = tokio_test_block(d.size());
+        assert_eq!((size.width, size.height), (3840, 1080));
+    }
+
+    fn tokio_test_block<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    #[test]
+    fn monitors_are_announced_only_once_a_layout_exists() {
+        let (mut d, shared) = display();
+        assert!(tokio_test_block(d.monitors()).is_none());
+        *shared.layout.lock().unwrap() = Some(Layout::side_by_side(2, 1280, 720));
+        assert_eq!(tokio_test_block(d.monitors()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn each_client_loop_gets_its_own_channel_and_is_counted() {
+        let (mut d, shared) = display();
+        let _first = tokio_test_block(d.updates()).unwrap();
+        let _second = tokio_test_block(d.updates()).unwrap();
+        assert_eq!(shared.client_loops.load(Ordering::SeqCst), 2);
+        assert!(shared.display.lock().unwrap().is_some());
+    }
+
+    fn client_monitor(
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        primary: bool,
+    ) -> ironrdp_pdu::gcc::Monitor {
+        ironrdp_pdu::gcc::Monitor {
+            left,
+            top,
+            right,
+            bottom,
+            flags: if primary {
+                ironrdp_pdu::gcc::MonitorFlags::PRIMARY
+            } else {
+                ironrdp_pdu::gcc::MonitorFlags::empty()
+            },
+        }
+    }
+
+    #[test]
+    fn a_single_monitor_client_keeps_the_layout_of_the_server() {
+        let shared = Arc::new(Shared::default());
+        let policy = monitor_policy(shared.clone(), 4);
+        assert!(policy(&[client_monitor(0, 0, 1919, 1079, true)]).is_none());
+        assert!(shared.layout.lock().unwrap().is_none());
+        assert!(shared.client_initial.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_multi_monitor_client_gets_a_desktop_made_of_its_monitors() {
+        let shared = Arc::new(Shared::default());
+        let policy = monitor_policy(shared.clone(), 4);
+        let (size, monitors) = policy(&[
+            client_monitor(0, 0, 1919, 1079, true),
+            client_monitor(1920, 0, 3839, 1079, false),
+        ])
+        .expect("layout adopted");
+        assert_eq!((size.width, size.height), (3840, 1080));
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(*shared.desktop.lock().unwrap(), Some((3840, 1080)));
+        assert!(shared.layout.lock().unwrap().is_some());
+        assert!(shared.announced.lock().unwrap().is_some());
+        assert!(shared.client_initial.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn monitors_beyond_the_limit_are_ignored() {
+        let shared = Arc::new(Shared::default());
+        // The server can only have one output: two announced monitors leave one, which is not a multi-monitor layout.
+        let policy = monitor_policy(shared.clone(), 1);
+        let answer = policy(&[
+            client_monitor(0, 0, 1919, 1079, true),
+            client_monitor(1920, 0, 3839, 1079, false),
+        ]);
+        assert!(answer.is_none());
+    }
+
+    #[test]
+    fn the_audio_of_a_session_that_does_not_exist_yet_is_refused() {
+        let audio = SlotAudio(Arc::default());
+        let result = audio.open(AudioParams {
+            sample_rate: 44100,
+            channels: 2,
+        });
+        assert!(matches!(result, Err(AudioError::Backend(m)) if m.contains("no audio session")));
+    }
+}

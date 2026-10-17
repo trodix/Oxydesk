@@ -314,4 +314,209 @@ mod tests {
         bytes.extend([0, 0, 0x41, 0]);
         assert_eq!(decode_unicode_text(&bytes), "é€😀");
     }
+
+    // --- the backend, against a recording connection ------------------------------------------------------------
+
+    struct NoSource;
+
+    impl rdsktp_core::files::FileSource for NoSource {
+        fn read(
+            &self,
+            _: u32,
+            _: u64,
+            _: u32,
+        ) -> Result<Vec<u8>, rdsktp_core::error::ClipboardError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default, Clone)]
+    struct Wire {
+        sent: Arc<Mutex<Vec<String>>>,
+        got: Arc<Mutex<Vec<Content>>>,
+    }
+
+    impl Wire {
+        fn backend(&self) -> (RdpClipboard, LocalContent, SendFn) {
+            let sent = self.sent.clone();
+            let send: SendFn = Arc::new(move |m| sent.lock().unwrap().push(format!("{m:?}")));
+            let got = self.got.clone();
+            let local = LocalContent::default();
+            let backend = RdpClipboard::new(
+                send.clone(),
+                local.clone(),
+                Arc::new(move |c| got.lock().unwrap().push(c)),
+            );
+            (backend, local, send)
+        }
+
+        fn sent(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        fn last(&self) -> String {
+            self.sent().last().cloned().unwrap_or_default()
+        }
+    }
+
+    fn formats(ids: &[ClipboardFormatId]) -> Vec<ClipboardFormat> {
+        ids.iter().map(|id| ClipboardFormat::new(*id)).collect()
+    }
+
+    #[test]
+    fn a_local_text_copy_is_announced_then_served_with_crlf() {
+        let wire = Wire::default();
+        let (mut backend, local, send) = wire.backend();
+        announce(&send, &local, Content::Text("a\nb".into()));
+        assert!(wire.last().contains("SendInitiateCopy"));
+        assert!(wire.last().contains("CF_UNICODETEXT") || wire.last().contains("13"));
+        backend.on_format_data_request(FormatDataRequest {
+            format: ClipboardFormatId::CF_UNICODETEXT,
+        });
+        assert!(wire.last().contains("SendFormatData"));
+        // Asking for a format we do not hold is an error answer, not silence.
+        backend.on_format_data_request(FormatDataRequest {
+            format: ClipboardFormatId::CF_DIB,
+        });
+        assert!(wire.last().contains("SendFormatData"));
+        let n = wire.sent().len();
+        assert!(n >= 3);
+    }
+
+    #[test]
+    fn nothing_is_offered_before_something_was_copied() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.on_request_format_list();
+        assert!(wire.last().contains("SendInitiateCopy([])"));
+    }
+
+    #[test]
+    fn files_are_only_announced_when_the_other_end_negotiated_file_transfer() {
+        let wire = Wire::default();
+        let (mut backend, local, send) = wire.backend();
+        let list = FileList {
+            entries: vec![],
+            source: Arc::new(NoSource),
+        };
+        announce(&send, &local, Content::Files(list.clone()));
+        assert!(
+            wire.sent().is_empty(),
+            "no file transfer negotiated: nothing sent"
+        );
+        backend.on_process_negotiated_capabilities(
+            ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
+        );
+        announce(&send, &local, Content::Files(list));
+        assert!(wire.last().contains("SendInitiateFileCopy"));
+        backend.on_request_format_list();
+        assert_eq!(wire.sent().len(), 2);
+        assert!(wire.last().contains("SendInitiateFileCopy"));
+    }
+
+    #[test]
+    fn text_wins_over_an_image_and_unknown_formats_are_not_requested() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.on_remote_copy(&formats(&[
+            ClipboardFormatId::CF_DIB,
+            ClipboardFormatId::CF_UNICODETEXT,
+        ]));
+        assert!(wire.last().contains("SendInitiatePaste"));
+        assert_eq!(backend.requested, Some(ClipboardFormatId::CF_UNICODETEXT));
+        let before = wire.sent().len();
+        backend.on_remote_copy(&formats(&[ClipboardFormatId::CF_DIB]));
+        assert_eq!(backend.requested, Some(ClipboardFormatId::CF_DIB));
+        backend.requested = None;
+        backend.on_remote_copy(&formats(&[ClipboardFormatId::CF_HDROP]));
+        assert_eq!(
+            wire.sent().len(),
+            before + 1,
+            "nothing usable: no paste request"
+        );
+        assert_eq!(backend.requested, None);
+    }
+
+    #[test]
+    fn the_text_received_reaches_the_desktop_with_lf_and_an_error_answer_is_dropped() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.requested = Some(ClipboardFormatId::CF_UNICODETEXT);
+        let data: Vec<u8> = "x\r\ny\0"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        backend.on_format_data_response(FormatDataResponse::new_data(data));
+        backend.requested = Some(ClipboardFormatId::CF_UNICODETEXT);
+        backend.on_format_data_response(FormatDataResponse::new_error());
+        // An answer nobody asked for is ignored.
+        backend.on_format_data_response(FormatDataResponse::new_data(vec![0, 0]));
+        let got = wire.got.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(matches!(&got[0], Content::Text(t) if t == "x\ny"));
+    }
+
+    #[test]
+    fn a_broken_image_is_ignored_instead_of_reaching_the_desktop() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.requested = Some(ClipboardFormatId::CF_DIB);
+        backend.on_format_data_response(FormatDataResponse::new_data(vec![1, 2, 3]));
+        assert!(wire.got.lock().unwrap().is_empty());
+        // A local image that is not a PNG is answered with an error, not a crash.
+        let (mut backend, local, send) = wire.backend();
+        announce(&send, &local, Content::Image(vec![1, 2, 3]));
+        backend.on_format_data_request(FormatDataRequest {
+            format: ClipboardFormatId::CF_DIB,
+        });
+        assert!(wire.last().contains("SendFormatData"));
+    }
+
+    #[test]
+    fn a_request_for_file_contents_without_a_copied_list_is_refused() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.on_file_contents_request(FileContentsRequest {
+            stream_id: 9,
+            index: 0,
+            flags: ironrdp_cliprdr::pdu::FileContentsFlags::SIZE,
+            position: 0,
+            requested_size: 8,
+            data_id: None,
+        });
+        assert!(wire.last().contains("SendFileContentsResponse"));
+    }
+
+    #[test]
+    fn locks_freeze_the_list_until_they_are_released() {
+        let wire = Wire::default();
+        let (mut backend, local, send) = wire.backend();
+        backend.on_process_negotiated_capabilities(
+            ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
+        );
+        announce(
+            &send,
+            &local,
+            Content::Files(FileList {
+                entries: vec![],
+                source: Arc::new(NoSource),
+            }),
+        );
+        backend.on_lock(LockDataId(5));
+        assert!(local.locks.lock().unwrap().contains_key(&5));
+        backend.on_unlock(LockDataId(5));
+        assert!(local.locks.lock().unwrap().is_empty());
+        // Locking when no file list is held records nothing.
+        announce(&send, &local, Content::Text("t".into()));
+        backend.on_lock(LockDataId(6));
+        assert!(local.locks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_empty_remote_file_list_is_not_forwarded() {
+        let wire = Wire::default();
+        let (mut backend, _, _) = wire.backend();
+        backend.on_remote_file_list(&[], None);
+        assert!(wire.got.lock().unwrap().is_empty());
+    }
 }

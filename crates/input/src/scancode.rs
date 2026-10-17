@@ -54,4 +54,39 @@ mod tests {
         assert_eq!(rdp_to_evdev(0xE0FF), None);
         assert_eq!(rdp_to_evdev(0x7F), None);
     }
+
+    #[test]
+    fn every_extended_key_of_the_table_maps_to_its_evdev_code() {
+        let table = [
+            (0x1C, 96),
+            (0x1D, 97),
+            (0x35, 98),
+            (0x37, 99),
+            (0x38, 100),
+            (0x47, 102),
+            (0x48, 103),
+            (0x49, 104),
+            (0x4B, 105),
+            (0x4D, 106),
+            (0x4F, 107),
+            (0x50, 108),
+            (0x51, 109),
+            (0x52, 110),
+            (0x53, 111),
+            (0x5B, 125),
+            (0x5C, 126),
+            (0x5D, 127),
+        ];
+        for (rdp, evdev) in table {
+            assert_eq!(rdp_to_evdev(0xE000 | rdp), Some(evdev), "{rdp:#x}");
+        }
+    }
+
+    #[test]
+    fn the_range_of_the_identity_keys_is_exact() {
+        assert_eq!(rdp_to_evdev(0x01), Some(1));
+        assert_eq!(rdp_to_evdev(0x59), None);
+        // Without the extended prefix, an extended-only code stays a plain key (here KP_7 area).
+        assert_eq!(rdp_to_evdev(0x48), Some(0x48));
+    }
 }

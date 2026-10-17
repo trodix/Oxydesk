@@ -154,3 +154,89 @@ impl FrameEncoder for AutoEncoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdsktp_core::frame::{FrameData, PixelFormat};
+    use rdsktp_core::layout::OutputId;
+
+    fn frame(w: u32, h: u32) -> Frame {
+        Frame {
+            output: OutputId(0),
+            width: w,
+            height: h,
+            stride: w * 4,
+            format: PixelFormat::Bgra8,
+            data: FrameData::Shm(vec![90; (w * h * 4) as usize]),
+        }
+    }
+
+    #[test]
+    fn the_choice_is_read_from_its_name_and_unknown_names_list_the_valid_ones() {
+        assert_eq!("auto".parse(), Ok(EncoderChoice::Auto));
+        assert_eq!("vaapi".parse(), Ok(EncoderChoice::Vaapi));
+        assert_eq!("openh264".parse(), Ok(EncoderChoice::OpenH264));
+        let e = "x264".parse::<EncoderChoice>().unwrap_err();
+        assert!(e.contains("x264") && e.contains("auto|vaapi|openh264"));
+        assert_eq!(EncoderChoice::default(), EncoderChoice::Auto);
+    }
+
+    #[test]
+    fn only_a_gpu_encoder_asks_for_dmabuf_buffers() {
+        assert!(!EncoderChoice::OpenH264.wants_dmabuf());
+        assert!(EncoderChoice::Vaapi.wants_dmabuf());
+    }
+
+    #[test]
+    fn nothing_is_created_before_the_first_frame() {
+        let mut enc = AutoEncoder::new(EncoderChoice::OpenH264, 30.0, 1_000_000);
+        assert_eq!(enc.name(), "none");
+        // Requests made early are remembered, not lost nor fatal.
+        enc.request_keyframe();
+        assert!(enc.keyframe_pending);
+        enc.set_bitrate(2_000_000);
+        assert_eq!(enc.bitrate_bps, 2_000_000);
+        assert!(enc.inner.is_none());
+    }
+
+    #[cfg(not(feature = "vaapi"))]
+    #[test]
+    fn a_forced_backend_that_is_missing_fails_instead_of_falling_back() {
+        let mut enc = AutoEncoder::new(EncoderChoice::Vaapi, 30.0, 1_000_000);
+        assert!(matches!(
+            enc.encode(&frame(64, 64)),
+            Err(EncodeError::Unsupported(_))
+        ));
+        assert_eq!(enc.name(), "none");
+    }
+
+    #[test]
+    fn the_codec_is_created_again_when_the_desktop_size_changes() {
+        let mut enc = AutoEncoder::new(EncoderChoice::OpenH264, 30.0, 1_000_000);
+        if enc.encode(&frame(64, 64)).is_err() {
+            eprintln!("libopenh264 missing: test skipped");
+            return;
+        }
+        assert_eq!(enc.name(), "openh264");
+        assert_eq!(enc.size, (64, 64));
+        assert!(!enc.keyframe_pending);
+        enc.request_keyframe();
+        enc.set_bitrate(500_000);
+        assert!(enc.encode(&frame(64, 64)).is_ok());
+        let out = enc.encode(&frame(128, 96)).expect("new size");
+        assert_eq!(enc.size, (128, 96));
+        assert!(!out.data.is_empty(), "a new codec starts on a keyframe");
+    }
+
+    #[test]
+    fn a_keyframe_asked_before_the_first_frame_is_applied_to_it() {
+        let mut enc = AutoEncoder::new(EncoderChoice::OpenH264, 30.0, 1_000_000);
+        enc.request_keyframe();
+        if enc.encode(&frame(64, 64)).is_err() {
+            eprintln!("libopenh264 missing: test skipped");
+            return;
+        }
+        assert!(!enc.keyframe_pending, "consumed by the first encode");
+    }
+}

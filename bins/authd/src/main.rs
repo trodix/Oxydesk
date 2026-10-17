@@ -341,4 +341,95 @@ mod outputs_tests {
             PathBuf::from("/run/rdsktp/agent-alice.env")
         );
     }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn options_are_read_by_name() {
+        let a = args(&["--socket", "/tmp/s", "--min-uid", "500"]);
+        assert_eq!(arg(&a, "--socket").as_deref(), Some("/tmp/s"));
+        assert_eq!(arg(&a, "--min-uid").as_deref(), Some("500"));
+        assert_eq!(arg(&a, "--pam-service"), None);
+        // An option without value at the end is absent, not an out-of-bounds read.
+        assert_eq!(arg(&args(&["--socket"]), "--socket"), None);
+    }
+
+    #[test]
+    fn the_agent_socket_is_in_the_runtime_directory_of_the_user() {
+        assert_eq!(
+            agent_socket(1000),
+            PathBuf::from("/run/user/1000/rdsktp-agent.sock")
+        );
+    }
+
+    #[test]
+    fn accounts_are_looked_up_in_the_system_database() {
+        assert_eq!(lookup_uid("root"), Some(0));
+        assert_eq!(lookup_uid("no-such-account-rdsktp"), None);
+        assert_eq!(lookup_uid("bad\0name"), None);
+        assert_eq!(lookup_gid("root"), Some(0));
+        assert_eq!(lookup_gid("no-such-group-rdsktp"), None);
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rdsktp-authd-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_socket_is_restricted_and_replaces_a_stale_one() {
+        let dir = temp("bind");
+        let path = dir.join("sub/authd.sock");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"stale").unwrap();
+        let listener = bind(&path).expect("bind over a stale file");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o660);
+        // It really listens.
+        let client = std::thread::spawn({
+            let path = path.clone();
+            move || UnixStream::connect(path).is_ok()
+        });
+        listener.accept().unwrap();
+        assert!(client.join().unwrap());
+        // The directory is created when missing.
+        let nested = dir.join("a/b/c.sock");
+        bind(&nested).expect("creates the directory");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn config(min_uid: u32, known: &[&str]) -> Config {
+        Config {
+            socket: PathBuf::new(),
+            pam_service: "rdsktp".into(),
+            min_uid,
+            authenticated: Mutex::new(known.iter().map(|s| (*s).to_owned()).collect()),
+        }
+    }
+
+    fn denied(cfg: &Config, username: &str) -> bool {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        attach(server, cfg, username).unwrap();
+        let (resp, fd) = rdsktp_authd_proto::recv_response(&mut client).unwrap();
+        assert!(fd.is_none(), "no descriptor with a refusal");
+        resp == Response::Denied
+    }
+
+    #[test]
+    fn a_reconnection_is_denied_without_a_prior_login_or_for_a_bad_name() {
+        // root exists but nobody authenticated it here (and its uid is below the minimum).
+        assert!(denied(&config(1000, &[]), "root"));
+        assert!(denied(&config(0, &[]), "root"));
+        // Authenticated, but a system account.
+        assert!(denied(&config(1000, &["root"]), "root"));
+        // Syntactically invalid or unknown names never reach the lookup.
+        assert!(denied(&config(0, &["../etc"]), "../etc"));
+        assert!(denied(
+            &config(0, &["no-such-account-rdsktp"]),
+            "no-such-account-rdsktp"
+        ));
+    }
 }

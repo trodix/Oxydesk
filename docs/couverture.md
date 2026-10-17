@@ -33,15 +33,19 @@ Un pourcentage mesure le code **exécuté** par les tests, pas la qualité de le
   exercée ?) : pour le code plein de conditions, les branches renseignent mieux (`COVERAGE_BRANCH=1`, nightly). Même 100 % ne
   garantit ni les combinaisons ni les valeurs limites.
 
-## État au 2026-10-17 (lignes : 61 % ; régions : 63 % ; fonctions : 59 %)
+## État au 2026-10-17 (lignes : 74 % ; régions : 74 % ; fonctions : 74 %)
 
-Ce que le pourcentage cache, à traiter par risque plutôt que par chiffre :
+Mesure initiale : 61,8 % de lignes. Ce que le pourcentage cache, à traiter par risque plutôt que par chiffre :
 
-- **Protocole et métier, bien couverts** : `core` (layout, débit, imprimantes, throttle, config), `reconnect`, `authd-proto`,
-  `remote/link`, `spool`, `drivefs`, `clipfiles`, `capture/multi`.
-- **Critique et à renforcer** : `rdp/server.rs` (54 %, validateur de login, politique d'écrans), `rdp/pump.rs` (50 %, pompe
-  de trames), `rdp/drive.rs` (5 % : relais des lecteurs, déconnexion pendant un transfert), `session/lib.rs` (45 %, démarrage
-  de KWin), `bins/authd/src/main.rs` (15 % : seule la décision d'attache est testée).
+- **Protocole et métier, bien couverts (≥ 90 %)** : `core` (layout, débit, imprimantes, throttle, config, drive), `reconnect`,
+  `agent-proto`, `authd-proto`, `remote/{drives,link}`, `spool`, `clipboard/{fuse,local_files}`, `encode/auto`.
+- **Couverts à 80–90 %** : `rdp/{drive,clipboard,clipfiles,dib}` (faux client RDPDR/CLIPRDR en mémoire), `drivefs`,
+  `remote/{ports,printers}`, `capture/multi`, `bins/rdsktp-agent/printers`.
+- **À renforcer** : `rdp/server.rs` (75 %), `rdp/pump.rs` (65 % : boucle de capture liée au runtime IronRDP),
+  `session/lib.rs` (50 % : le démarrage lance un vrai KWin ; les parties pures — version, processus périmés — sont testées),
+  `bins/authd/src/main.rs` (54 %), `bins/rdsktp/src/main.rs` (47 %, `main` et accept-loop), `input/xkb` (47 %, dépend de libxkbcommon).
+- **Non mesuré par `cargo test`** : `bins/rdsktp-agent/{main,drives}` et `bins/rdsktp-testapp` (0 %, processus de session testés
+  en VM), à décider si l'extraction d'une logique pure justifie un test unitaire.
 - **Raccordement, couvert par les tests en VM (mstsc, FreeRDP, mode login) et non par `cargo test`** : `bins/rdsktp`,
   `bins/rdsktp-agent`, `crates/remote/{lib,ports}.rs`, `crates/clipboard/wayland.rs`, `crates/audio/pulse.rs`,
   `bins/authd/src/pam.rs`, `bins/rdsktp-cups-backend`. Les mesurer demanderait de collecter la couverture des processus lancés

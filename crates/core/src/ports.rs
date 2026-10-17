@@ -200,3 +200,112 @@ pub trait SessionProvider: Send {
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{CaptureError, ClipboardError, InputError, LoginError};
+    use crate::frame::Frame;
+    use crate::layout::{Layout, OutputId};
+
+    /// The minimum an adapter must provide: everything else comes from the defaults under test.
+    struct Bare;
+
+    impl CaptureSource for Bare {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(None)
+        }
+    }
+
+    impl InputSink for Bare {
+        fn key(&mut self, _: u16, _: bool) -> Result<(), InputError> {
+            Ok(())
+        }
+        fn pointer_move(&mut self, _: i32, _: i32) -> Result<(), InputError> {
+            Ok(())
+        }
+    }
+
+    impl ClipboardBackend for Bare {
+        fn set_text(&mut self, _: &str) -> Result<(), ClipboardError> {
+            Ok(())
+        }
+        fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
+            Ok(None)
+        }
+    }
+
+    impl SessionBroker for Bare {
+        fn login(&self, _: &str, _: &str, _: Option<u32>) -> Result<DesktopPorts, LoginError> {
+            Err(LoginError::Denied)
+        }
+    }
+
+    #[test]
+    fn a_capture_without_extras_cannot_resize_but_accepts_placement() {
+        let mut c = Bare;
+        assert!(matches!(
+            c.resize(800, 600),
+            Err(CaptureError::ResizeUnsupported)
+        ));
+        assert!(c.place(10, 10).is_ok());
+        assert!(c.set_primary().is_ok());
+        assert!(c.take_cursor().is_none());
+        assert!(c.output_name().is_none());
+        assert!(matches!(
+            c.place_group(&[("a".into(), 0, 0)]),
+            Err(CaptureError::ResizeUnsupported)
+        ));
+        c.retire();
+        c.set_raw_pixels(true);
+    }
+
+    #[test]
+    fn a_single_output_layout_goes_through_resize_and_several_are_refused() {
+        let mut c = Bare;
+        // `resize` is unsupported by default: the single output layout reports it, it is not silently accepted.
+        assert!(matches!(
+            c.apply_layout(&Layout::side_by_side(1, 800, 600)),
+            Err(CaptureError::ResizeUnsupported)
+        ));
+        assert!(matches!(
+            c.apply_layout(&Layout::side_by_side(2, 800, 600)),
+            Err(CaptureError::ResizeUnsupported)
+        ));
+    }
+
+    #[test]
+    fn input_and_clipboard_extras_are_optional() {
+        let mut i = Bare;
+        assert!(i.pointer_button(PointerButton::Left, true).is_ok());
+        assert!(i.wheel(0, 120).is_ok());
+        let mut c = Bare;
+        assert!(c.set_image(&[1]).is_ok());
+        assert_eq!(c.poll_image().unwrap(), None);
+        assert!(c.poll_files().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_broker_without_reconnection_never_rejoins_a_session() {
+        assert!(matches!(
+            Bare.attach("alice", Some(2)),
+            Err(LoginError::Denied)
+        ));
+    }
+
+    #[test]
+    fn audio_sizes_follow_the_format() {
+        let stereo = AudioParams {
+            sample_rate: 44_100,
+            channels: 2,
+        };
+        assert_eq!(stereo.frame_bytes(), 4);
+        assert_eq!(stereo.bytes_for_ms(1000), 44_100 * 4);
+        assert_eq!(stereo.bytes_for_ms(0), 0);
+        let mono = AudioParams {
+            sample_rate: 8000,
+            channels: 1,
+        };
+        assert_eq!(mono.bytes_for_ms(20), 160 * 2);
+    }
+}
