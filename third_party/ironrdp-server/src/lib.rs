@@ -35,6 +35,7 @@ pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::MonitorPolicy;
 pub use server::{
+    detect_dead_peers,
     ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator, Credentials,
     ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
     ServerEventSender, TransportTls,

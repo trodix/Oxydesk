@@ -180,6 +180,14 @@ pub trait SessionBroker: Send + Sync {
         password: &str,
         outputs: Option<u32>,
     ) -> Result<DesktopPorts, LoginError>;
+
+    /// Rejoins the running session of `username`, who proved who they are by an earlier login (automatic
+    /// reconnection after a network loss): no password, and a session is never started. `Denied` when there is
+    /// none to rejoin.
+    fn attach(&self, username: &str, outputs: Option<u32>) -> Result<DesktopPorts, LoginError> {
+        let _ = (username, outputs);
+        Err(LoginError::Denied)
+    }
 }
 
 pub trait OutputManager: Send {

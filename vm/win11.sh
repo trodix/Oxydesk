@@ -205,8 +205,8 @@ case "${1:-}" in
     running && die "already running"
     addr="${2:?HOST:PORT}"; : "${3:?USER}"
     [[ -f "$S/overlay.qcow2" && "$(snapshot_key)" == "$(cat "$S/snapshot.sha" 2>/dev/null)" ]] || take_snapshot
-    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\nbig_mib=%s\nklid=%s\nlayout_check=%s\ndrives=%s\nprinters=%s\nleft=%s\n' \
-      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" "${WIN_BIG_MIB:-128}" "${WIN_KLID:-040C}" "${WIN_LAYOUT_CHECK:-1}" "${WIN_DRIVES:-0}" "${WIN_PRINTERS:-0}" "${WIN_MONITORS_LEFT:-0}" > "$S/params.txt"
+    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\nbig_mib=%s\nklid=%s\nlayout_check=%s\ndrives=%s\nprinters=%s\nleft=%s\nreconnect=%s\n' \
+      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" "${WIN_BIG_MIB:-128}" "${WIN_KLID:-040C}" "${WIN_LAYOUT_CHECK:-1}" "${WIN_DRIVES:-0}" "${WIN_PRINTERS:-0}" "${WIN_MONITORS_LEFT:-0}" "${WIN_RECONNECT:-0}" > "$S/params.txt"
     make_iso "$S/test-data.iso" RDPDATA "$S/params.txt"; rm -f "$S/params.txt" "$S/audio.wav"
     export DISK_IMG="$S/overlay.qcow2"
     : > "$S/serial.log"; launch 0 -loadvm ready

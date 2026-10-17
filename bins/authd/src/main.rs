@@ -4,12 +4,13 @@
 
 mod pam;
 
+use std::collections::HashSet;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pam::{Pam, PamOutcome};
@@ -22,6 +23,20 @@ struct Config {
     socket: PathBuf,
     pam_service: String,
     min_uid: u32,
+    /// Users PAM has accepted since this process started: only they can be rejoined without a password.
+    authenticated: Mutex<HashSet<String>>,
+}
+
+/// Whether `username` may rejoin its running session without a password (automatic reconnection): an account
+/// this `authd` authenticated itself, above the minimum uid, whose agent is running.
+fn may_attach(
+    known: &HashSet<String>,
+    username: &str,
+    uid: Option<u32>,
+    min_uid: u32,
+    agent_running: bool,
+) -> bool {
+    known.contains(username) && uid.is_some_and(|u| u >= min_uid) && agent_running
 }
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -117,13 +132,64 @@ fn connect_agent(username: &str, uid: u32, outputs: u32) -> anyhow::Result<UnixS
     }
 }
 
+fn agent_running(username: &str) -> bool {
+    Command::new("systemctl")
+        .args([
+            "is-active",
+            "--quiet",
+            &format!("rdsktp-agent@{username}.service"),
+        ])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Connects to the agent of a running session, without starting anything.
+fn join_agent(uid: u32) -> anyhow::Result<UnixStream> {
+    Ok(UnixStream::connect(agent_socket(uid))?)
+}
+
+fn attach(mut stream: UnixStream, cfg: &Config, username: &str) -> anyhow::Result<()> {
+    let uid = valid_username(username)
+        .then(|| lookup_uid(username))
+        .flatten();
+    let known = cfg.authenticated.lock().expect("authenticated mutex");
+    let allowed = may_attach(&known, username, uid, cfg.min_uid, agent_running(username));
+    drop(known);
+    let Some(uid) = uid.filter(|_| allowed) else {
+        tracing::warn!(user = %username, "reconnection refused");
+        return send_response(&mut stream, &Response::Denied, None).map_err(Into::into);
+    };
+    match join_agent(uid) {
+        Ok(agent) => {
+            send_response(
+                &mut stream,
+                &Response::Granted { uid },
+                Some(agent.as_raw_fd()),
+            )?;
+            tracing::info!(user = %username, uid, "session rejoined");
+        }
+        Err(e) => {
+            tracing::warn!(user = %username, "agent unreachable: {e}");
+            send_response(&mut stream, &Response::Denied, None)?;
+        }
+    }
+    Ok(())
+}
+
 fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let Request::Login {
-        username,
-        password,
-        outputs,
-    } = read_request(&mut stream)?;
+    let (username, password, outputs) = match read_request(&mut stream)? {
+        Request::Login {
+            username,
+            password,
+            outputs,
+        } => (username, password, outputs),
+        Request::Attach { username, .. } => {
+            stream.set_read_timeout(None)?;
+            tracing::info!(user = %username, "reconnection request");
+            return attach(stream, cfg, &username);
+        }
+    };
     stream.set_read_timeout(None)?;
     tracing::info!(user = %username, "login request");
     let deny = |stream: &mut UnixStream| -> anyhow::Result<()> {
@@ -144,6 +210,10 @@ fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()>
         return deny(&mut stream);
     }
     let uid = uid.expect("checked above");
+    cfg.authenticated
+        .lock()
+        .expect("authenticated mutex")
+        .insert(username.clone());
     match connect_agent(&username, uid, outputs) {
         Ok(agent) => {
             send_response(
@@ -216,6 +286,7 @@ fn main() -> anyhow::Result<()> {
         min_uid: arg(&args, "--min-uid")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000),
+        authenticated: Mutex::default(),
     });
     anyhow::ensure!(
         unsafe { libc::geteuid() } == 0,
@@ -239,6 +310,19 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod outputs_tests {
     use super::*;
+
+    #[test]
+    fn only_a_user_authenticated_here_with_a_running_agent_can_be_rejoined() {
+        let known: HashSet<String> = ["alice".to_owned()].into();
+        assert!(may_attach(&known, "alice", Some(1000), 1000, true));
+        // Never logged in through PAM since the start (or someone else's session).
+        assert!(!may_attach(&known, "bob", Some(1001), 1000, true));
+        // No session to rejoin: nothing is started without a password.
+        assert!(!may_attach(&known, "alice", Some(1000), 1000, false));
+        // Unknown account, or a system account.
+        assert!(!may_attach(&known, "alice", None, 1000, true));
+        assert!(!may_attach(&known, "alice", Some(999), 1000, true));
+    }
 
     #[test]
     fn the_wish_is_an_option_of_the_agent_or_nothing() {

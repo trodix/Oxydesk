@@ -8,6 +8,7 @@ pub mod drive;
 pub mod printer;
 mod pump;
 mod raw;
+mod reconnect;
 mod server;
 mod sound;
 

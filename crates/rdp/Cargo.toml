@@ -23,3 +23,8 @@ anyhow = "1"
 tracing = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 png = "0.17"
+hmac = "0.13"
+md-5 = "0.11"
+
+[dev-dependencies]
+socket2 = { version = "0.6", features = ["all"] }

@@ -13,6 +13,8 @@ EGFX, one KWin session per user.
 - **Input and clipboard**: keyboard, mouse, cursor shape; clipboard with text, images and files (both ways).
 - **Audio** output, **drive** redirection (FUSE) and **printer** redirection (CUPS, raw or XPS jobs).
 - **Login throttling** per client address and per account.
+- **Automatic reconnection**: after a network loss, `mstsc` and FreeRDP resume the session by themselves, without the
+  password (Auto-Reconnect cookie, `reconnect-timeout`, default 10 s); the desktop and its applications are kept.
 
 Tested with Windows `mstsc`, FreeRDP (`xfreerdp`, `sdl-freerdp`) and Remmina.
 
@@ -54,6 +56,7 @@ NLA password is only read from `RDSKTP_PASSWORD`. The default mode is `login`.
 cargo build --release                 # add --features kwin for the real KWin session (libpipewire-dev, libclang)
 cargo test --workspace
 cargo xtask test --server|--client|--freerdp|--clients|--integration
+ci/coverage.sh                        # test coverage, HTML report in target/coverage/html (docs/couverture.md)
 ```
 
 Integration tests use a Debian 13 VM (`bash vm/vm.sh create`), a Windows 11 VM for `mstsc` (`bash vm/win11.sh install`)

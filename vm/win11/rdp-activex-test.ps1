@@ -409,7 +409,20 @@ try {
     $m = PixelAt 8 8
     Check 'keyboard_layout' (Orange $m) "klid $($p.klid): marker pixel $($m.R),$($m.G),$($m.B), expected 255,128,0"
   }
-  Check 'heartbeat' ($seen.Count -ge 2) "states seen: $($seen.Keys -join ',')"
+  if ($p.reconnect -ne '1') { Check 'heartbeat' ($seen.Count -ge 2) "states seen: $($seen.Keys -join ',')" }
+
+  if ($p.reconnect -eq '1') {
+    # Network loss (the host resets the flow when it sees CUT): mstsc must reconnect by itself, without asking for the
+    # password again, and the same desktop must come back (the heartbeat moves again, Connected is 1 at the end).
+    Emit 'STEP cut-now'
+    $null = Pump { $false } 6000
+    $null = Pump { $state.connected } 60000
+    # The login mode shows a real desktop (no heartbeat): the host checks in the server journal that the cookie was used.
+    Check 'auto_reconnect' $state.connected "connected=$($state.connected) reason=$($state.reason)"
+    $ocx.Disconnect()
+    $null = Pump { $state.disconnected } 10000
+    Finish
+  }
 
   if ($p.drives -eq '1') {
     # The host (xtask) reads guest.bin through the mount, writes from-host.bin, hostdir\note.txt, deletes guest.txt, then

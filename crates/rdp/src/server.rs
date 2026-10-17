@@ -29,6 +29,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::clipboard::{announce, Content, LocalContent, RdpClipboard};
 use crate::drive::DriveFactory;
 use crate::pump::{self, PumpParams, PumpPorts, Shared};
+use crate::reconnect::{Reconnect, Resume, COOKIE_LEN};
 use crate::sound::SoundFactory;
 
 pub struct ServerConfig {
@@ -44,6 +45,10 @@ pub struct ServerConfig {
     pub throttle: rdsktp_core::ThrottleConfig,
     /// Format of the jobs of each redirected printer (ADR 015).
     pub printer_modes: rdsktp_core::PrinterModes,
+    /// How long after a network loss a client resumes its session by itself (Auto-Reconnect cookie); zero: never.
+    pub reconnect_timeout: Duration,
+    /// A client that stops answering is dropped after this long, which frees the server for its reconnection.
+    pub dead_peer_timeout: Duration,
     /// Bitrate and frames in flight follow what the client's link carries (`--adaptive-bitrate`).
     pub adaptive_bitrate: bool,
 }
@@ -127,8 +132,9 @@ impl LoginGuard {
     }
 }
 
-/// Drops the connections of blocked addresses before any protocol exchange.
-struct GuardHandler(LoginGuard);
+/// Drops the connections of blocked addresses before any protocol exchange, and tells the reconnection
+/// cookies when a connection ends.
+struct GuardHandler(LoginGuard, Arc<Reconnect>);
 
 impl ironrdp_server::ConnectionHandler for GuardHandler {
     fn on_accept(&mut self, peer: std::net::SocketAddr) -> bool {
@@ -149,6 +155,18 @@ impl ironrdp_server::ConnectionHandler for GuardHandler {
             None => true,
         }
     }
+
+    fn on_disconnected(
+        &mut self,
+        _peer: std::net::SocketAddr,
+        _duration: Duration,
+        error: Option<&anyhow::Error>,
+    ) -> ironrdp_server::PostConnectionAction {
+        // An error is a loss (network, crash): the client may come back. Otherwise it left on purpose.
+        self.1
+            .connection_ended(error.is_none(), std::time::Instant::now());
+        ironrdp_server::PostConnectionAction::Continue
+    }
 }
 
 /// Validates the received credentials (TLS mode) by opening the user's session through the broker.
@@ -157,10 +175,82 @@ struct BrokerValidator {
     slot: SessionSlot,
     guard: LoginGuard,
     shared: Arc<Shared>,
+    reconnect: Arc<Reconnect>,
+    /// User whose connection was just accepted: the cookie to hand over is theirs.
+    accepted: Mutex<Option<String>>,
+}
+
+impl BrokerValidator {
+    /// The monitors announced at connection (before the login): the session starts with as many outputs.
+    fn client_outputs(&self) -> Option<u32> {
+        self.shared
+            .client_initial
+            .lock()
+            .expect("client layout mutex")
+            .as_ref()
+            .map(|l| l.outputs.len() as u32)
+    }
+
+    fn accept(&self, user: &str, ports: DesktopPorts) {
+        self.slot.install(ports);
+        *self.accepted.lock().expect("accepted mutex") = Some(user.to_owned());
+    }
 }
 
 #[async_trait::async_trait]
 impl ironrdp_server::CredentialValidator for BrokerValidator {
+    async fn validate_reconnect(
+        &self,
+        cookie: &[u8; COOKIE_LEN],
+    ) -> Result<ironrdp_server::CredentialDecision, ironrdp_server::CredentialValidationError> {
+        use ironrdp_server::CredentialDecision;
+        if !self.reconnect.enabled() {
+            return Ok(CredentialDecision::Reject);
+        }
+        let ip = self.guard.peer();
+        let user = match self.reconnect.resume(cookie, ip, std::time::Instant::now()) {
+            Resume::Valid(user) => user,
+            Resume::Refused(why) => {
+                tracing::info!(?ip, "automatic reconnection refused: {why}");
+                return Ok(CredentialDecision::Reject);
+            }
+        };
+        let broker = self.broker.clone();
+        let outputs = self.client_outputs();
+        let name = user.clone();
+        let outcome = tokio::task::spawn_blocking(move || broker.attach(&name, outputs))
+            .await
+            .map_err(ironrdp_server::CredentialValidationError::new)?;
+        match outcome {
+            Ok(ports) => {
+                tracing::info!(?ip, user = ?user, "automatic reconnection accepted");
+                self.accept(&user, ports);
+                Ok(CredentialDecision::Accept)
+            }
+            Err(LoginError::Denied) => {
+                tracing::info!(?ip, user = ?user, "automatic reconnection: no session to rejoin");
+                Ok(CredentialDecision::Reject)
+            }
+            Err(LoginError::Backend(e)) => {
+                tracing::error!("reconnection: {e}");
+                Err(ironrdp_server::CredentialValidationError::new(
+                    std::io::Error::other(e),
+                ))
+            }
+        }
+    }
+
+    fn reconnect_cookie(&self) -> Option<ironrdp_pdu::rdp::session_info::ServerAutoReconnect> {
+        if !self.reconnect.enabled() {
+            return None;
+        }
+        let user = self.accepted.lock().expect("accepted mutex").take()?;
+        Some(
+            self.reconnect
+                .issue(&user, self.guard.peer(), std::time::Instant::now()),
+        )
+    }
+
     async fn validate(
         &self,
         credentials: &Credentials,
@@ -168,6 +258,12 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
         use ironrdp_server::CredentialDecision;
         let (user, pass) = (credentials.username.clone(), credentials.password.clone());
         let ip = self.guard.peer();
+        if pass.is_empty() {
+            // A client resuming by cookie that the server no longer honours sends no password, and tries again
+            // and again: that is not a guess to count against its address.
+            tracing::info!(?ip, user = ?user, "login refused: no password");
+            return Ok(CredentialDecision::Reject);
+        }
         let blocked = self.guard.throttle.lock().expect("throttle mutex").blocked(
             ip,
             &user,
@@ -179,14 +275,7 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
             return Ok(CredentialDecision::Reject);
         }
         let broker = self.broker.clone();
-        // The monitors announced at connection (before the login): the session starts with as many outputs.
-        let outputs = self
-            .shared
-            .client_initial
-            .lock()
-            .expect("client layout mutex")
-            .as_ref()
-            .map(|l| l.outputs.len() as u32);
+        let outputs = self.client_outputs();
         let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass, outputs))
             .await
             .map_err(ironrdp_server::CredentialValidationError::new)?;
@@ -198,7 +287,7 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
                     .expect("throttle mutex")
                     .record_success(ip, &credentials.username);
                 tracing::info!(?ip, user = ?credentials.username, "login accepted");
-                self.slot.install(ports);
+                self.accept(&credentials.username, ports);
                 Ok(CredentialDecision::Accept)
             }
             Err(LoginError::Denied) => {
@@ -624,6 +713,7 @@ async fn serve(
     // ring AND aws-lc-rs are in the dependency tree: choose explicitly (already installed = ok).
     let _ = rustls::crypto::ring::default_provider().install_default();
     let guard = LoginGuard::new(config.throttle);
+    let reconnect = Arc::new(Reconnect::new(config.reconnect_timeout));
     let has_broker = broker.is_some();
     let shared = Arc::new(Shared::default());
     let local: LocalContent = LocalContent::default();
@@ -683,10 +773,13 @@ async fn serve(
                 slot: slot.clone(),
                 guard: guard.clone(),
                 shared: shared.clone(),
+                reconnect: reconnect.clone(),
+                accepted: Mutex::default(),
             }) as Arc<dyn ironrdp_server::CredentialValidator>
         }))
         .with_connection_handler(has_broker.then(|| {
-            Box::new(GuardHandler(guard.clone())) as Box<dyn ironrdp_server::ConnectionHandler>
+            Box::new(GuardHandler(guard.clone(), reconnect.clone()))
+                as Box<dyn ironrdp_server::ConnectionHandler>
         }))
         .build();
     // Login mode: the session is made for the client's monitors, up to the maximum; otherwise the capture was
@@ -696,6 +789,7 @@ async fn serve(
     } else {
         config.layout.outputs.len()
     };
+    server.set_dead_peer_timeout(config.dead_peer_timeout);
     server.set_monitor_policy(Some(monitor_policy(shared.clone(), max_monitors)));
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {
@@ -910,5 +1004,262 @@ mod input_tests {
         *i.slot.lock().unwrap() = Some(Box::new(Recorder(log.clone())));
         sync(&mut i);
         assert!(log.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod dead_peer_tests {
+    use std::time::Duration;
+
+    use ironrdp_server::tokio::net::{TcpListener, TcpStream};
+
+    /// Connections are served one at a time: a link cut without a FIN must not hold the listener for minutes.
+    #[tokio::test]
+    async fn an_accepted_connection_gives_up_on_a_silent_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        ironrdp_server::detect_dead_peers(&stream, Duration::from_secs(8)).unwrap();
+        let sock = socket2::SockRef::from(&stream);
+        assert!(sock.keepalive().unwrap());
+        assert!(sock.tcp_keepalive_time().unwrap() <= Duration::from_secs(15));
+        let limit = sock.tcp_user_timeout().unwrap().unwrap();
+        assert!(limit <= Duration::from_secs(60), "{limit:?}");
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use std::net::IpAddr;
+    use std::time::Duration;
+
+    use ironrdp_server::{CredentialDecision, CredentialValidator as _, Credentials};
+    use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
+    use rdsktp_core::frame::Frame;
+    use rdsktp_core::layout::OutputId;
+    use rdsktp_core::ports::CaptureSource;
+
+    use super::*;
+
+    struct NoCapture;
+    impl CaptureSource for NoCapture {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(None)
+        }
+    }
+    struct NoInput;
+    impl InputSink for NoInput {
+        fn key(&mut self, _: u16, _: bool) -> Result<(), InputError> {
+            Ok(())
+        }
+        fn pointer_move(&mut self, _: i32, _: i32) -> Result<(), InputError> {
+            Ok(())
+        }
+    }
+    struct NoClipboard;
+    impl ClipboardBackend for NoClipboard {
+        fn set_text(&mut self, _: &str) -> Result<(), ClipboardError> {
+            Ok(())
+        }
+        fn poll_text(&mut self) -> Result<Option<String>, ClipboardError> {
+            Ok(None)
+        }
+    }
+
+    fn ports() -> DesktopPorts {
+        DesktopPorts {
+            capture: Box::new(NoCapture),
+            encoders: Vec::new(),
+            make_encoder: None,
+            input: Box::new(NoInput),
+            clipboard: Box::new(NoClipboard),
+            audio: None,
+            drives: None,
+            printers: None,
+        }
+    }
+
+    /// Accepts the password "secret"; a session to rejoin exists while `session` is set.
+    struct Broker {
+        session: std::sync::atomic::AtomicBool,
+        attached: Mutex<Vec<String>>,
+    }
+    impl SessionBroker for Broker {
+        fn login(
+            &self,
+            user: &str,
+            password: &str,
+            _: Option<u32>,
+        ) -> Result<DesktopPorts, LoginError> {
+            let _ = user;
+            if password == "secret" {
+                Ok(ports())
+            } else {
+                Err(LoginError::Denied)
+            }
+        }
+        fn attach(&self, user: &str, _: Option<u32>) -> Result<DesktopPorts, LoginError> {
+            self.attached.lock().unwrap().push(user.to_owned());
+            if self.session.load(Ordering::Relaxed) {
+                Ok(ports())
+            } else {
+                Err(LoginError::Denied)
+            }
+        }
+    }
+
+    struct Rig {
+        validator: BrokerValidator,
+        broker: Arc<Broker>,
+        handler: GuardHandler,
+    }
+
+    fn rig() -> Rig {
+        let broker = Arc::new(Broker {
+            session: true.into(),
+            attached: Mutex::default(),
+        });
+        let shared = Arc::new(Shared::default());
+        let guard = LoginGuard::new(rdsktp_core::ThrottleConfig {
+            max_ip_failures: 2,
+            ..Default::default()
+        });
+        *guard.peer.lock().unwrap() = Some(IpAddr::from([10, 0, 0, 1]));
+        let reconnect = Arc::new(Reconnect::new(Duration::from_secs(10)));
+        Rig {
+            validator: BrokerValidator {
+                broker: broker.clone(),
+                slot: SessionSlot::new(shared.clone()),
+                guard: guard.clone(),
+                shared,
+                reconnect: reconnect.clone(),
+                accepted: Mutex::default(),
+            },
+            broker,
+            handler: GuardHandler(guard, reconnect),
+        }
+    }
+
+    fn creds(password: &str) -> Credentials {
+        Credentials {
+            username: "alice".into(),
+            password: password.into(),
+            domain: None,
+        }
+    }
+
+    /// The 28 bytes mstsc sends back for the cookie it was given.
+    fn client_cookie(c: &ironrdp_pdu::rdp::session_info::ServerAutoReconnect) -> [u8; COOKIE_LEN] {
+        let mut out = [0u8; COOKIE_LEN];
+        out[0..4].copy_from_slice(&28u32.to_le_bytes());
+        out[4..8].copy_from_slice(&1u32.to_le_bytes());
+        out[8..12].copy_from_slice(&c.logon_id.to_le_bytes());
+        out[12..].copy_from_slice(&crate::reconnect::verifier(&c.random_bits));
+        out
+    }
+
+    fn lost(r: &mut Rig) {
+        use ironrdp_server::ConnectionHandler as _;
+        let peer = "10.0.0.1:50000".parse().unwrap();
+        let error = anyhow::anyhow!("connection reset");
+        r.handler
+            .on_disconnected(peer, Duration::from_secs(60), Some(&error));
+    }
+
+    #[tokio::test]
+    async fn a_login_is_given_a_cookie_that_resumes_the_session_without_a_password() {
+        let mut r = rig();
+        assert_eq!(
+            r.validator.validate(&creds("secret")).await.unwrap(),
+            CredentialDecision::Accept
+        );
+        let cookie = r
+            .validator
+            .reconnect_cookie()
+            .expect("cookie after a login");
+        assert!(r.validator.reconnect_cookie().is_none(), "handed over once");
+
+        lost(&mut r);
+        let decision = r
+            .validator
+            .validate_reconnect(&client_cookie(&cookie))
+            .await;
+        assert_eq!(decision.unwrap(), CredentialDecision::Accept);
+        assert_eq!(*r.broker.attached.lock().unwrap(), ["alice"]);
+        // The resumed connection gets a fresh cookie, and the old one is spent.
+        let next = r.validator.reconnect_cookie().expect("new cookie");
+        assert_ne!(next.logon_id, cookie.logon_id);
+        lost(&mut r);
+        assert_eq!(
+            r.validator
+                .validate_reconnect(&client_cookie(&cookie))
+                .await
+                .unwrap(),
+            CredentialDecision::Reject
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_on_purpose_forgets_the_cookie() {
+        use ironrdp_server::ConnectionHandler as _;
+        let mut r = rig();
+        r.validator.validate(&creds("secret")).await.unwrap();
+        let cookie = r.validator.reconnect_cookie().unwrap();
+        r.handler.on_disconnected(
+            "10.0.0.1:50000".parse().unwrap(),
+            Duration::from_secs(5),
+            None,
+        );
+        assert_eq!(
+            r.validator
+                .validate_reconnect(&client_cookie(&cookie))
+                .await
+                .unwrap(),
+            CredentialDecision::Reject
+        );
+        assert!(r.broker.attached.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_a_session_to_rejoin_the_cookie_is_refused() {
+        let mut r = rig();
+        r.validator.validate(&creds("secret")).await.unwrap();
+        let cookie = r.validator.reconnect_cookie().unwrap();
+        lost(&mut r);
+        r.broker.session.store(false, Ordering::Relaxed);
+        assert_eq!(
+            r.validator
+                .validate_reconnect(&client_cookie(&cookie))
+                .await
+                .unwrap(),
+            CredentialDecision::Reject
+        );
+        assert!(r.validator.reconnect_cookie().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_attempts_of_a_client_that_lost_its_cookie_do_not_block_its_address() {
+        // Twenty automatic retries without a password: the limit is two failures per address.
+        let r = rig();
+        for _ in 0..20 {
+            assert_eq!(
+                r.validator.validate(&creds("")).await.unwrap(),
+                CredentialDecision::Reject
+            );
+        }
+        assert_eq!(
+            r.validator.validate(&creds("secret")).await.unwrap(),
+            CredentialDecision::Accept
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_window_turns_the_feature_off() {
+        let mut r = rig();
+        r.validator.reconnect = Arc::new(Reconnect::new(Duration::ZERO));
+        r.validator.validate(&creds("secret")).await.unwrap();
+        assert!(r.validator.reconnect_cookie().is_none());
     }
 }

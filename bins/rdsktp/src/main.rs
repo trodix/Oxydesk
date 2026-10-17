@@ -25,6 +25,10 @@ const USAGE: &str = "usage: rdsktp (--test-mode | --login [--authd-socket PATH] 
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/rdsktp-printers; `off` disables)
   --adaptive-bitrate on|off  bitrate and frames in flight follow what the client's link carries (default: on)
   --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
+  --reconnect-timeout SECS  login mode: a client that loses its network resumes its session by itself for this long, without
+                          typing the password again (default: 10; 0 turns it off)
+  --dead-peer-timeout SECS  a client that stops answering is dropped after this long, which frees the server for its
+                          reconnection (default: 8; 0 leaves it to the kernel, minutes)
   --printer-mode SPEC     format of the jobs of the printers: auto (default), raw, raw:ps|pcl|text, xps; per printer with
                           PATTERN=MODE (`*` matches anything), comma-separated: xps,HP*=raw:pcl. auto = raw when the
                           driver name states a language, XPS otherwise (if the client takes it), else the printer is refused";
@@ -177,6 +181,8 @@ async fn main() -> anyhow::Result<()> {
             throttle,
             printer_modes: printer_modes(&args)?,
             adaptive_bitrate: adaptive_bitrate(&args)?,
+            reconnect_timeout: reconnect_timeout(&args)?,
+            dead_peer_timeout: dead_peer_timeout(&args),
         };
         return tokio::select! {
             r = rdsktp_rdp::run_with_broker(config, broker) => r,
@@ -325,11 +331,25 @@ async fn main() -> anyhow::Result<()> {
         throttle,
         printer_modes: printer_modes(&args)?,
         adaptive_bitrate: adaptive_bitrate(&args)?,
+        reconnect_timeout: reconnect_timeout(&args)?,
+        dead_peer_timeout: dead_peer_timeout(&args),
     };
     tokio::select! {
         r = rdsktp_rdp::run(config, ports) => r,
         _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
     }
+}
+
+/// `--dead-peer-timeout SECS` (default 8, 0 = left to the kernel).
+fn dead_peer_timeout(args: &[String]) -> std::time::Duration {
+    std::time::Duration::from_secs(arg::<u64>(args, "--dead-peer-timeout").unwrap_or(8))
+}
+
+/// `--reconnect-timeout SECS` (default 10, 0 = never).
+fn reconnect_timeout(args: &[String]) -> anyhow::Result<std::time::Duration> {
+    Ok(std::time::Duration::from_secs(
+        arg::<u64>(args, "--reconnect-timeout").unwrap_or(10),
+    ))
 }
 
 /// `--adaptive-bitrate on|off` (default on).

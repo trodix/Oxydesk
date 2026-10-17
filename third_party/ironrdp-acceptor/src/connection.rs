@@ -37,6 +37,7 @@ pub struct Acceptor {
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
+    received_reconnect_cookie: Option<[u8; 28]>,
     reactivation: bool,
     honor_client_desktop_size: bool,
     /// rdsktp patch: monitors announced in the Monitor Layout PDU (empty: one monitor of the desktop size).
@@ -114,6 +115,9 @@ pub struct AcceptorResult {
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
     /// can use this field for post-handshake validation.
     pub credentials: Option<Credentials>,
+    /// Auto-Reconnect cookie (28 bytes: length, version, logon id, security verifier) the client sent in its
+    /// Extended Client Info Packet to resume a session it lost (MS-RDPBCGR 2.2.1.11.1.1.1).
+    pub reconnect_cookie: Option<[u8; 28]>,
 }
 
 impl Acceptor {
@@ -136,6 +140,7 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            received_reconnect_cookie: None,
             reactivation: false,
             honor_client_desktop_size: false,
             monitors: Vec::new(),
@@ -222,6 +227,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            received_reconnect_cookie: consumed.received_reconnect_cookie,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             monitors: consumed.monitors,
@@ -282,6 +288,7 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
+                reconnect_cookie: self.received_reconnect_cookie.take(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -723,6 +730,13 @@ impl Sequence for Acceptor {
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?client_info, "Received");
+
+                self.received_reconnect_cookie = client_info
+                    .client_info
+                    .extra_info
+                    .optional_data
+                    .reconnect_cookie()
+                    .copied();
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;

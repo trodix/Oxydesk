@@ -41,6 +41,8 @@ const KEYS: &[(&str, Kind)] = &[
     ("max-login-failures", Kind::Value),
     ("max-user-failures", Kind::Value),
     ("login-lockout-secs", Kind::Value),
+    ("reconnect-timeout", Kind::Value),
+    ("dead-peer-timeout", Kind::Value),
     ("authd-socket", Kind::Value),
     ("kwin-socket", Kind::Value),
     ("session-app", Kind::Repeated),
@@ -175,6 +177,15 @@ mod tests {
                 ("fps".into(), "24".into()),
                 ("printer-mode".into(), "xps,HP*=raw:pcl # kept".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn reconnection_keys_are_accepted_and_become_options() {
+        let args = merge_args(&[], &file("reconnect-timeout = 15\ndead-peer-timeout = 0")).unwrap();
+        assert_eq!(
+            args,
+            s(&["--dead-peer-timeout", "0", "--reconnect-timeout", "15"])
         );
     }
 

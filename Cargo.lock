@@ -1764,6 +1764,7 @@ dependencies = [
  "qoicoubeh",
  "rayon",
  "rustls-pemfile",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -2966,6 +2967,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hmac",
  "ironrdp-cliprdr",
  "ironrdp-core",
  "ironrdp-displaycontrol",
@@ -2976,9 +2978,11 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-server",
  "ironrdp-svc",
+ "md-5 0.11.0",
  "png",
  "rdsktp-core",
  "rustls",
+ "socket2",
  "tokio",
  "tracing",
 ]

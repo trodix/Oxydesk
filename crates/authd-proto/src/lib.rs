@@ -35,6 +35,13 @@ pub enum Request {
         #[serde(default)]
         outputs: u32,
     },
+    /// Rejoins the running session of a user authenticated earlier by this `authd` (automatic reconnection):
+    /// no password, no session started.
+    Attach {
+        username: String,
+        #[serde(default)]
+        outputs: u32,
+    },
 }
 
 // The password must never appear in a log.
@@ -47,6 +54,11 @@ impl std::fmt::Debug for Request {
                 .debug_struct("Login")
                 .field("username", username)
                 .field("password", &"***")
+                .field("outputs", outputs)
+                .finish(),
+            Self::Attach { username, outputs } => f
+                .debug_struct("Attach")
+                .field("username", username)
                 .field("outputs", outputs)
                 .finish(),
         }
@@ -96,10 +108,13 @@ pub fn read_request(stream: &mut UnixStream) -> Result<Request, ProtoError> {
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body)?;
     let req: Request = decode(&body)?;
-    let Request::Login {
-        username, password, ..
-    } = &req;
-    if username.len() > MAX_USERNAME || password.len() > MAX_PASSWORD {
+    let (username, password) = match &req {
+        Request::Login {
+            username, password, ..
+        } => (username, password.len()),
+        Request::Attach { username, .. } => (username, 0),
+    };
+    if username.len() > MAX_USERNAME || password > MAX_PASSWORD {
         return Err(ProtoError::Invalid("credentials too long".into()));
     }
     Ok(req)
@@ -237,6 +252,29 @@ mod tests {
             username: "u".repeat(MAX_USERNAME + 1),
             password: "x".into(),
             outputs: 0,
+        };
+        send_request(&mut a, &req).unwrap();
+        assert!(read_request(&mut b).is_err());
+    }
+
+    #[test]
+    fn attach_request_roundtrips_and_carries_no_password() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let req = Request::Attach {
+            username: "alice".into(),
+            outputs: 2,
+        };
+        send_request(&mut a, &req).unwrap();
+        assert_eq!(read_request(&mut b).unwrap(), req);
+        assert!(!format!("{req:?}").contains("password"));
+    }
+
+    #[test]
+    fn oversized_attach_username_is_rejected() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let req = Request::Attach {
+            username: "u".repeat(MAX_USERNAME + 1),
+            outputs: 1,
         };
         send_request(&mut a, &req).unwrap();
         assert!(read_request(&mut b).is_err());

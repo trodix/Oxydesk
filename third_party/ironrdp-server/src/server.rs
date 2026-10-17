@@ -30,7 +30,7 @@ use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, un
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -48,6 +48,28 @@ use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
+
+/// Connections are served one at a time: a link cut without a FIN would hold the listener until the kernel gives
+/// up (about 15 minutes), and the client could not come back to its session. Keepalive probes and the
+/// unacknowledged-data timeout bound that to about ten seconds, so that an automatic reconnection finds the listener free.
+const DEAD_PEER_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Enables the detection of a silent peer on an accepted connection: it is dropped once nothing it sent was
+/// acknowledged for `timeout` (zero: left to the kernel).
+pub fn detect_dead_peers(stream: &TcpStream, timeout: Duration) -> std::io::Result<()> {
+    if timeout.is_zero() {
+        return Ok(());
+    }
+    let sock = socket2::SockRef::from(stream);
+    sock.set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(timeout.div_f32(2.0).min(Duration::from_secs(3)))
+            .with_interval(DEAD_PEER_PROBE_INTERVAL),
+    )?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    sock.set_tcp_user_timeout(Some(timeout))?;
+    Ok(())
+}
 
 /// Action to take after a client disconnects.
 ///
@@ -190,6 +212,20 @@ pub trait CredentialValidator: Send + Sync {
     /// `tokio::task::spawn_blocking`, so the returned future does not stall the
     /// caller's executor. Native-async backends can simply `.await`.
     async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+
+    /// rdsktp patch: the client presented an Auto-Reconnect cookie (28 bytes: length, version, logon id,
+    /// security verifier) to resume the session it lost. `Accept` replaces the credential check; `Reject`
+    /// falls back to [`validate`](Self::validate). The default refuses every cookie.
+    async fn validate_reconnect(&self, cookie: &[u8; 28]) -> Result<CredentialDecision, CredentialValidationError> {
+        let _ = cookie;
+        Ok(CredentialDecision::Reject)
+    }
+
+    /// rdsktp patch: cookie to hand to the client once the connection is accepted (Save Session Info PDU), so
+    /// that it can reconnect by itself after a network loss. `None`: auto-reconnect is not offered.
+    fn reconnect_cookie(&self) -> Option<rdp::session_info::ServerAutoReconnect> {
+        None
+    }
 }
 
 /// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
@@ -451,6 +487,7 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    dead_peer_timeout: Duration,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -558,6 +595,7 @@ impl RdpServer {
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
+            dead_peer_timeout: Duration::from_secs(8),
             local_addr: None,
             autodetect: None,
             connection_handler,
@@ -594,6 +632,12 @@ impl RdpServer {
     /// rdsktp patch: lets the display adopt the client's monitors (GCC Client Monitor Data) before Demand Active.
     pub fn set_monitor_policy(&mut self, policy: Option<ironrdp_acceptor::MonitorPolicy>) {
         self.monitor_policy = policy;
+    }
+
+    /// rdsktp patch: how long a silent peer is waited for before its connection is dropped (default 8 s; zero: the
+    /// kernel decides, after minutes).
+    pub fn set_dead_peer_timeout(&mut self, timeout: Duration) {
+        self.dead_peer_timeout = timeout;
     }
 
     pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
@@ -929,6 +973,26 @@ impl RdpServer {
         Ok(())
     }
 
+    async fn drop_stale_waves(&mut self) {
+        let mut receiver = self.ev_receiver.lock().await;
+        let mut kept = Vec::new();
+        let mut dropped = 0usize;
+        while let Ok(event) = receiver.try_recv() {
+            if matches!(event, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))) {
+                dropped += 1;
+            } else {
+                kept.push(event);
+            }
+        }
+        drop(receiver);
+        for event in kept {
+            let _ = self.ev_sender.send(event);
+        }
+        if dropped > 0 {
+            debug!(dropped, "Dropped audio left over from the previous connection");
+        }
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
@@ -999,6 +1063,12 @@ impl RdpServer {
                         if let Err(error) = stream.set_nodelay(true) {
                             debug!(?error, "cannot disable Nagle's algorithm");
                         }
+                        if let Err(error) = detect_dead_peers(&stream, self.dead_peer_timeout) {
+                            debug!(?error, "cannot enable dead-peer detection");
+                        }
+                        // rdsktp patch: audio produced for the previous connection while it was hanging (up to the
+                        // dead-peer timeout) must not be played to the next one.
+                        self.drop_stale_waves().await;
                         let started = tokio::time::Instant::now();
                         let result = self.run_connection(stream).await;
                         let duration = started.elapsed();
@@ -1154,7 +1224,15 @@ impl RdpServer {
                                 debug!("Dropping stale wave");
                                 continue;
                             }
-                            rdpsnd.wave(data, ts)
+                            // rdsktp patch: audio sent before the client negotiated its formats is dropped, it must not
+                            // end the connection.
+                            match rdpsnd.wave(data, ts) {
+                                Ok(msgs) => Ok(msgs),
+                                Err(error) => {
+                                    debug!(%error, "Audio not ready, dropping wave");
+                                    continue;
+                                }
+                            }
                         }
                         RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),
                         RdpsndServerMessage::Close => rdpsnd.close(),
@@ -1411,7 +1489,24 @@ impl RdpServer {
         // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
         // closing, matching the acceptor's exact-match denial path.
         if let Some(validator) = self.credential_validator.clone() {
-            if let Some(creds) = &result.credentials {
+            let mut resumed = false;
+            if let Some(cookie) = &result.reconnect_cookie {
+                match validator.validate_reconnect(cookie).await {
+                    Ok(CredentialDecision::Accept) => {
+                        debug!("Auto-reconnect cookie accepted");
+                        resumed = true;
+                    }
+                    Ok(CredentialDecision::Reject) => debug!("Auto-reconnect cookie refused"),
+                    Err(e) => {
+                        error!(error = %e, "Credential validator backend error");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        bail!("credential validation backend error");
+                    }
+                }
+            }
+            if resumed {
+                // The cookie stands for the credentials.
+            } else if let Some(creds) = &result.credentials {
                 match validator.validate(creds).await {
                     Ok(CredentialDecision::Accept) => {
                         debug!("Credential validation accepted");
@@ -1429,6 +1524,11 @@ impl RdpServer {
                 }
             } else {
                 debug!("Skipping credential validation (no credentials in AcceptorResult)");
+            }
+            if !result.reactivation {
+                if let Some(cookie) = validator.reconnect_cookie() {
+                    send_reconnect_cookie(cookie, result.io_channel_id, result.user_channel_id, writer).await?;
+                }
             }
         }
 
@@ -1872,6 +1972,44 @@ async fn deactivate_all(
     };
     let msg = encode_vec(&X224(pdu))?;
     writer.write_all(&msg).await?;
+    Ok(())
+}
+
+/// Hands the client the Auto-Reconnect cookie it will present if the network drops (Save Session Info PDU,
+/// Logon Info Extended).
+async fn send_reconnect_cookie(
+    cookie: rdp::session_info::ServerAutoReconnect,
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    use rdp::session_info::{InfoData, InfoType, LogonExFlags, LogonInfoExtended, SaveSessionInfoPdu};
+
+    let info = SaveSessionInfoPdu {
+        info_type: InfoType::LogonExtended,
+        info_data: InfoData::LogonExtended(LogonInfoExtended {
+            present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE,
+            auto_reconnect: Some(cookie),
+            errors_info: None,
+        }),
+    };
+    let pdu = rdp::headers::ShareControlHeader {
+        share_id: 0,
+        pdu_source: io_channel_id,
+        share_control_pdu: ShareControlPdu::Data(rdp::headers::ShareDataHeader {
+            share_data_pdu: rdp::headers::ShareDataPdu::SaveSessionInfo(info),
+            stream_priority: rdp::headers::StreamPriority::Undefined,
+            compression_flags: rdp::headers::CompressionFlags::empty(),
+            compression_type: rdp::client_info::CompressionType::K8,
+        }),
+    };
+    let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    writer.write_all(&encode_vec(&X224(pdu))?).await?;
     Ok(())
 }
 
