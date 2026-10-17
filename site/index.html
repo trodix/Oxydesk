@@ -98,7 +98,6 @@
     <li><b>SELinux enforcing</b> (Fedora, Rocky) is untested and no policy is shipped.</li>
     <li><b>Not covered:</b> smart cards, microphone, USB redirection, several simultaneous clients per user, HiDPI.</li>
   </ul>
-  <p>Every limit and the reasoning behind each design choice is tracked in the repository's <a href="https://github.com/trodix/RustyDesktop/tree/develop/docs/decisions">architecture decision records</a>.</p>
 </div></section>
 
 <section id="quality"><div class="wrap">
@@ -107,7 +106,7 @@
   <div class="grid">
     <div class="card"><h3>~80 % line coverage</h3><p>Measured with <code>cargo-llvm-cov</code>, with a stricter target on parsers, protocols and business logic.</p></div>
     <div class="card"><h3>Real-client scenarios</h3><p>End-to-end tests drive Windows <code>mstsc</code>, FreeRDP and Remmina against a Debian VM, in login mode as well.</p></div>
-    <div class="card"><h3>Documented decisions</h3><p>Sixteen ADRs explain the protocol choices, the patches to IronRDP and what was measured. <a href="api/">Browse the API reference.</a></p></div>
+    <div class="card"><h3>Documented code</h3><p>Every crate is documented with rustdoc, ports and domain included. <a href="api/">Browse the API reference.</a></p></div>
   </div>
 </div></section>
 
@@ -141,7 +140,7 @@
 
 <footer><div class="wrap">
   <span>RustyDesktop is released under <a href="https://github.com/trodix/RustyDesktop/blob/develop/LICENSE">AGPL-3.0-only</a>. Not affiliated with Microsoft, KDE or Devolutions.</span>
-  <span><a href="https://github.com/trodix/RustyDesktop">Source</a> · <a href="docs.html">Documentation</a> · <a href="api/">API</a> · <a href="https://github.com/trodix/RustyDesktop/tree/develop/docs/decisions">ADRs</a></span>
+  <span><a href="https://github.com/trodix/RustyDesktop">Source</a> · <a href="docs.html">Documentation</a> · <a href="api/">API</a></span>
 </div></footer>
 </body>
 </html>
