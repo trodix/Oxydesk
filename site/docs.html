@@ -8,27 +8,27 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%231d99f3'/%3E%3Cpath d='M25 30h50v34H25zM40 74h20' stroke='white' stroke-width='7' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <style>
-.dochead{background:linear-gradient(180deg,#1b1d4d,#2d2a73);color:#fff;text-align:center;padding:46px 0 34px}
-.dochead h1{margin:0 0 6px;font-size:clamp(30px,4.5vw,44px)}.dochead p{margin:0;opacity:.9}
-.tools{position:sticky;top:48px;z-index:4;background:#fff;border-bottom:1px solid var(--line);padding:14px 0}
+.dochead{padding:56px 0 34px;text-align:center;background:radial-gradient(900px 380px at 50% -80px,color-mix(in srgb,var(--accent2) 22%,transparent),transparent),radial-gradient(700px 300px at 85% 0,color-mix(in srgb,var(--accent) 18%,transparent),transparent)}
+.dochead h1{margin:0 auto 8px;font-size:clamp(32px,5vw,48px)}.dochead p{margin:0;color:var(--muted);font-size:19px}
+.tools{position:sticky;top:58px;z-index:4;background:var(--bg);border-bottom:1px solid var(--line);padding:14px 0}
 .tools .wrap{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-#q{flex:1 1 320px;font:inherit;padding:10px 14px;border:2px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
-#q:focus{outline:none;border-color:var(--blue)}
+#q{flex:1 1 320px;font:inherit;padding:10px 14px;border:2px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg)}
+#q:focus{outline:none;border-color:var(--accent)}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{font:inherit;font-size:14px;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer}
-.chip[aria-pressed=true]{background:var(--blue);border-color:var(--blue);color:#fff}
+.chip{font:inherit;font-size:14px;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
+.chip[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 #count{color:var(--muted);font-size:14px;margin-left:auto}
-.param{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:4px;padding:16px 20px;margin:0 0 14px;scroll-margin-top:140px}
+.param{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:16px 20px;margin:0 0 14px;scroll-margin-top:140px}
 .param h3{margin:0 0 4px;font-size:18px;display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
-.param h3 a{color:var(--ink)}
-.param .cat{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--blue-d)}
-.param p{margin:4px 0 8px;color:var(--ink);font-size:16.5px}
+.param h3 a{color:var(--fg)}
+.param .cat{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+.param p{margin:4px 0 8px;font-size:16.5px}
 .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:4px 24px;font-size:15px;color:var(--muted)}
-.meta b{color:var(--ink);font-weight:600}
-mark{background:#fff0a0;color:inherit;padding:0 1px}
+.meta b{color:var(--fg);font-weight:600}
+mark{background:color-mix(in srgb,var(--accent) 30%,transparent);color:inherit;padding:0 1px;border-radius:2px}
 .empty{text-align:center;color:var(--muted);padding:40px 0}
 .where{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));margin-bottom:34px}
-.where .card h3{font-size:17px}
+.where .card h3{font-size:17px}.where .card code{overflow-wrap:anywhere}
 .docs-main{padding:34px 0 70px}
 h2.sec{text-align:left;font-size:24px;margin:34px 0 14px}
 .hidden{display:none}
@@ -36,13 +36,13 @@ h2.sec{text-align:left;font-size:24px;margin:34px 0 14px}
 </head>
 <body>
 <nav><div class="wrap">
-  <a class="brand" href="./">RustyDesktop</a>
+  <a class="brand" href="./">Rusty<span>Desktop</span></a>
   <a class="l h" href="./#features">Features</a>
   <a class="l h" href="./#install">Install</a>
   <a class="l h" href="./#limits">Limits</a>
-  <a class="l h" href="docs.html" style="background:rgba(255,255,255,.18)">Documentation</a>
+  <a class="l h" href="docs.html">Documentation</a>
   <a class="l h" href="api/">API</a>
-  <a class="l sp" href="https://github.com/trodix/RustyDesktop">GitHub</a>
+  <a class="btn" href="https://github.com/trodix/RustyDesktop">GitHub</a>
 </div></nav>
 
 <header class="dochead"><div class="wrap">

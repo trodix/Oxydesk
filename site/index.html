@@ -14,29 +14,29 @@
 </head>
 <body>
 <nav><div class="wrap">
-  <a class="brand" href="#">RustyDesktop</a>
+  <a class="brand" href="#">Rusty<span>Desktop</span></a>
   <a class="l h" href="#features">Features</a>
   <a class="l h" href="#install">Install</a>
   <a class="l h" href="#limits">Limits</a>
   <a class="l h" href="#credits">Credits</a>
   <a class="l h" href="docs.html">Documentation</a>
   <a class="l h" href="api/">API</a>
-  <a class="l sp" href="https://github.com/trodix/RustyDesktop">GitHub</a>
+  <a class="btn" href="https://github.com/trodix/RustyDesktop">GitHub</a>
 </div></nav>
 
-<header class="hero"><i></i><div class="wrap">
-  <h1>RustyDesktop</h1>
-  <p class="tag">Your KDE Plasma desktop, from any RDP client</p>
-  <p class="date">Open source · AGPL-3.0 · written in Rust</p>
+<header class="hero"><div class="wrap">
+  <span class="badge">Open source · AGPL-3.0 · written in Rust</span>
+  <h1>Your <em>KDE Plasma</em> desktop, from any RDP client</h1>
+  <p class="lead">RustyDesktop is a headless RDP server for Plasma on Wayland. Log in with your Linux account from Windows <code>mstsc</code>, FreeRDP or Remmina and get your own real desktop session, with sound, clipboard, shared folders and printers.</p>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/trodix/RustyDesktop/releases">Download</a>
-    <a class="btn" href="#install">Install in two minutes</a>
+    <a class="btn primary" href="#install">Install in two minutes</a>
+    <a class="btn" href="https://github.com/trodix/RustyDesktop/releases">Download packages</a>
   </div>
-  <div class="device">
-    <div class="bezel"><img src="img/desktop.png" alt="A KDE Plasma desktop on Debian 13 displayed in an RDP client" width="1920" height="1080"></div>
-    <div class="stand"></div><div class="foot"></div>
+  <div class="shot">
+    <div class="bar"><i></i><i></i><i></i></div>
+    <img src="img/desktop.png" alt="A KDE Plasma desktop on Debian 13 displayed in an RDP client" width="1920" height="1080">
   </div>
-  <p class="cap">A Plasma session on Debian 13 served by <code style="background:rgba(255,255,255,.18);color:#fff">rdsktp</code> and captured from its RDP stream.</p>
+  <p class="cap">A Plasma session on Debian 13 served by <code>rdsktp</code> and captured from its RDP stream.</p>
 </div></header>
 
 <section id="why"><div class="wrap">
@@ -49,7 +49,7 @@
   </div>
 </div></section>
 
-<section id="features" class="soft"><div class="wrap">
+<section id="features" class="alt"><div class="wrap">
   <h2>Everything you expect from a remote desktop</h2>
   <p class="sub">Tested with Windows <code>mstsc</code>, FreeRDP (<code>xfreerdp</code>, <code>sdl-freerdp</code>) and Remmina.</p>
   <div class="grid">
@@ -87,9 +87,9 @@
   </div>
 </div></section>
 
-<section id="limits" class="soft"><div class="wrap">
+<section id="limits" class="alt"><div class="wrap">
   <h2>Known limits, honestly</h2>
-  <div class="note">RustyDesktop is young. Here is what does not work, or is not verified, today.</div>
+  <p class="sub">RustyDesktop is young. Here is what does not work, or is not verified, today.</p>
   <ul class="limits">
     <li><b>No NLA in login mode.</b> Authentication is TLS only (dynamic accounts, an IronRDP limit). Use it on a network you trust or behind a VPN.</li>
     <li><b>KWin 6.3 (Debian 13):</b> the number of monitors is fixed when a user's session starts, and resizing is done by scaling, with black bars. A newer KWin gives a real resize.</li>
@@ -111,7 +111,7 @@
   </div>
 </div></section>
 
-<section id="credits" class="soft"><div class="wrap">
+<section id="credits" class="alt"><div class="wrap">
   <h2>Standing on the shoulders of giants</h2>
   <p class="sub">RustyDesktop exists thanks to these projects and their maintainers. Thank you.</p>
   <div class="credits">
@@ -130,12 +130,12 @@
   </div>
 </div></section>
 
-<section><div class="wrap center">
+<section><div class="wrap" style="text-align:center">
   <h2>Try it, and tell us what breaks</h2>
-  <p class="sub">Bug reports with your versions and environment are the most useful contribution.</p>
+  <p class="sub" style="margin-inline:auto">Bug reports with your versions and environment are the most useful contribution.</p>
   <div class="cta">
     <a class="btn primary" href="https://github.com/trodix/RustyDesktop/releases">Download</a>
-    <a class="btn dark" href="https://github.com/trodix/RustyDesktop/issues/new/choose">Report a bug</a>
+    <a class="btn" href="https://github.com/trodix/RustyDesktop/issues/new/choose">Report a bug</a>
   </div>
 </div></section>
 
