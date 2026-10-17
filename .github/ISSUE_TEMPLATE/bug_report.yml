@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: rdsktp version
+      description: "`rdsktp --version`, commit hash or .deb version"
+    validations: {required: true}
+  - type: input
+    id: server
+    attributes:
+      label: Server OS and KWin version
+      placeholder: Debian 13, KWin 6.3.6
+    validations: {required: true}
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Session mode
+      options: ["--login (PAM + agent)", "--session kwin", "--session synthetic / --test-mode"]
+    validations: {required: true}
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      placeholder: mstsc (Windows 11 build 26300), xfreerdp 3.x, Remmina
+    validations: {required: true}
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware / virtualisation
+      description: bare metal, QEMU, VMware (3D support), GPU, encoder
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+    validations: {required: true}
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`journalctl -u rdsktp -u rdsktp-authd`, agent and client logs (remove secrets)"
+      render: shell
