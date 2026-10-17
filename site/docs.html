@@ -171,7 +171,7 @@ function render() {
       <span><b>Values:</b> ${hl(p.type, terms)}</span>
       <span><b>Default:</b> ${hl(p.def, terms)}</span>
       <span><b>Applies to:</b> ${hl(p.modes, terms)}</span>
-      <span><b>Set it in:</b> ${hl(p.where, terms)}${p.cat==="Files"||p.cat==="Environment"||p.key.startsWith("--")?"":" (command line: <code>"+esc(k(p))+"</code>)"}</span>
+      <span><b>Set it in:</b> ${hl(p.where, terms)}${p.cat==="Files"||p.cat==="Environment"||p.key.startsWith("--")?"":" (as <code>"+esc(k(p))+"</code>)"}</span>
     </div></article>`).join("");
 }
 q.addEventListener("input", render);
