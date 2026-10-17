@@ -195,10 +195,14 @@ cmd_deploy() {
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
-# The colored-squares test application (clipboard echo, no sound) runs next to Plasma, except with VM_TESTAPP=0: a bare
-# Plasma session, for manual tests with a real desktop.
+# The colored-squares test application (clipboard echo) runs next to Plasma, except with VM_TESTAPP=0: a bare Plasma
+# session, for manual tests with a real desktop. It plays the 440 Hz test tone only with VM_TONE=1 (set by `cargo xtask
+# vm-test`: the audio_tone check needs it; a manual session stays silent).
 session_test_app() {
-  [[ "${VM_TESTAPP:-1}" == 0 ]] || printf '%s' '--session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo"'
+  [[ "${VM_TESTAPP:-1}" == 0 ]] && return
+  local tone=""
+  [[ "${VM_TONE:-0}" == 1 ]] && tone=" --tone"
+  printf '%s' "--session-app \"/usr/lib/rdsktp/rdsktp-testapp 1920 1080${tone} --clipboard-echo\""
 }
 
 # Configures the rdsktp service for a real KWin session (autologin of $VM_USER): systemd drop-in + restart.

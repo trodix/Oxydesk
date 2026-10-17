@@ -196,7 +196,7 @@ pub fn vm_test(o: &Opts) -> ExitCode {
         (
             "configure-kwin",
             format!(
-                "VM_OUTPUTS={} bash {VM} {}",
+                "VM_TONE=1 VM_OUTPUTS={} bash {VM} {}",
                 o.outputs,
                 if o.login {
                     "login-config"

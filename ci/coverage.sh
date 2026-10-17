@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test coverage of the workspace (source-based, `-C instrument-coverage` through cargo-llvm-cov): an HTML report to browse,
 # an lcov file for other tools, and the table per file. A reference, not a gate: below COVERAGE_TARGET it only says
-# so. Policy and critical zones: docs/couverture.md.
+# so. Policy and critical zones: CLAUDE.md.
 # usage: ci/coverage.sh [out-dir]          (default: target/coverage; HTML report in <out-dir>/html/index.html)
 # env: COVERAGE_TARGET  line coverage the whole workspace aims at (default 80)
 #      COVERAGE_BRANCH=1  also measure branches (needs a nightly toolchain: rustup toolchain install nightly)
@@ -30,6 +30,6 @@ LINES=$(python3 -c "import json,sys; print('%.1f' % json.load(open(sys.argv[1]))
 echo
 echo "line coverage: ${LINES}% (reference ${TARGET}%)   HTML report: $OUT/html/index.html   lcov: $OUT/lcov.info"
 python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$LINES" "$TARGET" \
-  || echo "below the reference: see docs/couverture.md for the zones that matter, no need to chase the last tenths of a point"
+  || echo "below the reference: see CLAUDE.md for the zones that matter, no need to chase the last tenths of a point"
 [[ "${COVERAGE_OPEN:-0}" == 1 ]] && xdg-open "$OUT/html/index.html" >/dev/null 2>&1
 exit 0

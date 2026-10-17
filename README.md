@@ -56,8 +56,20 @@ NLA password is only read from `RDSKTP_PASSWORD`. The default mode is `login`.
 cargo build --release                 # add --features kwin for the real KWin session (libpipewire-dev, libclang)
 cargo test --workspace
 cargo xtask test --server|--client|--freerdp|--clients|--integration
-ci/coverage.sh                        # test coverage, HTML report in target/coverage/html (docs/couverture.md)
 ```
+
+Test coverage (LLVM instrumentation through [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov); a reference to read,
+never a gate; the CI publishes the HTML report as an artifact):
+
+```
+cargo install cargo-llvm-cov --locked && rustup component add llvm-tools   # once
+ci/coverage.sh                        # table per file; HTML report in target/coverage/html/index.html
+COVERAGE_OPEN=1 ci/coverage.sh        # open the report afterwards
+COVERAGE_BRANCH=1 ci/coverage.sh      # add branch coverage (needs a nightly toolchain)
+```
+
+Patched third-party code (`third_party/`), the test tooling (`xtask`, `bins/bench`, `bins/rdp-test-client`) and the integration
+tests themselves are excluded. The test policy is in `CLAUDE.md`.
 
 Integration tests use a Debian 13 VM (`bash vm/vm.sh create`), a Windows 11 VM for `mstsc` (`bash vm/win11.sh install`)
 and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|tar OUT`, then

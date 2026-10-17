@@ -31,7 +31,7 @@ jobs:
           cargo clippy --workspace --all-targets $F -- -D warnings
           cargo test --workspace $F
   coverage:
-    # Test coverage: a reference to read (HTML report in the artifacts), not a gate. Policy: docs/couverture.md.
+    # Test coverage: a reference to read (HTML report in the artifacts), not a gate. Policy: CLAUDE.md.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container: debian:trixie
