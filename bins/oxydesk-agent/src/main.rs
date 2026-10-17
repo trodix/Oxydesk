@@ -356,6 +356,9 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             return;
         }
     };
+    // The agent outlives the connections: every server (before the Hello, which a server may answer at once) starts with the H.264 stream.
+    d.raw.store(false, Ordering::SeqCst);
+    d.bitrate.store(DEFAULT_BITRATE_BPS, Ordering::SeqCst);
     if !send(
         &writer,
         &FromAgent::Hello {
@@ -366,9 +369,6 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     ) {
         return;
     }
-    // The agent outlives the connections: every server starts with the H.264 stream.
-    d.raw.store(false, Ordering::SeqCst);
-    d.bitrate.store(DEFAULT_BITRATE_BPS, Ordering::SeqCst);
     let stop = Arc::new(AtomicBool::new(false));
     // Ranges of the file lists exchanged with the server (the lists die with the connection).
     let files = Arc::new(FileExchange::default());
