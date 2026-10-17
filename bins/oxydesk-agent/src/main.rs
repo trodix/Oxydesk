@@ -826,9 +826,14 @@ mod tests {
         }
 
         fn next(&mut self) -> FromAgent {
-            read_msg::<_, FromAgent>(&mut self.server)
+            let msg = read_msg::<_, FromAgent>(&mut self.server)
                 .expect("readable")
-                .expect("connection still open")
+                .expect("connection still open");
+            // The agent stops after a fatal error: say why instead of timing out on the next read.
+            if let FromAgent::Fatal(why) = &msg {
+                panic!("the agent failed: {why}");
+            }
+            msg
         }
 
         /// The first message the predicate picks, skipping the others (the video never stops).

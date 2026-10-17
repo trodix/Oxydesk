@@ -2,11 +2,12 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
+    # libopenh264 is loaded at run time: the agent tests encode real H.264 frames.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container: debian:trixie
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev curl ca-certificates git
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev libopenh264-8 curl ca-certificates git
       - uses: actions/checkout@v4
       - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
       - run: |
@@ -22,7 +23,7 @@ jobs:
     timeout-minutes: 30
     container: debian:trixie
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libva-dev curl ca-certificates git
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libva-dev libopenh264-8 curl ca-certificates git
       - uses: actions/checkout@v4
       - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
       - run: |
@@ -36,7 +37,7 @@ jobs:
     timeout-minutes: 45
     container: debian:trixie
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev curl ca-certificates git python3
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev libopenh264-8 curl ca-certificates git python3
       - uses: actions/checkout@v4
       - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c llvm-tools
       - uses: taiki-e/install-action@cargo-llvm-cov
