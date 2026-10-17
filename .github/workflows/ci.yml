@@ -30,3 +30,21 @@ jobs:
           F="--features rdsktp/kwin,rdsktp-agent/kwin,bench/kwin,rdsktp/vaapi,rdsktp-agent/vaapi,bench/vaapi,rdsktp-encode/openh264"
           cargo clippy --workspace --all-targets $F -- -D warnings
           cargo test --workspace $F
+  coverage:
+    # Test coverage: a reference to read (HTML report in the artifacts), not a gate. Policy: docs/couverture.md.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev curl ca-certificates git python3
+      - uses: actions/checkout@v4
+      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: |
+          . "$HOME/.cargo/env"
+          bash ci/coverage.sh target/coverage | tee coverage.txt
+          { echo '### Test coverage'; echo '```'; tail -n 4 coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: target/coverage
