@@ -994,6 +994,11 @@ impl RdpServer {
                         debug!(?peer, "Connection rejected by handler");
                         drop(stream);
                     } else {
+                        // Frames and input are small, latency-bound writes: without this, Nagle waits for the client's
+                        // delayed ACK (about 200 ms on Windows) between bursts of frames.
+                        if let Err(error) = stream.set_nodelay(true) {
+                            debug!(?error, "cannot disable Nagle's algorithm");
+                        }
                         let started = tokio::time::Instant::now();
                         let result = self.run_connection(stream).await;
                         let duration = started.elapsed();
