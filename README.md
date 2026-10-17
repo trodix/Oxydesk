@@ -62,7 +62,8 @@ and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|t
 
 ## Known limits
 
-- KWin 6.3: the number of outputs is fixed by `outputs`, and resizing is done by scaling (black bars).
+- KWin 6.3: the number of outputs is fixed when a user's session starts (in `login` mode it follows the client's monitors; a later
+  connection with another count keeps it), and resizing is done by scaling (black bars).
 - No NLA in `login` mode (dynamic accounts, IronRDP limit): TLS only.
 - Clipboard: no primary selection; not tested with Klipper.
 - Printers: no full Easy Print (MS-RDPEXPS): tray, duplex and colour are not transferred.

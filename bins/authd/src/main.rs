@@ -16,6 +16,7 @@ use pam::{Pam, PamOutcome};
 use rdsktp_authd_proto::{read_request, send_response, valid_username, Request, Response};
 
 const DEFAULT_SOCKET: &str = "/run/rdsktp/authd.sock";
+const RUNTIME_DIR: &str = "/run/rdsktp";
 
 struct Config {
     socket: PathBuf,
@@ -50,9 +51,49 @@ fn agent_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/rdsktp-agent.sock"))
 }
 
+/// Where the number of outputs wanted for the next start of a user's agent is left; the unit reads it
+/// (`EnvironmentFile`) and it comes before `agent.conf` on the agent's command line.
+fn outputs_file(runtime_dir: &Path, username: &str) -> PathBuf {
+    runtime_dir.join(format!("agent-{username}.env"))
+}
+
+/// Content of the file the unit reads: the outputs wanted, or nothing if the number is not usable.
+fn outputs_env(outputs: u32) -> Option<String> {
+    (1..=16)
+        .contains(&outputs)
+        .then(|| format!("RDSKTP_AGENT_OUTPUTS=--outputs {outputs}\n"))
+}
+
+/// Records the outputs of a session that is about to be created (an agent that already runs keeps its own:
+/// its compositor cannot always change the number of outputs). A stale wish is removed when there is none.
+fn want_outputs(unit: &str, username: &str, outputs: u32) {
+    let running = Command::new("systemctl")
+        .args(["is-active", "--quiet", unit])
+        .status()
+        .is_ok_and(|s| s.success());
+    if running {
+        return;
+    }
+    let file = outputs_file(Path::new(RUNTIME_DIR), username);
+    let result = match outputs_env(outputs) {
+        Some(content) => std::fs::write(&file, content),
+        None => std::fs::remove_file(&file).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }),
+    };
+    if let Err(e) = result {
+        tracing::warn!(file = %file.display(), "outputs of the session not recorded: {e}");
+    }
+}
+
 /// Starts the agent (idempotent) and waits for its socket to accept connections.
-fn connect_agent(username: &str, uid: u32) -> anyhow::Result<UnixStream> {
+fn connect_agent(username: &str, uid: u32, outputs: u32) -> anyhow::Result<UnixStream> {
     let unit = format!("rdsktp-agent@{username}.service");
+    want_outputs(&unit, username, outputs);
     let status = Command::new("systemctl")
         .args(["start", "--no-block", &unit])
         .status()?;
@@ -78,7 +119,11 @@ fn connect_agent(username: &str, uid: u32) -> anyhow::Result<UnixStream> {
 
 fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let Request::Login { username, password } = read_request(&mut stream)?;
+    let Request::Login {
+        username,
+        password,
+        outputs,
+    } = read_request(&mut stream)?;
     stream.set_read_timeout(None)?;
     tracing::info!(user = %username, "login request");
     let deny = |stream: &mut UnixStream| -> anyhow::Result<()> {
@@ -99,7 +144,7 @@ fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()>
         return deny(&mut stream);
     }
     let uid = uid.expect("checked above");
-    match connect_agent(&username, uid) {
+    match connect_agent(&username, uid, outputs) {
         Ok(agent) => {
             send_response(
                 &mut stream,
@@ -189,4 +234,27 @@ fn main() -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod outputs_tests {
+    use super::*;
+
+    #[test]
+    fn the_wish_is_an_option_of_the_agent_or_nothing() {
+        assert_eq!(
+            outputs_env(2).as_deref(),
+            Some("RDSKTP_AGENT_OUTPUTS=--outputs 2\n")
+        );
+        assert_eq!(outputs_env(0), None);
+        assert_eq!(outputs_env(17), None);
+    }
+
+    #[test]
+    fn the_file_is_per_user_in_the_runtime_directory() {
+        assert_eq!(
+            outputs_file(Path::new("/run/rdsktp"), "alice"),
+            PathBuf::from("/run/rdsktp/agent-alice.env")
+        );
+    }
 }

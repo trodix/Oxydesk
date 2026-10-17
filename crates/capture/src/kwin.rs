@@ -253,7 +253,7 @@ impl KwinCapture {
         let waker: Waker = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let dead: Arc<Mutex<Option<String>>> = Arc::default();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<Option<String>, String>>();
         let worker = {
             let (mailbox, cursor, waker, stop, dead) = (
                 mailbox.clone(),
@@ -276,7 +276,7 @@ impl KwinCapture {
                 .map_err(|e| CaptureError::Unavailable(e.to_string()))?
         };
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(found)) => Ok(Self {
                 mailbox,
                 cursor,
                 waker,
@@ -284,7 +284,9 @@ impl KwinCapture {
                 dead,
                 worker: Some(worker),
                 socket: socket.map(str::to_owned),
-                name,
+                // A stream bound by rank captures the output of that rank, whatever its name: kscreen-doctor must
+                // be told the name of the output really captured.
+                name: found.unwrap_or(name),
                 target,
             }),
             Ok(Err(e)) => Err(CaptureError::Unavailable(e)),
@@ -354,20 +356,78 @@ impl CaptureSource for KwinCapture {
 
     fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
         let name = self.name.clone();
-        self.kscreen_doctor(&[&format!("output.{name}.position.{x},{y}")])?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        tracing_log(format_args!("placing {name} at {x},{y}"));
+        let command = format!("output.{name}.position.{x},{y}");
+        // The session is busy while the shell starts: the order is given again when KWin has not acted on it.
+        let start = std::time::Instant::now();
+        let mut resent = false;
+        self.kscreen_doctor(&[&command])?;
         loop {
             let listing = self.kscreen_doctor(&["-o"])?;
             if parse_output_position(&listing, &name) == Some((x, y)) {
                 return Ok(());
             }
-            if std::time::Instant::now() > deadline {
+            let waited = start.elapsed();
+            if waited > Duration::from_secs(10) {
+                tracing_log(format_args!(
+                    "{name} not at {x},{y}: {:?}",
+                    parse_output_position(&listing, &name)
+                ));
                 return Err(CaptureError::Unavailable(format!(
                     "KWin did not move {name} to {x},{y}"
                 )));
             }
+            if !resent && waited > Duration::from_secs(3) {
+                resent = true;
+                self.kscreen_doctor(&[&command])?;
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    fn output_name(&self) -> Option<String> {
+        Some(self.name.clone())
+    }
+
+    fn place_group(&mut self, moves: &[(String, i32, i32)]) -> Result<(), CaptureError> {
+        let commands: Vec<String> = moves
+            .iter()
+            .map(|(name, x, y)| format!("output.{name}.position.{x},{y}"))
+            .collect();
+        tracing_log(format_args!("placing {moves:?}"));
+        let args: Vec<&str> = commands.iter().map(String::as_str).collect();
+        self.kscreen_doctor(&args)?;
+        let start = std::time::Instant::now();
+        let mut resent = false;
+        loop {
+            let listing = self.kscreen_doctor(&["-o"])?;
+            let wrong: Vec<_> = moves
+                .iter()
+                .filter(|(name, x, y)| parse_output_position(&listing, name) != Some((*x, *y)))
+                .map(|(name, _, _)| name.clone())
+                .collect();
+            if wrong.is_empty() {
+                return Ok(());
+            }
+            let waited = start.elapsed();
+            if waited > Duration::from_secs(10) {
+                return Err(CaptureError::Unavailable(format!(
+                    "KWin did not move {wrong:?} to {moves:?}"
+                )));
+            }
+            if !resent && waited > Duration::from_secs(3) {
+                resent = true;
+                self.kscreen_doctor(&args)?;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn set_primary(&mut self) -> Result<(), CaptureError> {
+        let name = self.name.clone();
+        tracing_log(format_args!("{name} becomes the primary output"));
+        self.kscreen_doctor(&[&format!("output.{name}.primary")])
+            .map(|_| ())
     }
 
     fn recv_latest(&mut self, _output: OutputId) -> Result<Option<Frame>, CaptureError> {
@@ -424,6 +484,13 @@ fn strip_ansi(text: &str) -> String {
 }
 
 /// Names of the outputs in a `kscreen-doctor -o` listing.
+/// Registry index of the output of this left-to-right then top-to-bottom rank.
+fn output_of_rank(positions: &[(i32, i32)], rank: usize) -> Option<usize> {
+    let mut order: Vec<usize> = (0..positions.len()).collect();
+    order.sort_by_key(|&i| (positions[i].0, positions[i].1, i));
+    order.get(rank).copied()
+}
+
 fn output_names(listing: &str) -> Vec<&str> {
     listing
         .lines()
@@ -531,7 +598,7 @@ fn run(
     cursor: Cursor,
     waker: Waker,
     stop: Arc<AtomicBool>,
-    ready: &mpsc::Sender<Result<(), String>>,
+    ready: &mpsc::Sender<Result<Option<String>, String>>,
 ) -> Result<(), String> {
     // 1. Wayland: request the stream and obtain the PipeWire node.
     let mut queue = conn.new_event_queue::<Wl>();
@@ -548,6 +615,7 @@ fn run(
     queue
         .roundtrip(&mut wl)
         .map_err(|e| format!("output geometry: {e}"))?;
+    let mut resolved: Option<String> = None;
     let _stream = match target {
         Target::Virtual {
             name,
@@ -577,11 +645,14 @@ fn run(
         }
         Target::Rank(output) => {
             // The logical index of an output is its left-to-right then top-to-bottom rank, not the registry order.
-            let mut order: Vec<usize> = (0..wl.outputs.len()).collect();
-            order.sort_by_key(|&i| (wl.positions[i].0, wl.positions[i].1, i));
-            let registry_index = *order.get(*output).ok_or_else(|| {
+            let registry_index = output_of_rank(&wl.positions, *output).ok_or_else(|| {
                 format!("output {output} not found ({} output(s))", wl.outputs.len())
             })?;
+            resolved = wl
+                .names
+                .get(registry_index)
+                .filter(|n| !n.is_empty())
+                .cloned();
             screencast.stream_output(&wl.outputs[registry_index], pointer_mode(), &qh, ())
         }
     };
@@ -752,7 +823,7 @@ fn run(
                     w.notify();
                 }
                 if !announced.replace(true) {
-                    let _ = ready_ok.send(Ok(()));
+                    let _ = ready_ok.send(Ok(resolved.clone()));
                 }
                 return;
             }
@@ -781,7 +852,7 @@ fn run(
                 w.notify();
             }
             if !announced.replace(true) {
-                let _ = ready_ok.send(Ok(()));
+                let _ = ready_ok.send(Ok(resolved.clone()));
             }
         })
         .register()
@@ -972,6 +1043,16 @@ fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelForm
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rank_follows_positions_not_registry_order() {
+        // Virtual-1 announced second but at the left: rank 0 is registry index 1 (its name, not "Virtual-0", is the one
+        // of the captured output).
+        let positions = [(1920, 0), (0, 0), (3840, 0)];
+        assert_eq!(output_of_rank(&positions, 0), Some(1));
+        assert_eq!(output_of_rank(&positions, 1), Some(0));
+        assert_eq!(output_of_rank(&positions, 3), None);
+    }
+
     use super::*;
 
     #[test]

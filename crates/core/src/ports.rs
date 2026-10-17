@@ -32,6 +32,20 @@ pub trait CaptureSource: Send {
     fn place(&mut self, _x: i32, _y: i32) -> Result<(), CaptureError> {
         Ok(())
     }
+    /// Name of this source's output in the compositor, when it has one.
+    fn output_name(&self) -> Option<String> {
+        None
+    }
+    /// Moves several outputs (by name) in one single change: the compositor keeps the outputs adjacent, so moving
+    /// them one by one cannot swap two positions. Sources that cannot do it refuse (`ResizeUnsupported`).
+    fn place_group(&mut self, _moves: &[(String, i32, i32)]) -> Result<(), CaptureError> {
+        Err(CaptureError::ResizeUnsupported)
+    }
+    /// Makes this source's output the primary one of the desktop (where the shell puts its panel). Sources without
+    /// such a notion ignore it.
+    fn set_primary(&mut self) -> Result<(), CaptureError> {
+        Ok(())
+    }
     /// Applies a whole layout (number, sizes and positions of the outputs). By default only a
     /// single-output layout is supported, through `resize`.
     fn apply_layout(&mut self, layout: &crate::layout::Layout) -> Result<(), CaptureError> {
@@ -156,9 +170,16 @@ pub struct DesktopPorts {
 }
 
 /// Authenticates a user and opens (or joins) their desktop session.
+/// `outputs` is the number of monitors the client announced at connection (`None`: the server's default); a session
+/// that is created for this login starts with that many outputs, an existing one keeps its own.
 /// Blocking: to be called outside the async runtime.
 pub trait SessionBroker: Send + Sync {
-    fn login(&self, username: &str, password: &str) -> Result<DesktopPorts, LoginError>;
+    fn login(
+        &self,
+        username: &str,
+        password: &str,
+        outputs: Option<u32>,
+    ) -> Result<DesktopPorts, LoginError>;
 }
 
 pub trait OutputManager: Send {

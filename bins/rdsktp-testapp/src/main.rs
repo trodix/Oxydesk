@@ -13,12 +13,15 @@ use rdsktp_capture::{
     BLOCK, CORNER_COLOR, HEARTBEAT_POS, KEYS, MARKER_POS, PALETTE, PROBE_COLOR, PROBE_KEY,
 };
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+/// Color of the block drawn where a pointer button is pressed (pointer oracle: the block shows on the output that got
+/// the click, at the place of the click).
+const CLICK_COLOR: [u8; 3] = [0, 255, 255];
 const HEARTBEAT_ON: [u8; 3] = [255, 255, 255];
 const HEARTBEAT_OFF: [u8; 3] = [48, 48, 48];
 /// Screen identity block (M5): color `PALETTE[k]` at (64, 0) on output k (left to right).
@@ -44,6 +47,18 @@ impl Canvas {
         }
     }
 
+    /// Block of `CLICK_COLOR` centered on `(x, y)`, damaged where it is.
+    fn mark_click(&self, x: f64, y: f64) {
+        let half = (BLOCK / 2) as i64;
+        let bx = (x as i64 - half).clamp(0, i64::from(self.width.saturating_sub(BLOCK)));
+        let by = (y as i64 - half).clamp(0, i64::from(self.height.saturating_sub(BLOCK)));
+        self.fill_block((bx as u32, by as u32), CLICK_COLOR);
+        self.surface.attach(Some(&self.buffer), 0, 0);
+        self.surface
+            .damage_buffer(bx as i32, by as i32, BLOCK as i32, BLOCK as i32);
+        self.surface.commit();
+    }
+
     fn commit(&self) {
         self.surface.attach(Some(&self.buffer), 0, 0);
         self.surface
@@ -63,6 +78,10 @@ struct App {
     /// One fullscreen window per output, indexed like `outputs`.
     windows: Vec<Window>,
     canvases: Vec<Arc<Mutex<Canvas>>>,
+    /// Surface of each window (indexed like `canvases`) and the one the pointer is on, with its position.
+    surfaces: Vec<wl_surface::WlSurface>,
+    focus: Option<usize>,
+    pointer: (f64, f64),
 }
 
 #[derive(Default, Clone, Copy)]
@@ -195,6 +214,49 @@ impl Dispatch<wl_seat::WlSeat, ()> for App {
             if c.contains(wl_seat::Capability::Keyboard) {
                 seat.get_keyboard(qh, ());
             }
+            if c.contains(wl_seat::Capability::Pointer) {
+                seat.get_pointer(qh, ());
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for App {
+    fn event(
+        s: &mut Self,
+        _: &wl_pointer::WlPointer,
+        ev: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match ev {
+            wl_pointer::Event::Enter {
+                surface,
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                s.focus = s.surfaces.iter().position(|x| *x == surface);
+                s.pointer = (surface_x, surface_y);
+            }
+            wl_pointer::Event::Leave { .. } => s.focus = None,
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => s.pointer = (surface_x, surface_y),
+            wl_pointer::Event::Button {
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } => {
+                if let Some(c) = s.focus.and_then(|i| s.canvases.get(i)) {
+                    c.lock()
+                        .expect("canvas")
+                        .mark_click(s.pointer.0, s.pointer.1);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -426,6 +488,7 @@ fn main() {
         let (w, h) = app.windows[k].size;
         let canvas = make_canvas(&shm, &qh, surface, w, h, k);
         app.canvases.push(Arc::new(Mutex::new(canvas)));
+        app.surfaces.push(surface.clone());
     }
 
     // Heartbeat: alternates ~10 Hz from a thread (Wayland requests are thread-safe).

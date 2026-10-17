@@ -596,6 +596,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                             primary: i == 0,
                         })
                         .collect(),
+                    ..Default::default()
                 };
                 let _round = d.round.lock().expect("round mutex");
                 let result = d
@@ -797,6 +798,31 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
     }
 }
 
+/// systemd stops the agent with SIGTERM, which skips destructors, and `PAMName` puts the session's processes in
+/// the logind scope rather than in the service's cgroup: `KillMode=control-group` does not reach them. Led by the
+/// agent, the whole process group (KWin, plasmashell, applications) is therefore ended with it.
+fn end_group_on_sigterm() {
+    extern "C" fn handler(_: libc::c_int) {
+        // SAFETY: only async-signal-safe calls. Default action restored first: the signal sent to the group
+        // also ends this process.
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::kill(0, libc::SIGTERM);
+            libc::_exit(0);
+        }
+    }
+    // SAFETY: getpid/getpgrp have no preconditions; the handler is async-signal-safe.
+    unsafe {
+        // Not leader (started from a shell or a test): the group is not ours to end.
+        if libc::getpgrp() == libc::getpid() {
+            libc::signal(
+                libc::SIGTERM,
+                handler as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -804,6 +830,7 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    end_group_on_sigterm();
     let runtime = runtime_dir();
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         // SAFETY: called at startup, before any other thread is created.

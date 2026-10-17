@@ -22,7 +22,7 @@ pub use printers::AgentPrinters;
 
 pub struct RemoteBroker {
     authd_socket: PathBuf,
-    /// Expected number of outputs (layout fixed by the server configuration).
+    /// Number of outputs when the client does not announce its monitors (server configuration).
     outputs: u32,
 }
 
@@ -36,7 +36,15 @@ impl RemoteBroker {
 }
 
 impl SessionBroker for RemoteBroker {
-    fn login(&self, username: &str, password: &str) -> Result<DesktopPorts, LoginError> {
+    fn login(
+        &self,
+        username: &str,
+        password: &str,
+        outputs: Option<u32>,
+    ) -> Result<DesktopPorts, LoginError> {
+        let outputs = outputs.map_or(self.outputs, |n| {
+            n.clamp(1, rdsktp_core::layout::MAX_OUTPUTS as u32)
+        });
         let backend = |e: &dyn std::fmt::Display| LoginError::Backend(e.to_string());
         let mut authd = UnixStream::connect(&self.authd_socket)
             .map_err(|e| backend(&format!("authd unreachable: {e}")))?;
@@ -49,6 +57,7 @@ impl SessionBroker for RemoteBroker {
             &Request::Login {
                 username: username.into(),
                 password: password.into(),
+                outputs,
             },
         )
         .map_err(|e| backend(&e))?;
@@ -60,9 +69,9 @@ impl SessionBroker for RemoteBroker {
                 let fd = fd
                     .ok_or_else(|| LoginError::Backend("authd did not pass a descriptor".into()))?;
                 tracing::info!(user = username, uid, "session granted by authd");
-                let link = AgentLink::connect(UnixStream::from(fd), self.outputs)
+                let link = AgentLink::connect(UnixStream::from(fd), outputs)
                     .map_err(LoginError::Backend)?;
-                Ok(ports::desktop_ports(link, self.outputs))
+                Ok(ports::desktop_ports(link, outputs))
             }
         }
     }

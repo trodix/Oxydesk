@@ -16,7 +16,7 @@ pub const DEFAULT_IN_FLIGHT: u32 = 3;
 /// Ceiling of the window: beyond it frames only pile up latency.
 pub const MAX_IN_FLIGHT: u32 = 12;
 /// Lowest bitrate regulation goes down to.
-pub const MIN_BITRATE_BPS: u32 = 1_000_000;
+pub const MIN_BITRATE_BPS: u32 = 2_000_000;
 
 /// Updates with fewer new round-trip samples than this carry no information.
 const MIN_NEW_SAMPLES: u64 = 3;
@@ -25,12 +25,12 @@ const CONGESTED_IN_FLIGHT: u32 = 1;
 /// Samples before the best round trip is trusted to size the window (the first frames carry a keyframe).
 const WARMUP_SAMPLES: u64 = 20;
 /// Queueing (ms) tolerated before the bitrate goes down: at least this, or half the best round trip.
-const QUEUE_FLOOR_MS: f32 = 15.0;
+const QUEUE_FLOOR_MS: f32 = 30.0;
 /// The relative tolerance never exceeds this: the best round trip seen may itself come from the congestion of the first keyframe.
 const QUEUE_CEIL_MS: f32 = 60.0;
 const CALM_CEIL_MS: f32 = 20.0;
 /// Queueing (ms) under which the link is calm: at least this, or a fifth of the best round trip.
-const CALM_FLOOR_MS: f32 = 6.0;
+const CALM_FLOOR_MS: f32 = 12.0;
 /// Calm updates in a row before the bitrate goes up.
 const CALM_BEFORE_RISE: u32 = 4;
 /// Updates ignored after a decrease: the smoothed round trip still carries the congestion that caused it.

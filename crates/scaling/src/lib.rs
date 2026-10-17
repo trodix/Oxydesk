@@ -123,6 +123,7 @@ impl CaptureSource for ScalingCapture {
         }
         let refused = match self.inner.apply_layout(layout) {
             Ok(()) => {
+                eprintln!("scaling: the source applied the layout itself");
                 let mut s = self.state.lock().expect("scaling mutex");
                 s.map = None;
                 s.multi = None;
@@ -130,6 +131,7 @@ impl CaptureSource for ScalingCapture {
             }
             Err(e) => e,
         };
+        eprintln!("scaling: layout refused by the source ({refused}): outputs scaled");
         let mut s = self.state.lock().expect("scaling mutex");
         let mut origin = 0;
         let mut slots = Vec::new();
@@ -159,6 +161,18 @@ impl CaptureSource for ScalingCapture {
 
     fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
         self.inner.place(x, y)
+    }
+
+    fn output_name(&self) -> Option<String> {
+        self.inner.output_name()
+    }
+
+    fn place_group(&mut self, moves: &[(String, i32, i32)]) -> Result<(), CaptureError> {
+        self.inner.place_group(moves)
+    }
+
+    fn set_primary(&mut self) -> Result<(), CaptureError> {
+        self.inner.set_primary()
     }
 
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
@@ -322,6 +336,7 @@ mod tests {
                     primary: false,
                 },
             ],
+            ..Default::default()
         };
         // Native sizes unknown until each output delivered a frame.
         assert!(cap.apply_layout(&layout).is_err());

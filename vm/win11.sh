@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Disposable Windows 11 test VM (QEMU/KVM, UEFI + emulated TPM 2.0) used to run the stock mstsc.exe
-# against the RDP server. Usage: bash vm/win11.sh <install|up|down|status|shot FILE|data HOST:PORT USER|test HOST:PORT USER>
+# against the RDP server. Usage: bash vm/win11.sh <install|up|down|status|shot FILE|data HOST:PORT USER|manual HOST:PORT USER [WxH[:left]]|view|test HOST:PORT USER>
 # The install ISO is read in place (never copied) from iso/ (git-ignored); the rest lives in vm/state/win11 (git-ignored).
 set -euo pipefail
 
@@ -70,9 +70,9 @@ launch() { # launch <with-install-iso: 0|1> [extra qemu args...]
     "${boot[@]}" \
     -drive "if=none,id=ans,media=cdrom,file=$S/answer.iso,readonly=on" -device ide-cd,drive=ans,bus=ide.1 \
     -drive "if=none,id=dat,media=cdrom,file=$S/data.iso,readonly=on" -device ide-cd,drive=dat,bus=ide.2,id=datcd \
-    -device e1000e,netdev=n0 -netdev user,id=n0 \
+    -device e1000e,netdev=n0 -netdev "user,id=n0${WIN_NETDEV_EXTRA:-}" \
     -audiodev "wav,id=snd,path=$S/audio.wav,out.frequency=48000" -device ich9-intel-hda -device hda-output,audiodev=snd \
-    ${WIN_VGA:-$DEFAULT_VGA} ${WIN_EXTRA_QEMU:-} -device qemu-xhci -device usb-tablet -device usb-kbd \
+    ${WIN_VGA:-$DEFAULT_VGA} ${WIN_EXTRA_QEMU:-} -device qemu-xhci ${WIN_TABLET:--device usb-tablet} -device usb-kbd \
     -serial "file:$S/serial.log" -display none -monitor "unix:$MON,server,nowait" -pidfile "$PIDFILE" "$@" -daemonize
 }
 
@@ -158,17 +158,55 @@ case "${1:-}" in
       || { rm -f "$S/drv.qcow2"; die "drivers not installed (see above)"; }
     qemu-img commit -q "$S/drv.qcow2" && rm -f "$S/drv.qcow2" "$S/snapshot.sha" "$S/overlay.qcow2"
     echo "drivers installed in base.qcow2" ;;
+  manual) # manual HOST:PORT USER [WxH[:left]] (password from RDP_TEST_PASSWORD): a fresh boot for a human tester. Every guest display is put at WxH
+          # (default 1920x1080) side by side, then the stock mstsc.exe opens on HOST:PORT with the credentials stored, full screen
+          # over all the monitors. One VNC server per display: 127.0.0.1:5907 (display 1) and :5908 (display 2).
+          # The base image is not modified (a throwaway overlay). Stop it with `down`.
+    [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
+    running && die "already running (down first)"
+    addr="${2:?HOST:PORT}"; size="${4:-1920x1080}"
+    mkdir -p "$S/manual"
+    printf 'full address:s:%s\nauthentication level:i:0\nprompt for credentials:i:0\nredirectclipboard:i:1\nscreen mode id:i:2\nuse multimon:i:1\nsmart sizing:i:1\ndynamic resolution:i:1\n' "$addr" > "$S/manual/target.rdp"
+    printf '%s\t%s' "${3:?USER}" "$RDP_TEST_PASSWORD" > "$S/manual/cred.txt"
+    rm -f "$S/manual/displays.txt"; [[ "$size" == keep ]] || printf '%s' "${size/:/ }" > "$S/manual/displays.txt"   # keep: sizes untouched
+    rm -f "$S/manual/rdpaccess.txt"; [[ "${WIN_RDP_ACCESS:-1}" == 1 ]] && : > "$S/manual/rdpaccess.txt"
+    [[ -f "$S/manual/rdpaccess.txt" ]] && export WIN_NETDEV_EXTRA=",hostfwd=tcp:127.0.0.1:3391-:3389"
+    rm -f "$S/manual/cursorlog.txt"; [[ -n "${WIN_CURSORLOG:-}" ]] && echo "$WIN_CURSORLOG" > "$S/manual/cursorlog.txt"   # debug: pointer positions on the serial port
+    make_iso "$S/data.iso" RDPDATA "$S/manual/target.rdp" "$S/manual/cred.txt" ${S:+$( [[ -f "$S/manual/displays.txt" ]] && echo "$S/manual/displays.txt")} ${S:+$( [[ -f "$S/manual/cursorlog.txt" ]] && echo "$S/manual/cursorlog.txt")} ${S:+$( [[ -f "$S/manual/rdpaccess.txt" ]] && echo "$S/manual/rdpaccess.txt")} "$W/mstsc-test.ps1"
+    rm -f "$S/manual/cred.txt" "$S/manual.qcow2"
+    qemu-img create -q -f qcow2 -b "$S/base.qcow2" -F qcow2 "$S/manual.qcow2"
+    export DISK_IMG="$S/manual.qcow2"; : > "$S/serial.log"
+    # A tablet is scaled to the primary display only: a click in the window of display 2 would land on display 1. A relative
+    # mouse (the viewers grab it on click, Ctrl+Alt releases) goes across both displays.
+    export WIN_TABLET="${WIN_TABLET:--device usb-mouse}"
+    launch 0 -vnc 127.0.0.1:7,display=gpu0 -vnc 127.0.0.1:8,display=gpu1
+    if [[ -f "$S/manual/rdpaccess.txt" ]]; then # the UAC prompt of the guest is accepted by key presses until it reports success
+      ( for _ in $(seq 1 300); do running || break; grep -q 'MSTSC rdp enabled' "$S/serial.log" && break; mon "sendkey alt-y" >/dev/null 2>&1; sleep 3; done ) >/dev/null 2>&1 &
+      echo "Remote Desktop of the guest: xfreerdp /v:127.0.0.1:3391 /u:tester /p:\$(cat $S/password) /multimon /f /cert:ignore  (then open the rdsktp icon)"
+    fi
+    echo "booting: VNC 127.0.0.1:5907 (display 1) and 127.0.0.1:5908 (display 2); mstsc opens by itself after the logon" ;;
+  view) # view [EXTRA options]: the guest's Remote Desktop (started by `manual`) on the tester's monitors: one window, clipboard
+        # shared, absolute pointer. xfreerdp (X11) has the float bar (top of the screen) that leaves full screen and closes the
+        # session; the SDL client takes the option but shows no bar. VIEWER=sdl-freerdp forces the other one.
+    running || die "not running (start it with: win11.sh manual HOST:PORT USER)"
+    viewer="${VIEWER:-}"
+    [[ -n "$viewer" ]] || { command -v xfreerdp >/dev/null && viewer=xfreerdp || viewer=sdl-freerdp; }
+    command -v "$viewer" >/dev/null || die "$viewer not installed"
+    exec "$viewer" /v:127.0.0.1:3391 /u:tester "/p:$(cat "$S/password")" /multimon /f \
+      /floatbar:sticky:on,default:visible,show:always /cert:ignore +clipboard "${@:2}" ;;
   snapshot) take_snapshot ;;
   test) # test HOST:PORT USER [TIMEOUT_S]: restores the snapshot, swaps the data CD (params only), waits for the
         # guest script to report END on the serial port, checks the tone recorded from the guest audio output.
         # Exit 0 iff the guest RESULT passed and (unless WIN_EXPECT_TONE=0) the 440 Hz tone was heard.
         # WIN_EXPECT_RESIZE=0: the server cannot resize its desktop (KWin < 6.4): the size is not checked.
+        # WIN_MONITORS_LEFT=1 (with WIN_MONITORS=2): the primary monitor is the right one, the other is at its left
+        # (negative coordinates, like a laptop with an external screen on its left).
     [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
     running && die "already running"
     addr="${2:?HOST:PORT}"; : "${3:?USER}"
     [[ -f "$S/overlay.qcow2" && "$(snapshot_key)" == "$(cat "$S/snapshot.sha" 2>/dev/null)" ]] || take_snapshot
-    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\nbig_mib=%s\nklid=%s\nlayout_check=%s\ndrives=%s\nprinters=%s\n' \
-      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" "${WIN_BIG_MIB:-128}" "${WIN_KLID:-040C}" "${WIN_LAYOUT_CHECK:-1}" "${WIN_DRIVES:-0}" "${WIN_PRINTERS:-0}" > "$S/params.txt"
+    printf 'server=%s\nport=%s\nuser=%s\npassword=%s\nwidth=1280\nheight=720\nexpect_resize=%s\nmonitors=%s\nbig_mib=%s\nklid=%s\nlayout_check=%s\ndrives=%s\nprinters=%s\nleft=%s\n' \
+      "${addr%%:*}" "${addr##*:}" "$3" "$RDP_TEST_PASSWORD" "${WIN_EXPECT_RESIZE:-1}" "${WIN_MONITORS:-1}" "${WIN_BIG_MIB:-128}" "${WIN_KLID:-040C}" "${WIN_LAYOUT_CHECK:-1}" "${WIN_DRIVES:-0}" "${WIN_PRINTERS:-0}" "${WIN_MONITORS_LEFT:-0}" > "$S/params.txt"
     make_iso "$S/test-data.iso" RDPDATA "$S/params.txt"; rm -f "$S/params.txt" "$S/audio.wav"
     export DISK_IMG="$S/overlay.qcow2"
     : > "$S/serial.log"; launch 0 -loadvm ready
@@ -187,5 +225,5 @@ case "${1:-}" in
       "$bin" --analyze-wav "$S/audio.wav" || ok=0
     fi
     [[ $ok == 1 ]] ;;
-  *) die "usage: win11.sh <install|up|down|status|shot FILE|data HOST:PORT USER|snapshot|test HOST:PORT USER>" ;;
+  *) die "usage: win11.sh <install|up|down|status|shot FILE|data HOST:PORT USER|manual HOST:PORT USER [WxH]|view|snapshot|test HOST:PORT USER>" ;;
 esac

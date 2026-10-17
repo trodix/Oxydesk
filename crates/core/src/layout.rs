@@ -25,9 +25,24 @@ pub struct MonitorSpec {
     pub primary: bool,
 }
 
+/// Where a monitor of the client is in the client's own space (its origin is the top-left corner of all the monitors):
+/// the space of the pointer coordinates the client sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     pub outputs: Vec<OutputInfo>,
+    /// For a layout deduced from the client's monitors: the position of each of them (one per output, same order) in
+    /// the client's space. The outputs themselves are laid out primary first, then to its right: some clients (mstsc)
+    /// put what is drawn on the monitors in that order, whatever the monitors' arrangement, while their pointer
+    /// coordinates follow the arrangement. Empty when the layout does not come from a client.
+    pub frame: Vec<ClientRect>,
 }
 
 impl Layout {
@@ -44,6 +59,7 @@ impl Layout {
                     primary: i == 0,
                 })
                 .collect(),
+            frame: Vec::new(),
         }
     }
 
@@ -79,20 +95,47 @@ impl Layout {
             m.iter().map(|m| m.x).min().unwrap_or(0),
             m.iter().map(|m| m.y).min().unwrap_or(0),
         );
+        let frame: Vec<ClientRect> = m
+            .iter()
+            .map(|m| ClientRect {
+                x: m.x - ox,
+                y: m.y - oy,
+                width: m.width,
+                height: m.height,
+            })
+            .collect();
+        // The outputs keep the client's own arrangement (the client shows the desktop as it is: its coordinates are
+        // the session's); output 0, the primary one, is not necessarily at the origin.
         Some(Self {
-            outputs: m
+            outputs: frame
                 .iter()
                 .enumerate()
-                .map(|(i, m)| OutputInfo {
+                .map(|(i, f)| OutputInfo {
                     id: OutputId(i as u32),
-                    x: m.x - ox,
-                    y: m.y - oy,
-                    width: m.width,
-                    height: m.height,
+                    x: f.x,
+                    y: f.y,
+                    width: f.width,
+                    height: f.height,
                     primary: i == 0,
                 })
                 .collect(),
+            frame,
         })
+    }
+
+    /// Position, in this layout, of a point of the client's space: inside the same monitor, at the same place.
+    /// Unchanged without a frame or outside the monitors.
+    pub fn from_client_point(&self, x: i32, y: i32) -> (i32, i32) {
+        if self.frame.len() != self.outputs.len() {
+            return (x, y);
+        }
+        self.frame
+            .iter()
+            .zip(&self.outputs)
+            .find(|(f, _)| {
+                x >= f.x && y >= f.y && (x - f.x) < f.width as i32 && (y - f.y) < f.height as i32
+            })
+            .map_or((x, y), |(f, o)| (o.x + x - f.x, o.y + y - f.y))
     }
 
     /// Bounding rectangle (width, height) from the origin (0, 0).
@@ -179,9 +222,14 @@ mod tests {
         .unwrap();
         assert_eq!(l.outputs[0].id, OutputId(0));
         assert!(l.outputs[0].primary && !l.outputs[1].primary);
-        // Primary first; the other monitor was left of it and 100 px lower.
+        // Primary first; the arrangement of the client is kept (the other monitor is at its left, 100 px lower).
         assert_eq!((l.outputs[0].x, l.outputs[0].y), (1920, 0));
         assert_eq!((l.outputs[1].x, l.outputs[1].y), (0, 100));
+        assert_eq!((l.frame[0].x, l.frame[0].y), (1920, 0));
+        assert_eq!((l.frame[1].x, l.frame[1].y), (0, 100));
+        // The client's coordinates are the session's.
+        assert_eq!(l.from_client_point(10, 150), (10, 150));
+        assert_eq!(l.from_client_point(1930, 5), (1930, 5));
         assert_eq!((l.outputs[1].width, l.outputs[1].height), (1920, 1080));
         assert_eq!(l.desktop_size(), (3200, 1180));
     }
@@ -205,6 +253,7 @@ mod tests {
     fn locates_with_negative_offsets() {
         let layout = Layout {
             outputs: vec![out(1, -200, 200), out(0, 0, 300)],
+            ..Default::default()
         };
         let m = CoordinateMapper::new(&layout);
         assert_eq!(m.locate(-1, 5), Some((OutputId(1), 199, 5)));

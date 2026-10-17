@@ -156,6 +156,7 @@ struct BrokerValidator {
     broker: Arc<dyn SessionBroker>,
     slot: SessionSlot,
     guard: LoginGuard,
+    shared: Arc<Shared>,
 }
 
 #[async_trait::async_trait]
@@ -178,7 +179,15 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
             return Ok(CredentialDecision::Reject);
         }
         let broker = self.broker.clone();
-        let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass))
+        // The monitors announced at connection (before the login): the session starts with as many outputs.
+        let outputs = self
+            .shared
+            .client_initial
+            .lock()
+            .expect("client layout mutex")
+            .as_ref()
+            .map(|l| l.outputs.len() as u32);
+        let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass, outputs))
             .await
             .map_err(ironrdp_server::CredentialValidationError::new)?;
         match outcome {
@@ -339,7 +348,11 @@ impl CliprdrServerFactory for ClipFactory {}
 
 struct Input {
     slot: Slot<Box<dyn InputSink>>,
+    /// Current layout: the pointer coordinates of the client follow its own arrangement of monitors.
+    shared: Arc<Shared>,
     keys: HeldKeys,
+    /// Last pointer position and number of moves (diagnostic trace of the coordinates the client sends).
+    pointer: (u16, u16, u32),
 }
 
 /// The keys the client holds down. A lost key release (focus change on the client, a dropped fast-path PDU) would
@@ -417,8 +430,38 @@ impl RdpServerInputHandler for Input {
     }
     fn mouse(&mut self, event: MouseEvent) {
         use rdsktp_core::ports::PointerButton as B;
+        match event {
+            MouseEvent::Move { x, y } => {
+                self.pointer.2 += 1;
+                self.pointer = (x, y, self.pointer.2);
+                if self.pointer.2 % 100 == 1 {
+                    tracing::debug!(x, y, "pointer moves (1 in 100)");
+                }
+            }
+            MouseEvent::LeftPressed | MouseEvent::RightPressed => tracing::debug!(
+                x = self.pointer.0,
+                y = self.pointer.1,
+                ?event,
+                "pointer button"
+            ),
+            _ => {}
+        }
+        // The client's point in the layout of the outputs.
+        let point = match event {
+            MouseEvent::Move { x, y } => self
+                .shared
+                .layout
+                .lock()
+                .expect("layout mutex")
+                .as_ref()
+                .map(|l| l.from_client_point(i32::from(x), i32::from(y))),
+            _ => None,
+        };
         let r = self.with(|i| match event {
-            MouseEvent::Move { x, y } => i.pointer_move(i32::from(x), i32::from(y)),
+            MouseEvent::Move { x, y } => {
+                let (x, y) = point.unwrap_or((i32::from(x), i32::from(y)));
+                i.pointer_move(x, y)
+            }
             MouseEvent::LeftPressed => i.pointer_button(B::Left, true),
             MouseEvent::LeftReleased => i.pointer_button(B::Left, false),
             MouseEvent::RightPressed => i.pointer_button(B::Right, true),
@@ -496,7 +539,12 @@ impl RdpServerDisplay for Display {
                 }
             })
             .collect();
+        tracing::debug!(
+            monitors = ?specs.iter().map(|m| (m.x, m.y, m.width, m.height, m.primary)).collect::<Vec<_>>(),
+            "display control: monitors received"
+        );
         let Some(new) = Layout::from_monitors(&specs) else {
+            tracing::warn!("display control: layout refused");
             return;
         };
         tracing::debug!(
@@ -524,6 +572,10 @@ fn monitor_policy(shared: Arc<Shared>, max_outputs: usize) -> ironrdp_server::Mo
                 primary: m.flags.contains(ironrdp_pdu::gcc::MonitorFlags::PRIMARY),
             })
             .collect();
+        tracing::debug!(
+            monitors = ?specs.iter().map(|m| (m.x, m.y, m.width, m.height, m.primary)).collect::<Vec<_>>(),
+            "monitors announced by the client"
+        );
         let layout = (specs.len() >= 2)
             .then(|| Layout::from_monitors(&specs))
             .flatten();
@@ -600,7 +652,9 @@ async fn serve(
     let mut server = builder
         .with_input_handler(Input {
             slot: slot.input.clone(),
+            shared: shared.clone(),
             keys: HeldKeys::default(),
+            pointer: (0, 0, 0),
         })
         .with_display_handler(Display {
             initial: DesktopSize {
@@ -628,16 +682,21 @@ async fn serve(
                 broker,
                 slot: slot.clone(),
                 guard: guard.clone(),
+                shared: shared.clone(),
             }) as Arc<dyn ironrdp_server::CredentialValidator>
         }))
         .with_connection_handler(has_broker.then(|| {
             Box::new(GuardHandler(guard.clone())) as Box<dyn ironrdp_server::ConnectionHandler>
         }))
         .build();
-    server.set_monitor_policy(Some(monitor_policy(
-        shared.clone(),
-        config.layout.outputs.len(),
-    )));
+    // Login mode: the session is made for the client's monitors, up to the maximum; otherwise the capture was
+    // created with `outputs` outputs and that is the limit.
+    let max_monitors = if has_broker {
+        rdsktp_core::layout::MAX_OUTPUTS
+    } else {
+        config.layout.outputs.len()
+    };
+    server.set_monitor_policy(Some(monitor_policy(shared.clone(), max_monitors)));
     if let Some((username, password)) = config.nla.clone() {
         server.set_credentials(Some(Credentials {
             username,
@@ -762,7 +821,9 @@ mod input_tests {
         (
             Input {
                 slot,
+                shared: Arc::new(Shared::default()),
                 keys: HeldKeys::default(),
+                pointer: (0, 0, 0),
             },
             log,
         )

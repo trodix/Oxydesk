@@ -72,6 +72,22 @@ struct OutputState {
 /// How long a connection may go without a ready EGFX before falling back to bitmap updates.
 const LEGACY_AFTER: Duration = Duration::from_secs(3);
 
+/// The pixels of a pointer PDU: RDP wants BGRA rows from the bottom of the image to the top (the hot spot stays
+/// counted from the top-left corner), the desktop provides RGBA rows from the top.
+fn rdp_pointer_pixels(shape: &rdsktp_core::CursorShape) -> Vec<u8> {
+    let stride = usize::from(shape.width) * 4;
+    if stride == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(shape.rgba.len());
+    for row in shape.rgba.chunks_exact(stride).rev() {
+        for px in row.as_chunks::<4>().0 {
+            out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+    }
+    out
+}
+
 /// The RDP pointer PDU for a cursor change (a single cache slot: the client keeps the latest shape).
 fn pointer_update(update: &rdsktp_core::CursorUpdate) -> ironrdp_server::DisplayUpdate {
     match update {
@@ -83,7 +99,7 @@ fn pointer_update(update: &rdsktp_core::CursorUpdate) -> ironrdp_server::Display
                 height: s.height,
                 hot_x: s.hot_x,
                 hot_y: s.hot_y,
-                data: s.rgba.clone(),
+                data: rdp_pointer_pixels(s),
             })
         }
     }
@@ -153,15 +169,38 @@ fn send_bitmaps(
     true
 }
 
+/// Monitors as the client expects them (MS-RDPBCGR 2.2.1.3.6.1): its own arrangement, the primary one at (0, 0) and the
+/// others around it (negative coordinates for those at its left or above). Without the client's frame (layout of the
+/// server's own), the outputs' arrangement.
 pub(crate) fn monitors(layout: &Layout) -> Vec<Monitor> {
+    let rects: Vec<(i32, i32, u32, u32)> = if layout.frame.len() == layout.outputs.len() {
+        layout
+            .frame
+            .iter()
+            .map(|f| (f.x, f.y, f.width, f.height))
+            .collect()
+    } else {
+        layout
+            .outputs
+            .iter()
+            .map(|o| (o.x, o.y, o.width, o.height))
+            .collect()
+    };
+    let (px, py) = layout
+        .outputs
+        .iter()
+        .zip(&rects)
+        .find(|(o, _)| o.primary)
+        .map_or((0, 0), |(_, r)| (r.0, r.1));
     layout
         .outputs
         .iter()
-        .map(|o| Monitor {
-            left: o.x,
-            top: o.y,
-            right: o.x + o.width as i32 - 1,
-            bottom: o.y + o.height as i32 - 1,
+        .zip(&rects)
+        .map(|(o, &(x, y, w, h))| Monitor {
+            left: x - px,
+            top: y - py,
+            right: x - px + w as i32 - 1,
+            bottom: y - py + h as i32 - 1,
             flags: if o.primary {
                 MonitorFlags::PRIMARY
             } else {
@@ -169,6 +208,24 @@ pub(crate) fn monitors(layout: &Layout) -> Vec<Monitor> {
             },
         })
         .collect()
+}
+
+/// Layout of a new session that has `outputs` outputs: the configured one when the count is the same, otherwise
+/// (login mode: the session was made for the client's monitors) outputs of the configured size side by side.
+/// `None` when the count is not usable.
+fn session_layout(configured: &Layout, outputs: usize) -> Option<Layout> {
+    if !(1..=rdsktp_core::layout::MAX_OUTPUTS).contains(&outputs) {
+        return None;
+    }
+    if outputs == configured.outputs.len() {
+        return Some(configured.clone());
+    }
+    let first = configured.outputs.first()?;
+    Some(Layout::side_by_side(
+        outputs as u32,
+        first.width,
+        first.height,
+    ))
 }
 
 pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
@@ -205,6 +262,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let mut rate_at = Instant::now();
             let mut cursor: Option<rdsktp_core::CursorUpdate> = None;
             let mut cursor_pending = false;
+            // A session of the current connection has just arrived: only then is the layout announced by the client
+            // at connection followed. Earlier, the previous session still exists and would take it before the login
+            // has read it (the session would then start with the configured number of outputs).
+            let mut fresh_session = false;
             let mut repeat = false;
             let mut report = Instant::now();
             let (mut seen, mut drain) = (0u64, false);
@@ -250,13 +311,15 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     }
                 }
                 if let Some(new) = shared.ports.lock().expect("ports mutex").take() {
-                    if new.encoders.len() != p.layout.outputs.len() {
+                    let Some(session_layout) = session_layout(&p.layout, new.encoders.len()) else {
                         tracing::error!(
-                            "session ignored: {} encoder(s) for {} output(s)",
+                            "session ignored: {} encoder(s) (1 to {} expected)",
                             new.encoders.len(),
-                            p.layout.outputs.len()
+                            rdsktp_core::layout::MAX_OUTPUTS
                         );
-                    } else {
+                        continue;
+                    };
+                    {
                         let mut c = new.capture;
                         c.set_waker(shared.wake.clone());
                         capture = Some(c);
@@ -271,8 +334,9 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             })
                             .collect();
                         current = None;
-                        // A new session starts at the configured size.
-                        layout = p.layout.clone();
+                        fresh_session = true;
+                        // A new session starts at the configured size (of as many outputs as it has).
+                        layout = session_layout;
                         reset_graphics = false;
                         *shared.resize.lock().expect("resize mutex") = None;
                         *shared.desktop.lock().expect("desktop mutex") =
@@ -280,6 +344,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         *shared.layout.lock().expect("layout mutex") = Some(layout.clone());
                     }
                 }
+                let follow_client = std::mem::take(&mut fresh_session);
                 let requested = shared
                     .resize
                     .lock()
@@ -287,7 +352,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     .take()
                     .or_else(|| {
                         // Monitors announced by the client at connection: followed once the session exists.
-                        if capture.is_some() {
+                        if capture.is_some() && follow_client {
                             shared
                                 .client_initial
                                 .lock()
@@ -299,7 +364,14 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     });
                 if let (Some(new), Some(src)) = (requested, capture.as_mut()) {
                     let added = new.outputs.len() > outputs.len() && make_encoder.is_none();
-                    if new == layout {
+                    // A session that has just started is always given the layout: KWin restores the positions of the
+                    // outputs of the user's previous sessions, which may not be the ones wanted.
+                    if new.outputs == layout.outputs && !follow_client {
+                        // Same outputs: only the client's frame (pointer coordinates) may differ.
+                        if new.frame != layout.frame {
+                            layout.frame = new.frame;
+                            *shared.layout.lock().expect("layout mutex") = Some(layout.clone());
+                        }
                     } else if added {
                         tracing::warn!(
                             "layout with {} outputs ignored: no encoder factory",
@@ -431,6 +503,12 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         raw_requested = !h264;
                     }
                     if surfaces.is_empty() {
+                        tracing::debug!(
+                            outputs = layout.outputs.len(),
+                            reset_graphics,
+                            desktop = ?layout.desktop_size(),
+                            "creating the EGFX surfaces"
+                        );
                         // Multiple screens: ResetGraphics announces the monitor list before the surfaces.
                         if layout.outputs.len() > 1 || reset_graphics {
                             let (desktop_w, desktop_h) = layout.desktop_size();
@@ -441,13 +519,19 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             );
                             reset_graphics = false;
                         }
-                        let mut created = Vec::new();
-                        for o in &layout.outputs {
+                        // Surfaces are created in the order of the monitor list (primary first): that is the order in which
+                        // the client puts them on its monitors, whatever the positions announced. `created` is indexed by
+                        // output.
+                        let order: Vec<usize> = (0..layout.outputs.len()).collect();
+                        let mut created = vec![0u16; layout.outputs.len()];
+                        for i in order {
+                            let o = &layout.outputs[i];
                             let Some(id) = g.create_surface(o.width as u16, o.height as u16) else {
                                 continue 'pump;
                             };
                             g.map_surface_to_output(id, o.x.max(0) as u32, o.y.max(0) as u32);
-                            created.push(id);
+                            tracing::debug!(output = i, surface = id, x = o.x, y = o.y, "EGFX surface mapped");
+                            created[i] = id;
                         }
                         *surfaces = created;
                         for o in &mut outputs {
@@ -475,7 +559,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                     dropped,
                                     "rate regulation"
                                 );
-                                g.set_max_frames_in_flight(t.max_in_flight);
+                                // One frame per output goes in flight at each tick: the window is for the whole connection.
+                                g.set_max_frames_in_flight(t.max_in_flight * outputs.len().max(1) as u32);
                                 for o in &mut outputs {
                                     o.encoder.set_bitrate(t.bitrate_bps);
                                 }
@@ -495,6 +580,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     }
                 }
                 let mut lost = false;
+                // An output whose frame waited for a free slot of the window is sent again at the next tick.
+                let mut deferred = false;
                 for (i, out) in outputs.iter_mut().enumerate() {
                     match capture_src.recv_latest(OutputId(i as u32)) {
                         // Frame of another size: ignored (resize in progress, or the compositor did not
@@ -558,6 +645,19 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         continue;
                     };
                     let pre_encoded = matches!(frame.data, FrameData::Encoded { .. });
+                    // A frame encoded but not sent leaves the encoder ahead of the client's decoder: the next inter
+                    // frames are drawn over a picture the client does not have (smeared blocks, until a keyframe).
+                    // Once an output has sent its frame the window can be full for the next one: check before encoding.
+                    if h264 && handle.lock().expect("gfx handle mutex").should_backpressure() {
+                        dropped += 1;
+                        if pre_encoded {
+                            out.last = None;
+                            out.encoder.request_keyframe();
+                        } else {
+                            deferred = true;
+                        }
+                        continue;
+                    }
                     let payload = if h264 {
                         match out.encoder.encode(frame) {
                             // An empty payload is a frame the rate control skipped.
@@ -607,6 +707,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         };
                         if queued.is_none() {
                             dropped += 1;
+                            out.encoder.request_keyframe();
                             continue;
                         }
                         (g.drain_output(), g.channel_id())
@@ -639,7 +740,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     continue;
                 }
                 drain = sent > sent_before; // frames may still be waiting: no sleep
-                repeat = false;
+                repeat = deferred;
                 if report.elapsed() >= Duration::from_secs(10) {
                     let q = handle.lock().expect("gfx handle mutex").qoe_snapshot();
                     tracing::info!(
@@ -659,6 +760,17 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_session_with_another_number_of_outputs_gets_outputs_of_the_configured_size() {
+        let configured = Layout::side_by_side(1, 1920, 1080);
+        assert_eq!(session_layout(&configured, 1), Some(configured.clone()));
+        let two = session_layout(&configured, 2).unwrap();
+        assert_eq!(two.outputs.len(), 2);
+        assert_eq!(two.desktop_size(), (3840, 1080));
+        assert!(session_layout(&configured, 0).is_none());
+        assert!(session_layout(&configured, rdsktp_core::layout::MAX_OUTPUTS + 1).is_none());
+    }
+
     use super::*;
     use rdsktp_core::error::{CaptureError, EncodeError};
     use rdsktp_core::ports::EncodedFrame;
@@ -670,7 +782,7 @@ mod tests {
         match pointer_update(&rdsktp_core::CursorUpdate::Shape(shape)) {
             ironrdp_server::DisplayUpdate::RGBAPointer(p) => {
                 assert_eq!((p.width, p.height, p.hot_x, p.hot_y), (2, 1, 1, 0));
-                assert_eq!(p.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+                assert_eq!(p.data, vec![3, 2, 1, 4, 7, 6, 5, 8]);
             }
             other => panic!("pointer shape expected, got {other:?}"),
         }
@@ -678,6 +790,17 @@ mod tests {
             pointer_update(&rdsktp_core::CursorUpdate::Hidden),
             ironrdp_server::DisplayUpdate::HidePointer
         ));
+    }
+
+    #[test]
+    fn pointer_rows_go_bottom_up_in_bgra() {
+        // 1 pixel wide, 2 rows: the top pixel is red, the bottom one is blue.
+        let shape = rdsktp_core::CursorShape::new(1, 2, 0, 0, vec![255, 0, 0, 255, 0, 0, 255, 128])
+            .unwrap();
+        assert_eq!(
+            rdp_pointer_pixels(&shape),
+            vec![255, 0, 0, 128, 0, 0, 255, 255]
+        );
     }
 
     struct Capture {
@@ -810,6 +933,32 @@ mod tests {
             1
         );
         stop(&shared, handle);
+    }
+
+    #[test]
+    fn monitors_put_the_primary_at_the_origin() {
+        let layout = Layout::from_monitors(&[
+            rdsktp_core::layout::MonitorSpec {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                primary: true,
+            },
+            rdsktp_core::layout::MonitorSpec {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                primary: false,
+            },
+        ])
+        .unwrap();
+        assert_eq!(layout.desktop_size(), (3840, 1080));
+        let m = monitors(&layout);
+        assert_eq!((m[0].left, m[0].top, m[0].right), (0, 0, 1919));
+        assert!(m[0].flags.contains(MonitorFlags::PRIMARY));
+        assert_eq!((m[1].left, m[1].right), (-1920, -1));
     }
 
     #[test]

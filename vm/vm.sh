@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Disposable test VM (QEMU/KVM, Debian 13). See docs/ and brief §11.1.
 # Usage: bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status> [args]
+# VM_TESTAPP=0 (with kwin-config / login-config): a bare Plasma session, without the colored-squares test application.
 #
 # WARNING: the qcow2 overlays reference their backing file by ABSOLUTE path.
 # Moving the vm/ folder (or the repository) breaks the overlays: re-run `create`.
@@ -194,6 +195,12 @@ cmd_deploy() {
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
 
+# The colored-squares test application (clipboard echo, no sound) runs next to Plasma, except with VM_TESTAPP=0: a bare
+# Plasma session, for manual tests with a real desktop.
+session_test_app() {
+  [[ "${VM_TESTAPP:-1}" == 0 ]] || printf '%s' '--session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo"'
+}
+
 # Configures the rdsktp service for a real KWin session (autologin of $VM_USER): systemd drop-in + restart.
 cmd_kwin_config() {
   local uid_run="/run/user/$(vm_ssh 'id -u')"
@@ -211,7 +218,7 @@ Environment=XDG_RUNTIME_DIR=$uid_run
 Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
 Environment=RDSKTP_ECHO_FILES=copy
 ExecStart=
-ExecStart=/usr/bin/rdsktp --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone" --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+ExecStart=/usr/bin/rdsktp --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" $(session_test_app) --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
 EOF
   vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
 }
@@ -225,7 +232,7 @@ cmd_login_config() {
   # The print queues of the redirected printers are made by the user: lpadmin needs the administration group of CUPS.
   vm_ssh "sudo usermod -aG lpadmin $VM_USER"
   vm_ssh 'sudo tee /etc/rdsktp/agent.conf >/dev/null' <<CONF
-RDSKTP_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell --session-app "/usr/lib/rdsktp/rdsktp-testapp 1920 1080 --clipboard-echo --tone"
+RDSKTP_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell $(session_test_app)
 RDSKTP_ECHO_FILES=copy
 CONF
   vm_ssh 'sudo tee /etc/systemd/system/rdsktp.service.d/login.conf >/dev/null' <<CONF

@@ -52,6 +52,64 @@ while (-not ($pf = FindParams)) {
 Start-Sleep -Milliseconds 500   # let the CD content settle
 $p = @{}
 foreach ($l in Get-Content $pf) { if ($l -match '^([^=#]+)=(.*)$') { $p[$Matches[1].Trim()] = $Matches[2].Trim() } }
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public class DispLeft {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)] public struct DEVMODE {
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+    public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields;
+    public int dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+    public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+    public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+    public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+  }
+  [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+  [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, int flags, IntPtr lp);
+  [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettingsEx(string dev, IntPtr dm, IntPtr hwnd, int flags, IntPtr lp);
+}
+'@
+# The displays as they are now, from the driver (System.Windows.Forms.Screen keeps the layout it saw first when nothing
+# pumps messages): [pscustomobject] with DeviceName and Bounds (X, Y, Width, Height), left to right.
+function Get-Screens {
+  $list = @()
+  foreach ($i in 1..8) {
+    $dev = "\\.\DISPLAY$i"
+    $dm = New-Object DispLeft+DEVMODE
+    $dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf($dm)
+    if (-not [DispLeft]::EnumDisplaySettings($dev, -1, [ref]$dm) -or $dm.dmPelsWidth -eq 0) { continue }
+    $list += [pscustomobject]@{ DeviceName = $dev; Bounds = [pscustomobject]@{ X = $dm.dmPositionX; Y = $dm.dmPositionY; Width = $dm.dmPelsWidth; Height = $dm.dmPelsHeight } }
+  }
+  return @($list | Sort-Object { $_.Bounds.X })
+}
+# Puts every display at 1920x1080 (the size of the outputs of the test session, which needs no scaling) with the first one
+# at (0,0), as the primary one, and the others at its left (negative coordinates): a laptop with an external screen on its
+# left.
+function Move-DisplaysLeft {
+  $x = 0
+  foreach ($i in 1..8) {
+    $dev = "\\.\DISPLAY$i"
+    $dm = New-Object DispLeft+DEVMODE
+    $dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf($dm)
+    if (-not [DispLeft]::EnumDisplaySettings($dev, -1, [ref]$dm) -or $dm.dmPelsWidth -eq 0) { continue }
+    # DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT, kept in the registry (CDS_UPDATEREGISTRY) and applied at the end (CDS_NORESET).
+    $width = 1920
+    $dm.dmFields = 0x20 -bor 0x80000 -bor 0x100000
+    $dm.dmPelsWidth = 1920; $dm.dmPelsHeight = 1080
+    $dm.dmPositionX = $x; $dm.dmPositionY = 0
+    # The mode must be one of the driver's: take its own 1920x1080 entry (colour depth and frequency included).
+    foreach ($m in 0..400) {
+      $c = New-Object DispLeft+DEVMODE; $c.dmSize = $dm.dmSize
+      if (-not [DispLeft]::EnumDisplaySettings($dev, $m, [ref]$c)) { break }
+      if ($c.dmPelsWidth -eq 1920 -and $c.dmPelsHeight -eq 1080) { $dm.dmBitsPerPel = $c.dmBitsPerPel; $dm.dmDisplayFrequency = $c.dmDisplayFrequency; $dm.dmFields = $dm.dmFields -bor 0x40000 -bor 0x400000; break }
+    }
+    $r = [DispLeft]::ChangeDisplaySettingsEx($dev, [ref]$dm, [IntPtr]::Zero, 0x1 -bor 0x10000000, [IntPtr]::Zero)
+    Emit "DISPLAYLEFT $dev $width at $x -> $r"
+    $x -= $width
+  }
+  [void][DispLeft]::ChangeDisplaySettingsEx([NullString]::Value, [IntPtr]::Zero, [IntPtr]::Zero, 0, [IntPtr]::Zero)
+  Start-Sleep -Seconds 3
+}
 Emit "BEGIN $(Get-Date -Format o) server=$($p.server):$($p.port)"
 $w = [int]$p.width; $h = [int]$p.height
 if (-not $p.big_mib) { $p.big_mib = '128' }
@@ -61,7 +119,14 @@ Emit ('SCREENS ' + (([System.Windows.Forms.Screen]::AllScreens | ForEach-Object 
 if ($p.monitors -eq '2') {
   # Multi-monitor run: the stock mstsc.exe in full screen over both local monitors (the ActiveX control cannot
   # do full screen multimon without a container). Observed through screenshots of the whole virtual screen.
-  $script:vb = [System.Windows.Forms.SystemInformation]::VirtualScreen
+  if ($p.left -eq '1') { Move-DisplaysLeft }
+  $scr = Get-Screens
+  $x0 = ($scr | ForEach-Object { $_.Bounds.X } | Measure-Object -Minimum).Minimum
+  $y0 = ($scr | ForEach-Object { $_.Bounds.Y } | Measure-Object -Minimum).Minimum
+  $x1 = ($scr | ForEach-Object { $_.Bounds.X + $_.Bounds.Width } | Measure-Object -Maximum).Maximum
+  $y1 = ($scr | ForEach-Object { $_.Bounds.Y + $_.Bounds.Height } | Measure-Object -Maximum).Maximum
+  $script:vb = New-Object System.Drawing.Rectangle $x0, $y0, ($x1 - $x0), ($y1 - $y0)
+  Emit ('MONITORS ' + (($scr | ForEach-Object { "$($_.DeviceName)=$($_.Bounds.X),$($_.Bounds.Y) $($_.Bounds.Width)x$($_.Bounds.Height)" }) -join ' '))
   function ScreenBmp {
     $bmp = New-Object System.Drawing.Bitmap $script:vb.Width, $script:vb.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($script:vb.Location, [System.Drawing.Point]::Empty, $script:vb.Size); $g.Dispose()
@@ -88,13 +153,17 @@ if ($p.monitors -eq '2') {
   # Each local monitor must show its own remote output: the synthetic desktop draws a heartbeat block at (32,0) of every
   # output and, after the first, an identity block at (64,0) with PALETTE[rank] (second output: green).
   $bmp = ScreenBmp
-  $scr = [System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }
   function Near($c, $r, $g, $b) { [math]::Abs($c.R - $r) -lt 70 -and [math]::Abs($c.G - $g) -lt 70 -and [math]::Abs($c.B - $b) -lt 70 }  # H.264 shifts colours
   $ids = @(foreach ($sc in $scr) { $c = $bmp.GetPixel($sc.Bounds.X - $script:vb.X + 80, $sc.Bounds.Y - $script:vb.Y + 16); "$($c.R),$($c.G),$($c.B)" })
   $bmp.Dispose()
   Check 'multi_connect' (-not $mstsc.HasExited) "mstsc running=$(-not $mstsc.HasExited)"
-  $second = $ids.Count -ge 2 -and ($ids[1] -match '^(\d+),(\d+),(\d+)$') -and (Near ([pscustomobject]@{ R = [int]$Matches[1]; G = [int]$Matches[2]; B = [int]$Matches[3] }) 0 255 0)
-  Check 'multi_second_output_on_second_monitor' ([bool]$second) "identity pixel (80,16) of each monitor: $($ids -join ' | ') (second output expected green 0,255,0 on the second monitor)"
+  # The first output (red identity: it was the leftmost of the session at its start) is the client's primary monitor, the
+  # one at (0,0); the second output (green) is the other one, wherever it is.
+  $iP = [array]::IndexOf(@($scr | ForEach-Object { $_.Bounds.X -eq 0 -and $_.Bounds.Y -eq 0 }), $true)
+  $iO = 1 - $iP
+  function IdIs($i, $r, $g, $b) { $i -ge 0 -and $ids.Count -gt $i -and ($ids[$i] -match '^(\d+),(\d+),(\d+)$') -and (Near ([pscustomobject]@{ R = [int]$Matches[1]; G = [int]$Matches[2]; B = [int]$Matches[3] }) $r $g $b) }
+  Check 'multi_first_output_on_primary_monitor' (IdIs $iP 255 0 0) "identity pixel (80,16) of each monitor, left to right: $($ids -join ' | '); the primary monitor is number $($iP + 1) (first output expected red 255,0,0 there)"
+  Check 'multi_second_output_on_other_monitor' (IdIs $iO 0 255 0) "identity pixel (80,16) of each monitor, left to right: $($ids -join ' | '); the other monitor is number $($iO + 1) (second output expected green 0,255,0 there)"
 
   # The server was started with other sizes than the guest monitors: it must have adopted the monitors announced by
   # the client at connection (each output ends with a magenta block in its bottom-right corner).
@@ -106,6 +175,41 @@ if ($p.monitors -eq '2') {
   $bmp.Dispose()
   $allMagenta = ($corners.Count -ge 2) -and -not ($corners | Where-Object { -not ($_.R -gt 180 -and $_.G -lt 90 -and $_.B -gt 180) })
   Check 'multi_layout_follows_client_monitors' ([bool]$allMagenta) "corner pixel of each monitor: $(($corners | ForEach-Object { "$($_.Sz) $($_.R),$($_.G),$($_.B)" }) -join ' | ') (magenta expected)"
+  # Pointer: a click at a given place of a monitor must land on the output shown by that monitor, at the same place (the
+  # test desktop draws a cyan block where a button is pressed).
+  Add-Type -Namespace Native -Name Click -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);'
+  function CyanNear($bmp, [int]$cx, [int]$cy) {
+    for ($dy = -24; $dy -le 24; $dy += 4) { for ($dx = -24; $dx -le 24; $dx += 4) {
+      $x = $cx + $dx; $y = $cy + $dy
+      if ($x -ge 0 -and $y -ge 0 -and $x -lt $bmp.Width -and $y -lt $bmp.Height) {
+        $c = $bmp.GetPixel($x, $y); if ($c.R -lt 110 -and $c.G -gt 170 -and $c.B -gt 170) { return $true }
+      } } }
+    return $false
+  }
+  # Six places (corners and middle) taken one after the other: the first three on the leftmost monitor, the others on the
+  # next one. Every place is used once, so that the mark of a click cannot be taken for another one's; the same place of
+  # the other monitor must stay free (a click that lands on the other monitor leaves its mark there).
+  $spots = @(@(100, 100), @(1800, 150), @(150, 950), @(1700, 950), @(960, 540), @(500, 300))
+  $n = 0
+  foreach ($sc in $scr) {
+    foreach ($k in 1..3) {
+      $spot = $spots[$n]
+      $gx = $sc.Bounds.X + $spot[0]; $gy = $sc.Bounds.Y + $spot[1]
+      # The first move into a monitor can be reported with the last position seen before: settle with a second one.
+      [void][Native.Click]::SetCursorPos($gx, $gy); Start-Sleep -Milliseconds 400
+      [void][Native.Click]::SetCursorPos($gx + 1, $gy); Start-Sleep -Milliseconds 200
+      [void][Native.Click]::SetCursorPos($gx, $gy); Start-Sleep -Milliseconds 400
+      [Native.Click]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100
+      [Native.Click]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Seconds 2
+      $bmp = ScreenBmp
+      $onSame = CyanNear $bmp ($gx - $script:vb.X) ($gy - $script:vb.Y)
+      $others = @(foreach ($o in $scr) { if ($o.DeviceName -ne $sc.DeviceName) { $o.DeviceName + '=' + (CyanNear $bmp ($o.Bounds.X - $script:vb.X + $spot[0]) ($o.Bounds.Y - $script:vb.Y + $spot[1])) } })
+      $bmp.Dispose()
+      $n++
+      Check "multi_click_$n" ([bool]($onSame -and ($others -notmatch '=True'))) "click at $gx,$gy (monitor $($sc.DeviceName) at $($sc.Bounds.X),$($sc.Bounds.Y), place $($spot[0]),$($spot[1])): mark at the same place of that monitor=$onSame; same place of the others: $($others -join ' ')"
+    }
+  }
+  ShotMulti 'clicks'
   try { Stop-Process -Id $mstsc.Id -Force } catch { }
   Finish
 }

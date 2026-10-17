@@ -27,17 +27,27 @@ pub enum ProtoError {
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum Request {
-    Login { username: String, password: String },
+    /// `outputs`: number of outputs wanted for a session started by this login (the client's monitors);
+    /// 0 = not specified (the agent's configuration decides).
+    Login {
+        username: String,
+        password: String,
+        #[serde(default)]
+        outputs: u32,
+    },
 }
 
 // The password must never appear in a log.
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Login { username, .. } => f
+            Self::Login {
+                username, outputs, ..
+            } => f
                 .debug_struct("Login")
                 .field("username", username)
                 .field("password", &"***")
+                .field("outputs", outputs)
                 .finish(),
         }
     }
@@ -86,7 +96,9 @@ pub fn read_request(stream: &mut UnixStream) -> Result<Request, ProtoError> {
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body)?;
     let req: Request = decode(&body)?;
-    let Request::Login { username, password } = &req;
+    let Request::Login {
+        username, password, ..
+    } = &req;
     if username.len() > MAX_USERNAME || password.len() > MAX_PASSWORD {
         return Err(ProtoError::Invalid("credentials too long".into()));
     }
@@ -197,6 +209,7 @@ mod tests {
         let req = Request::Login {
             username: "alice".into(),
             password: "s3cret!".into(),
+            outputs: 2,
         };
         send_request(&mut a, &req).unwrap();
         let got = read_request(&mut b).unwrap();
@@ -205,11 +218,25 @@ mod tests {
     }
 
     #[test]
+    fn a_request_without_outputs_still_decodes() {
+        let json = br#"{"type":"Login","username":"alice","password":"x"}"#;
+        let mut frame = (json.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(json);
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        a.write_all(&frame).unwrap();
+        assert!(matches!(
+            read_request(&mut b).unwrap(),
+            Request::Login { outputs: 0, .. }
+        ));
+    }
+
+    #[test]
     fn oversized_credentials_are_rejected() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
         let req = Request::Login {
             username: "u".repeat(MAX_USERNAME + 1),
             password: "x".into(),
+            outputs: 0,
         };
         send_request(&mut a, &req).unwrap();
         assert!(read_request(&mut b).is_err());

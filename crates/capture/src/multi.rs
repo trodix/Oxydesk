@@ -82,8 +82,30 @@ impl CaptureSource for MultiCapture {
         for (source, o) in self.sources.iter_mut().zip(&layout.outputs) {
             source.resize(o.width, o.height)?;
         }
-        for (source, o) in self.sources.iter_mut().zip(&layout.outputs) {
-            source.place(o.x, o.y)?;
+        // One single change when the compositor allows it: it keeps the outputs adjacent, so that exchanging two
+        // positions one output at a time ends with both at the same place.
+        let names: Option<Vec<String>> = self.sources.iter().map(|s| s.output_name()).collect();
+        let grouped = match (names, self.sources.first_mut()) {
+            (Some(names), Some(first)) if wanted > 1 => {
+                let moves: Vec<(String, i32, i32)> = names
+                    .into_iter()
+                    .zip(&layout.outputs)
+                    .map(|(n, o)| (n, o.x, o.y))
+                    .collect();
+                first.place_group(&moves).is_ok()
+            }
+            _ => false,
+        };
+        if !grouped {
+            for (source, o) in self.sources.iter_mut().zip(&layout.outputs) {
+                source.place(o.x, o.y)?;
+            }
+        }
+        // The first output is the client's primary monitor: the shell puts its panel there.
+        if wanted > 1 {
+            if let Some(source) = self.sources.first_mut() {
+                source.set_primary()?;
+            }
         }
         Ok(())
     }
@@ -150,6 +172,95 @@ mod tests {
         fn retire(&mut self) {
             self.0.lock().unwrap().push(format!("{}:retired", self.1));
         }
+        fn set_primary(&mut self) -> Result<(), CaptureError> {
+            self.0.lock().unwrap().push(format!("{}:primary", self.1));
+            Ok(())
+        }
+    }
+
+    /// A source that knows its output's name and moves a whole group at once, like the one of KWin.
+    struct Named(std::sync::Arc<std::sync::Mutex<Vec<String>>>, u8);
+    impl CaptureSource for Named {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(None)
+        }
+        fn resize(&mut self, _: u32, _: u32) -> Result<(), CaptureError> {
+            Ok(())
+        }
+        fn output_name(&self) -> Option<String> {
+            Some(format!("Virtual-{}", self.1))
+        }
+        fn place_group(&mut self, moves: &[(String, i32, i32)]) -> Result<(), CaptureError> {
+            self.0.lock().unwrap().push(format!("group {moves:?}"));
+            Ok(())
+        }
+        fn place(&mut self, x: i32, y: i32) -> Result<(), CaptureError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}:at {x},{y}", self.1));
+            Ok(())
+        }
+        fn set_primary(&mut self) -> Result<(), CaptureError> {
+            self.0.lock().unwrap().push(format!("{}:primary", self.1));
+            Ok(())
+        }
+    }
+
+    fn client_arrangement() -> Layout {
+        // The client's primary monitor (output 0) is at the right of the other one.
+        Layout::from_monitors(&[
+            rdsktp_core::layout::MonitorSpec {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+                primary: true,
+            },
+            rdsktp_core::layout::MonitorSpec {
+                x: -800,
+                y: 0,
+                width: 800,
+                height: 600,
+                primary: false,
+            },
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn outputs_are_exchanged_in_one_change_never_one_by_one() {
+        // Moving the outputs one at a time exchanges nothing: the compositor moves an output put on another one.
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let mut m = MultiCapture::new(vec![
+            Box::new(Named(log.clone(), 0)),
+            Box::new(Named(log.clone(), 1)),
+        ]);
+        m.apply_layout(&client_arrangement()).unwrap();
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log[0],
+            r#"group [("Virtual-0", 800, 0), ("Virtual-1", 0, 0)]"#
+        );
+        assert!(!log.iter().any(|l| l.contains(":at ")), "{log:?}");
+    }
+
+    #[test]
+    fn the_first_output_becomes_the_primary_one_of_the_compositor() {
+        // The shell puts its panel on the primary output of the compositor: the client's primary monitor is output 0.
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let mut m = MultiCapture::new(vec![
+            Box::new(Named(log.clone(), 0)),
+            Box::new(Named(log.clone(), 1)),
+        ]);
+        m.apply_layout(&client_arrangement()).unwrap();
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log.iter()
+                .filter(|l| l.ends_with(":primary"))
+                .collect::<Vec<_>>(),
+            ["0:primary"]
+        );
     }
 
     #[test]
@@ -162,7 +273,13 @@ mod tests {
         m.apply_layout(&Layout::side_by_side(2, 800, 600)).unwrap();
         assert_eq!(
             *log.lock().unwrap(),
-            ["0:size 800x600", "1:size 800x600", "0:at 0,0", "1:at 800,0"]
+            [
+                "0:size 800x600",
+                "1:size 800x600",
+                "0:at 0,0",
+                "1:at 800,0",
+                "0:primary"
+            ]
         );
         // Growing needs a factory.
         assert!(m.apply_layout(&Layout::side_by_side(3, 800, 600)).is_err());

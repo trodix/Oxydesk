@@ -9,7 +9,10 @@ PAMName=rdsktp-session
 SupplementaryGroups=video render
 Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
 EnvironmentFile=-/etc/rdsktp/agent.conf
-ExecStart=/usr/bin/rdsktp-agent --session kwin $RDSKTP_AGENT_ARGS
+# Written by rdsktp-authd when it creates the session: as many outputs as the client has monitors. First on the
+# command line, so it wins over a `--outputs` of agent.conf.
+EnvironmentFile=-/run/rdsktp/agent-%i.env
+ExecStart=/usr/bin/rdsktp-agent --session kwin $RDSKTP_AGENT_OUTPUTS $RDSKTP_AGENT_ARGS
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15
