@@ -8,3 +8,4 @@ src = "docs"
 site-url = "/RustyDesktop/"
 git-repository-url = "https://github.com/trodix/RustyDesktop"
 edit-url-template = "https://github.com/trodix/RustyDesktop/edit/develop/{path}"
+additional-css = ["theme/width.css"]
