@@ -73,7 +73,7 @@ tests themselves are excluded. The test policy is in `CLAUDE.md`.
 
 Integration tests use a Debian 13 VM (`bash vm/vm.sh create`), a Windows 11 VM for `mstsc` (`bash vm/win11.sh install`)
 and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|tar OUT`, then
-`ci/package-test.sh OUT`. Architecture (hexagonal) and design decisions: `docs/decisions/`.
+`ci/package-test.sh OUT`. Architecture (hexagonal) and design decisions: `docs/decisions/`. API reference (rustdoc): <https://trodix.github.io/RustyDesktop/api/>.
 
 ## Known limits
 
