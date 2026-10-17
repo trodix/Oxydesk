@@ -103,6 +103,69 @@ impl KwinSession {
     }
 }
 
+/// Processes of `uid` that are a `kwin_wayland` serving the Wayland socket `socket` (read in `proc_root`, a `/proc`).
+/// Left behind by an agent that was killed, they keep the socket and make every new session fail.
+fn stale_compositors(proc_root: &std::path::Path, socket: &str, uid: u32) -> Vec<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(dir) = std::fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in dir.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if entry.metadata().map(|m| m.uid()).ok() != Some(uid) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+        let is_kwin = argv.first().is_some_and(|a| a.ends_with(b"kwin_wayland"));
+        let ours = argv
+            .windows(2)
+            .any(|w| w[0] == b"--socket" && w[1] == socket.as_bytes());
+        if is_kwin && ours {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+/// Ends the compositors `stale_compositors` finds (SIGTERM, then SIGKILL after a few seconds) and clears their socket.
+fn clear_stale_compositors(runtime: &std::path::Path, socket: &str) {
+    use std::os::unix::fs::MetadataExt;
+    let proc_root = std::path::Path::new("/proc");
+    let Ok(uid) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
+        return;
+    };
+    let pids = stale_compositors(proc_root, socket, uid);
+    for signal in ["-TERM", "-KILL"] {
+        for pid in &pids {
+            if proc_root.join(pid.to_string()).exists() {
+                let _ = Command::new("kill")
+                    .arg(signal)
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pids.iter().any(|p| proc_root.join(p.to_string()).exists())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if !pids.is_empty() {
+        let _ = std::fs::remove_file(runtime.join(format!("{socket}.lock")));
+    }
+}
+
 const BLANK_ICONS_DIR: &str = cursor_theme::ICONS_DIR;
 const BLANK_THEME: &str = cursor_theme::THEME;
 
@@ -129,6 +192,7 @@ impl SessionProvider for KwinSession {
         let _ = sycoca.stdout(Stdio::null()).stderr(Stdio::null()).status();
 
         let socket_path = runtime.join(&self.cfg.socket);
+        clear_stale_compositors(&runtime, &self.cfg.socket);
         let _ = std::fs::remove_file(&socket_path);
         let mut kwin = Command::new("kwin_wayland");
         Self::session_env(&mut kwin, &runtime, &self.cfg.socket);
@@ -209,6 +273,60 @@ impl Drop for KwinSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake /proc with one process per `(pid, argv)`.
+    fn fake_proc(procs: &[(u32, &[&str])]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rdsktp-proc-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (pid, argv) in procs {
+            let dir = root.join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut raw = argv.join("\0").into_bytes();
+            raw.push(0);
+            std::fs::write(dir.join("cmdline"), raw).unwrap();
+        }
+        std::fs::create_dir_all(root.join("self")).unwrap();
+        root
+    }
+
+    fn me() -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self").unwrap().uid()
+    }
+
+    #[test]
+    fn a_compositor_left_on_our_socket_is_stale() {
+        let root = fake_proc(&[
+            (
+                10,
+                &[
+                    "kwin_wayland",
+                    "--virtual",
+                    "--socket",
+                    "rdsktp-0",
+                    "--width",
+                    "1920",
+                ],
+            ),
+            (11, &["/usr/bin/kwin_wayland", "--socket", "rdsktp-0"]),
+            // Another socket (the user's own desktop, a test session), and another program on ours.
+            (12, &["kwin_wayland", "--socket", "wayland-0"]),
+            (13, &["kwin_wayland_wrapper", "--socket", "rdsktp-0"]),
+            (14, &["plasmashell"]),
+        ]);
+        let mut found = stale_compositors(&root, "rdsktp-0", me());
+        found.sort_unstable();
+        assert_eq!(found, [10, 11]);
+        // Processes of another user are never touched.
+        assert!(stale_compositors(&root, "rdsktp-0", me() + 1).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn parses_version_ignoring_qt_noise() {
