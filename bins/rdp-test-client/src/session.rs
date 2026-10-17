@@ -28,6 +28,30 @@ impl Frame {
     }
 }
 
+impl Frame {
+    /// The desktop as an RGB PNG (alpha dropped), e.g. for documentation screenshots.
+    pub fn to_png(&self) -> Result<Vec<u8>, String> {
+        if self.rgba.len() != (self.width * self.height * 4) as usize {
+            return Err("frame buffer does not match its size".into());
+        }
+        let rgb: Vec<u8> = self
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect();
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, self.width, self.height);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .and_then(|mut w| w.write_image_data(&rgb))
+            .map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+}
+
 /// One monitor of a Display Control layout, in client coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MonitorRequest {
@@ -107,4 +131,34 @@ impl Session for UnimplementedSession {
         Err("not connected".into())
     }
     fn close(&mut self) {}
+}
+
+#[cfg(test)]
+mod png_tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_round_trips_through_png_without_alpha() {
+        let f = Frame {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 2, 3, 255, 4, 5, 6, 255],
+        };
+        let bytes = f.to_png().unwrap();
+        let mut r = png::Decoder::new(bytes.as_slice()).read_info().unwrap();
+        let mut buf = vec![0; r.output_buffer_size()];
+        let info = r.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (2, 1));
+        assert_eq!(&buf[..6], &[1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn a_truncated_buffer_is_refused() {
+        let f = Frame {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 4],
+        };
+        assert!(f.to_png().is_err());
+    }
 }

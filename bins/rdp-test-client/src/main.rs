@@ -10,7 +10,7 @@ use rdp_test_client::session::UnimplementedSession;
 
 const USAGE: &str =
     "usage: rdp-test-client --out <dir> [--host H] [--port P] [--user U] [--width W] [--height H] [--outputs N] \
-[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--drives-only] [--drive-share DIR --drive-mount DIR [--drive-name NAME] [--drive-mib N]] [--printer-socket DIR --printer-record DIR [--printer-name NAME] [--printer-kib N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--mock]\n\
+[--no-nla] [--multi-resize [--no-identity-blocks] [--max-monitors N]] [--keyboard-layout KLID [--no-layout-check]] [--drives-only] [--drive-share DIR --drive-mount DIR [--drive-name NAME] [--drive-mib N]] [--printer-socket DIR --printer-record DIR [--printer-name NAME] [--printer-kib N]] [--key-samples N] [--max-key-latency-ms MS] [--timeout S] [--screenshot FILE [--screenshot-wait S]] [--mock]\n\
 ou : rdp-test-client --analyze-wav FILE [HZ MIN_WINDOWS NAME]\n\
 mot de passe : variable RDP_TEST_PASSWORD uniquement";
 
@@ -25,6 +25,7 @@ struct Args {
     no_nla: bool,
     drive: Option<(std::path::PathBuf, String)>,
     printer: Option<(std::path::PathBuf, String)>,
+    screenshot: Option<(std::path::PathBuf, u64)>,
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
@@ -32,6 +33,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     let mut cfg = Config::default();
     let mut mock = false;
     let mut no_nla = false;
+    let (mut shot, mut shot_wait) = (None::<String>, 10u64);
     let (mut share, mut mount, mut drive_name, mut drive_mib) =
         (None::<String>, None::<String>, "Partage".to_string(), 8u64);
     let (mut printer_socket, mut printer_record, mut printer_name, mut printer_kib) = (
@@ -70,6 +72,10 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--printer-name" => printer_name = val(&a)?,
             "--printer-kib" => {
                 printer_kib = val(&a)?.parse().map_err(|_| "--printer-kib invalid")?
+            }
+            "--screenshot" => shot = Some(val(&a)?),
+            "--screenshot-wait" => {
+                shot_wait = val(&a)?.parse().map_err(|_| "--screenshot-wait invalid")?
             }
             "--out" => out = Some(val("--out")?),
             "--host" => host = val(&a)?,
@@ -122,6 +128,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
         _ => return Err("--printer-socket and --printer-record go together".into()),
     };
     Ok(Args {
+        screenshot: shot.map(|f| (f.into(), shot_wait)),
         printer,
         drive,
         out: out.ok_or("--out is required")?,
@@ -174,6 +181,34 @@ fn analyze_wav(path: &str, hz: f64, min_windows: usize, name: &str) -> ExitCode 
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+/// `--screenshot FILE`: connects, lets the desktop settle for `wait` seconds, then saves the last frame as a PNG.
+/// The picture comes from the decoded RDP stream, never from the screen of the machine running the client.
+fn screenshot(session: &mut dyn Session, file: &std::path::Path, wait: u64) -> ExitCode {
+    if let Err(e) = session.connect() {
+        eprintln!("connection failed: {e}");
+        return ExitCode::from(1);
+    }
+    let end = std::time::Instant::now() + Duration::from_secs(wait);
+    let mut last = None;
+    while std::time::Instant::now() < end {
+        if let Ok(f) = session.next_frame(Duration::from_millis(500)) {
+            last = Some(f);
+        }
+    }
+    session.close();
+    let saved = last
+        .ok_or_else(|| "no frame received".to_string())
+        .and_then(|f| f.to_png())
+        .and_then(|png| std::fs::write(file, png).map_err(|e| e.to_string()));
+    match saved {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("screenshot failed: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 
@@ -241,6 +276,9 @@ fn main() -> ExitCode {
     } else {
         real_session(&args)
     };
+    if let Some((file, wait)) = &args.screenshot {
+        return screenshot(session.as_mut(), file, *wait);
+    }
     let mut report = Report::default();
     run_all(session.as_mut(), &args.cfg, &mut report);
 
