@@ -28,9 +28,9 @@ const WARMUP_SAMPLES: u64 = 20;
 const QUEUE_FLOOR_MS: f32 = 30.0;
 /// The relative tolerance never exceeds this: the best round trip seen may itself come from the congestion of the first keyframe.
 const QUEUE_CEIL_MS: f32 = 60.0;
-const CALM_CEIL_MS: f32 = 20.0;
+const CALM_CEIL_MS: f32 = 25.0;
 /// Queueing (ms) under which the link is calm: at least this, or a fifth of the best round trip.
-const CALM_FLOOR_MS: f32 = 12.0;
+const CALM_FLOOR_MS: f32 = 20.0;
 /// Calm updates in a row before the bitrate goes up.
 const CALM_BEFORE_RISE: u32 = 4;
 /// Updates ignored after a decrease: the smoothed round trip still carries the congestion that caused it.
@@ -237,6 +237,24 @@ mod tests {
 
     fn controller(max: u32) -> RateController {
         RateController::new(RateConfig::new(60.0, max))
+    }
+
+    #[test]
+    fn a_steady_wifi_round_trip_above_a_stale_best_one_lets_the_bitrate_rise() {
+        // Seen on Wi-Fi: best round trip 3.3 ms (an early lucky sample), steady 15.5 ms afterwards, nothing queued.
+        let mut ctl = controller(8_000_000);
+        let s = |n: u64| NetSample {
+            avg_rtt_ms: 15.5,
+            min_rtt_ms: 3.3,
+            rtt_samples: 100 * n,
+            sent: 100 * n,
+            dropped: 0,
+        };
+        ctl.bitrate_bps = 2_500_000;
+        for n in 1..=12 {
+            ctl.update(&s(n));
+        }
+        assert!(ctl.target().bitrate_bps > 2_500_000, "{:?}", ctl.target());
     }
 
     #[test]
