@@ -33,7 +33,7 @@ Un pourcentage mesure le code **exécuté** par les tests, pas la qualité de le
   exercée ?) : pour le code plein de conditions, les branches renseignent mieux (`COVERAGE_BRANCH=1`, nightly). Même 100 % ne
   garantit ni les combinaisons ni les valeurs limites.
 
-## État au 2026-10-17 (lignes : 74 % ; régions : 74 % ; fonctions : 74 %)
+## État au 2026-10-17 (lignes : 79,6 %)
 
 Mesure initiale : 61,8 % de lignes. Ce que le pourcentage cache, à traiter par risque plutôt que par chiffre :
 
@@ -43,9 +43,11 @@ Mesure initiale : 61,8 % de lignes. Ce que le pourcentage cache, à traiter par 
   `remote/{ports,printers}`, `capture/multi`, `bins/rdsktp-agent/printers`.
 - **À renforcer** : `rdp/server.rs` (75 %), `rdp/pump.rs` (65 % : boucle de capture liée au runtime IronRDP),
   `session/lib.rs` (50 % : le démarrage lance un vrai KWin ; les parties pures — version, processus périmés — sont testées),
-  `bins/authd/src/main.rs` (54 %), `bins/rdsktp/src/main.rs` (47 %, `main` et accept-loop), `input/xkb` (47 %, dépend de libxkbcommon).
-- **Non mesuré par `cargo test`** : `bins/rdsktp-agent/{main,drives}` et `bins/rdsktp-testapp` (0 %, processus de session testés
-  en VM), à décider si l'extraction d'une logique pure justifie un test unitaire.
+  `bins/authd/src/main.rs` (54 %), `bins/rdsktp/src/main.rs` (47 %, `main` et boucle d'acceptation), `input/xkb` (47 %, dépend de libxkbcommon).
+- **Agent de session** (`bins/rdsktp-agent`, 0 % → 80–100 %) : la logique pure est extraite dans `settings.rs` (ligne de commande)
+  et `convert.rs` (boutons, maintien vidéo, disposition) ; `serve` est testé de bout en bout sur un bureau synthétique
+  et une paire de sockets. Reste hors de portée : la construction KWin (`--features kwin`) et `main`.
+- **Non mesuré par `cargo test`** : `bins/rdsktp-testapp` (0 %, outil de test lancé en VM).
 - **Raccordement, couvert par les tests en VM (mstsc, FreeRDP, mode login) et non par `cargo test`** : `bins/rdsktp`,
   `bins/rdsktp-agent`, `crates/remote/{lib,ports}.rs`, `crates/clipboard/wayland.rs`, `crates/audio/pulse.rs`,
   `bins/authd/src/pam.rs`, `bins/rdsktp-cups-backend`. Les mesurer demanderait de collecter la couverture des processus lancés

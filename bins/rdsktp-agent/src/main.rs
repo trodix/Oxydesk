@@ -3,8 +3,10 @@
 //! exposes them to `rdsktp` through the `rdsktp-agent-proto` protocol on a Unix socket. One connection at a time:
 //! the most recent one replaces the previous one (reconnection); the desktop session survives disconnections.
 
+mod convert;
 mod drives;
 mod printers;
+mod settings;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -14,16 +16,17 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use convert::{button, from_info, held, hold_stamp, now_ms, to_info};
 use rdsktp_agent_proto::{
-    read_msg, write_msg, CursorImage, FileInfo, FileRange, FromAgent, ToAgent, MAX_OUTPUTS,
+    read_msg, write_msg, CursorImage, FileRange, FromAgent, ToAgent, MAX_OUTPUTS,
 };
 use rdsktp_core::layout::OutputId;
 use rdsktp_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
-    PointerButton,
 };
-use rdsktp_core::{FileEntry, FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
+use rdsktp_core::{FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
 use rdsktp_encode::{AutoEncoder, EncoderChoice};
+use settings::{arg, AudioMode, Settings};
 
 const AUDIO_PACKET_MS: u32 = 20;
 
@@ -55,12 +58,6 @@ struct Desktop {
     round: Mutex<()>,
 }
 
-fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
-    args.windows(2)
-        .find(|w| w[0] == name)
-        .and_then(|w| w[1].parse().ok())
-}
-
 fn runtime_dir() -> PathBuf {
     // `%U` cannot be used in the unit: derive the directory from the effective uid.
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -69,33 +66,15 @@ fn runtime_dir() -> PathBuf {
 }
 
 fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
-    let session: String = arg(args, "--session").unwrap_or_else(|| "kwin".into());
-    let width: u32 = arg(args, "--width").unwrap_or(1920);
-    let height: u32 = arg(args, "--height").unwrap_or(1080);
-    let outputs: u32 = arg(args, "--outputs").unwrap_or(1);
-    anyhow::ensure!(
-        (1..=16).contains(&outputs),
-        "--outputs must be between 1 and 16"
-    );
-    let fps: f32 = arg(args, "--fps").unwrap_or(30.0);
-    let audio_mode: String = arg(args, "--audio")
-        .unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
-    let audio: Option<Arc<dyn AudioProvider>> = match audio_mode.as_str() {
-        "off" => None,
-        "tone" => Some(Arc::new(rdsktp_audio::ToneProvider)),
-        "pulse" => Some(Arc::new(rdsktp_audio::PulseCapture)),
-        other => anyhow::bail!("unknown --audio: {other}"),
+    let cfg = Settings::parse(args)?;
+    let (width, height, outputs) = (cfg.width, cfg.height, cfg.outputs);
+    let audio: Option<Arc<dyn AudioProvider>> = match cfg.audio {
+        AudioMode::Off => None,
+        AudioMode::Tone => Some(Arc::new(rdsktp_audio::ToneProvider)),
+        AudioMode::Pulse => Some(Arc::new(rdsktp_audio::PulseCapture)),
     };
-    let encoder: EncoderChoice = arg::<String>(args, "--encoder")
-        .map_or(Ok(EncoderChoice::Auto), |v| v.parse())
-        .map_err(|e: String| anyhow::anyhow!(e))?;
     #[cfg_attr(not(feature = "kwin"), allow(unused_variables))]
-    let dmabuf = match arg::<String>(args, "--dmabuf").as_deref() {
-        Some("on") => true,
-        Some("off") => false,
-        None | Some("auto") => encoder.wants_dmabuf(),
-        Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
-    };
+    let dmabuf = cfg.use_dmabuf();
     let make = |capture: Box<dyn CaptureSource>,
                 input: Box<dyn InputSink>,
                 clipboard: Box<dyn ClipboardBackend>,
@@ -107,18 +86,18 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         outputs: AtomicU32::new(outputs),
         width,
         height,
-        fps,
-        encoder,
-        event: arg::<String>(args, "--loop").is_none_or(|v| v != "tick"),
-        poll_ms: arg(args, "--poll-ms"),
-        min_interval_ms: arg(args, "--min-interval-ms").unwrap_or(16.0),
+        fps: cfg.fps,
+        encoder: cfg.encoder,
+        event: cfg.event,
+        poll_ms: cfg.poll_ms,
+        min_interval_ms: cfg.min_interval_ms,
         _session: Mutex::new(keep),
         resized: AtomicBool::new(false),
         raw: AtomicBool::new(false),
         bitrate: AtomicU32::new(DEFAULT_BITRATE_BPS),
         round: Mutex::new(()),
     };
-    match session.as_str() {
+    match cfg.session.as_str() {
         "synthetic" => {
             let d = rdsktp_capture::SyntheticDesktop::with_outputs(outputs, width, height);
             Ok(make(
@@ -137,13 +116,8 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                         tracing::warn!("audio unavailable: {e}");
                     }
                 }
-                let socket: String =
-                    arg(args, "--kwin-socket").unwrap_or_else(|| "rdsktp-0".into());
-                let programs = args
-                    .windows(2)
-                    .filter(|w| w[0] == "--session-app")
-                    .map(|w| w[1].split_whitespace().map(str::to_owned).collect())
-                    .collect();
+                let socket = cfg.kwin_socket.clone();
+                let programs = cfg.programs.clone();
                 let mut kwin =
                     rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
                         socket: socket.clone(),
@@ -188,37 +162,7 @@ fn send(w: &Writer, msg: &FromAgent) -> bool {
     write_msg(&mut *guard, msg).is_ok() && guard.flush().is_ok()
 }
 
-fn button(b: u8) -> Option<PointerButton> {
-    Some(match b {
-        0 => PointerButton::Left,
-        1 => PointerButton::Right,
-        2 => PointerButton::Middle,
-        3 => PointerButton::Back,
-        4 => PointerButton::Forward,
-        _ => return None,
-    })
-}
-
 /// Capture -> encode -> send, at a fixed rate. A keyframe is produced on connection and on request.
-/// A hold asked for by the server lasts at most this long without being renewed (a lost release must not freeze
-/// the video).
-const HOLD_MAX_MS: u64 = 1000;
-
-fn now_ms() -> u64 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_millis() as u64
-        + 1
-}
-
-/// `since` is the time of the hold (0 = not held).
-fn held(since: &AtomicU64) -> bool {
-    let t = since.load(Ordering::Relaxed);
-    t != 0 && now_ms().saturating_sub(t) < HOLD_MAX_MS
-}
-
 fn video_loop(
     d: Arc<Desktop>,
     w: Writer,
@@ -404,26 +348,6 @@ fn audio_loop(
     }
 }
 
-fn to_info(e: &FileEntry) -> FileInfo {
-    FileInfo {
-        path: e.path.clone(),
-        size: e.size,
-        is_dir: e.is_dir,
-        modified: e.modified,
-        read_only: e.read_only,
-    }
-}
-
-fn from_info(i: FileInfo) -> FileEntry {
-    FileEntry {
-        path: i.path,
-        size: i.size,
-        is_dir: i.is_dir,
-        modified: i.modified,
-        read_only: i.read_only,
-    }
-}
-
 fn serve(d: Arc<Desktop>, stream: UnixStream) {
     let writer: Writer = match stream.try_clone() {
         Ok(s) => Arc::new(Mutex::new(s)),
@@ -583,21 +507,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
                 let _ = d.input.lock().expect("input mutex").wheel(dx, dy);
             }
             ToAgent::SetLayout { outputs } => {
-                let layout = rdsktp_core::layout::Layout {
-                    outputs: outputs
-                        .iter()
-                        .enumerate()
-                        .map(|(i, r)| rdsktp_core::layout::OutputInfo {
-                            id: OutputId(i as u32),
-                            x: r.x,
-                            y: r.y,
-                            width: r.width,
-                            height: r.height,
-                            primary: i == 0,
-                        })
-                        .collect(),
-                    ..Default::default()
-                };
+                let layout = convert::layout_of(&outputs);
                 let _round = d.round.lock().expect("round mutex");
                 let result = d
                     .capture
@@ -647,7 +557,7 @@ fn serve(d: Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::Hold { output, held } => {
                 if let Some(h) = holds.get(output as usize) {
-                    h.store(if held { now_ms() } else { 0 }, Ordering::Relaxed);
+                    h.store(hold_stamp(held, now_ms()), Ordering::Relaxed);
                 }
             }
             ToAgent::RequestKeyframe { output } => {
@@ -872,4 +782,382 @@ fn main() -> anyhow::Result<()> {
         current = Some((handle_stream, std::thread::spawn(move || serve(d, stream))));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdsktp_agent_proto::{FileInfo, Rect};
+
+    /// A synthetic desktop served over a socket pair: the server side is the test.
+    struct Conn {
+        server: UnixStream,
+        agent: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Conn {
+        fn start(extra: &[&str]) -> Self {
+            let mut args: Vec<String> = [
+                "--session",
+                "synthetic",
+                "--width",
+                "320",
+                "--height",
+                "240",
+            ]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+            args.extend(extra.iter().map(|s| (*s).to_owned()));
+            let desktop = Arc::new(build_desktop(&args).expect("synthetic desktop"));
+            let (server, agent_side) = UnixStream::pair().unwrap();
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let agent = std::thread::spawn(move || serve(desktop, agent_side));
+            Self {
+                server,
+                agent: Some(agent),
+            }
+        }
+
+        fn say(&mut self, msg: ToAgent) {
+            write_msg(&mut self.server, &msg).unwrap();
+        }
+
+        fn next(&mut self) -> FromAgent {
+            read_msg::<_, FromAgent>(&mut self.server)
+                .expect("readable")
+                .expect("connection still open")
+        }
+
+        /// The first message the predicate picks, skipping the others (the video never stops).
+        fn until<T>(&mut self, mut pick: impl FnMut(&FromAgent) -> Option<T>) -> T {
+            for _ in 0..2000 {
+                let msg = self.next();
+                if let Some(v) = pick(&msg) {
+                    return v;
+                }
+            }
+            panic!("the expected message never came");
+        }
+
+        /// Closes the connection and waits for the agent to wind down.
+        fn finish(mut self) {
+            self.server.shutdown(std::net::Shutdown::Both).unwrap();
+            self.agent.take().unwrap().join().expect("serve returned");
+        }
+    }
+
+    fn rect(x: i32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn a_connection_starts_with_the_size_of_the_desktop() {
+        let mut c = Conn::start(&["--outputs", "2"]);
+        assert_eq!(
+            c.next(),
+            FromAgent::Hello {
+                outputs: 2,
+                width: 320,
+                height: 240
+            }
+        );
+        c.finish();
+    }
+
+    #[test]
+    fn video_starts_with_a_keyframe_on_every_output() {
+        let mut c = Conn::start(&["--outputs", "2", "--encoder", "openh264"]);
+        let mut seen = [false; 2];
+        c.until(|m| {
+            if let FromAgent::Video {
+                output, keyframe, ..
+            } = m
+            {
+                if *keyframe {
+                    seen[*output as usize] = true;
+                }
+            }
+            seen.iter().all(|s| *s).then_some(())
+        });
+        c.finish();
+    }
+
+    #[test]
+    fn asking_for_raw_pixels_switches_the_stream_and_back() {
+        let mut c = Conn::start(&["--encoder", "openh264"]);
+        c.say(ToAgent::SetPixels { raw: true });
+        let (w, h, len) = c.until(|m| match m {
+            FromAgent::VideoRaw {
+                width,
+                height,
+                data,
+                ..
+            } => Some((*width, *height, data.len())),
+            _ => None,
+        });
+        assert_eq!(len, (w * h * 4) as usize);
+        c.say(ToAgent::SetPixels { raw: false });
+        c.until(|m| matches!(m, FromAgent::Video { keyframe: true, .. }).then_some(()));
+        c.finish();
+    }
+
+    #[test]
+    fn a_resize_is_answered_and_a_refused_one_says_so() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::Resize {
+            width: 640,
+            height: 480,
+        });
+        assert_eq!(
+            c.until(|m| matches!(m, FromAgent::Resized { .. }).then(|| m.clone())),
+            FromAgent::Resized { ok: true }
+        );
+        c.finish();
+
+        // With two outputs a single size makes no sense: refused, and the connection goes on.
+        let mut c = Conn::start(&["--outputs", "2"]);
+        c.say(ToAgent::Resize {
+            width: 640,
+            height: 480,
+        });
+        assert_eq!(
+            c.until(|m| matches!(m, FromAgent::Resized { .. }).then(|| m.clone())),
+            FromAgent::Resized { ok: false }
+        );
+        c.finish();
+    }
+
+    #[test]
+    fn a_new_layout_changes_the_number_of_outputs_and_a_bad_one_changes_nothing() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::SetLayout {
+            outputs: vec![rect(0, 320, 240), rect(320, 320, 240)],
+        });
+        assert_eq!(
+            c.until(|m| matches!(m, FromAgent::LayoutApplied { .. }).then(|| m.clone())),
+            FromAgent::LayoutApplied {
+                ok: true,
+                outputs: 2
+            }
+        );
+        // The second output now delivers frames.
+        c.until(|m| matches!(m, FromAgent::Video { output: 1, .. }).then_some(()));
+        c.say(ToAgent::SetLayout { outputs: vec![] });
+        assert_eq!(
+            c.until(|m| matches!(m, FromAgent::LayoutApplied { .. }).then(|| m.clone())),
+            FromAgent::LayoutApplied {
+                ok: false,
+                outputs: 2
+            }
+        );
+        c.finish();
+    }
+
+    #[test]
+    fn the_clipboard_goes_to_the_desktop_and_comes_back() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::ClipboardSet("héllo".into()));
+        let text = c.until(|m| match m {
+            FromAgent::ClipboardText(t) => Some(t.clone()),
+            _ => None,
+        });
+        assert_eq!(text, "héllo");
+        c.say(ToAgent::ClipboardImageSet(vec![1, 2, 3]));
+        let png = c.until(|m| match m {
+            FromAgent::ClipboardImage(p) => Some(p.clone()),
+            _ => None,
+        });
+        assert_eq!(png, [1, 2, 3]);
+        c.finish();
+    }
+
+    #[test]
+    fn a_file_selection_of_the_server_is_announced_to_the_desktop_without_failing() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::FilesSet {
+            list_id: 3,
+            files: vec![FileInfo {
+                path: "a.txt".into(),
+                size: 4,
+                is_dir: false,
+                modified: 0,
+                read_only: false,
+            }],
+        });
+        // A read of a list the agent does not serve is answered negatively, not ignored.
+        c.say(ToAgent::FileRead(FileRange {
+            req_id: 9,
+            list_id: 99,
+            index: 0,
+            offset: 0,
+            len: 4,
+        }));
+        let (ok, data) = c.until(|m| match m {
+            FromAgent::FileData {
+                req_id: 9,
+                ok,
+                data,
+            } => Some((*ok, data.clone())),
+            _ => None,
+        });
+        assert!(!ok && data.is_empty());
+        c.finish();
+    }
+
+    #[test]
+    fn audio_flows_after_open_and_stops_after_close() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::AudioOpen {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+        let len = c.until(|m| match m {
+            FromAgent::Audio(b) => Some(b.len()),
+            _ => None,
+        });
+        assert_eq!(
+            len,
+            AudioParams {
+                sample_rate: 44_100,
+                channels: 2
+            }
+            .bytes_for_ms(AUDIO_PACKET_MS)
+        );
+        c.say(ToAgent::AudioClose);
+        c.finish();
+    }
+
+    #[test]
+    fn without_audio_an_open_request_is_ignored() {
+        let mut c = Conn::start(&["--audio", "off"]);
+        c.say(ToAgent::AudioOpen {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+        c.say(ToAgent::RequestKeyframe { output: 0 });
+        // The keyframe request is still served, and nothing audio comes.
+        for _ in 0..50 {
+            assert!(!matches!(c.next(), FromAgent::Audio(_)));
+        }
+        c.finish();
+    }
+
+    #[test]
+    fn input_and_unknown_requests_do_not_disturb_the_connection() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::Key {
+            scancode: 0x1E,
+            pressed: true,
+        });
+        c.say(ToAgent::PointerMove { x: 5, y: 6 });
+        c.say(ToAgent::PointerButton {
+            button: 9,
+            pressed: true,
+        });
+        c.say(ToAgent::PointerButton {
+            button: 0,
+            pressed: false,
+        });
+        c.say(ToAgent::Wheel { dx: 0, dy: -120 });
+        c.say(ToAgent::Hold {
+            output: 0,
+            held: true,
+        });
+        // Out-of-range outputs are ignored rather than indexing out of bounds.
+        c.say(ToAgent::Hold {
+            output: 99,
+            held: true,
+        });
+        c.say(ToAgent::RequestKeyframe { output: 99 });
+        c.say(ToAgent::SetBitrate {
+            bitrate_bps: 2_000_000,
+        });
+        c.say(ToAgent::Hold {
+            output: 0,
+            held: false,
+        });
+        c.say(ToAgent::RequestKeyframe { output: 0 });
+        c.until(|m| matches!(m, FromAgent::Video { keyframe: true, .. }).then_some(()));
+        c.finish();
+    }
+
+    #[test]
+    fn drive_and_printer_messages_for_nothing_registered_are_harmless() {
+        let mut c = Conn::start(&[]);
+        c.say(ToAgent::DriveRemoved { drive_id: 5 });
+        c.say(ToAgent::PrinterRemoved { printer_id: 5 });
+        c.say(ToAgent::RequestKeyframe { output: 0 });
+        c.until(|m| matches!(m, FromAgent::Video { .. }).then_some(()));
+        c.finish();
+    }
+
+    #[test]
+    fn a_new_server_replaces_the_previous_one_on_the_same_desktop() {
+        let args: Vec<String> = [
+            "--session",
+            "synthetic",
+            "--width",
+            "320",
+            "--height",
+            "240",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let desktop = Arc::new(build_desktop(&args).unwrap());
+        for _ in 0..2 {
+            let (mut server, agent_side) = UnixStream::pair().unwrap();
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let d = desktop.clone();
+            let handle = std::thread::spawn(move || serve(d, agent_side));
+            // Whatever the previous server asked for, this one starts from the H.264 stream.
+            assert!(matches!(
+                read_msg::<_, FromAgent>(&mut server).unwrap(),
+                Some(FromAgent::Hello { .. })
+            ));
+            write_msg(&mut server, &ToAgent::SetPixels { raw: true }).unwrap();
+            server.shutdown(std::net::Shutdown::Both).unwrap();
+            handle.join().unwrap();
+            assert!(desktop.raw.load(Ordering::SeqCst));
+        }
+        let (mut server, agent_side) = UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let d = desktop.clone();
+        let handle = std::thread::spawn(move || serve(d, agent_side));
+        let _ = read_msg::<_, FromAgent>(&mut server).unwrap();
+        assert!(!desktop.raw.load(Ordering::SeqCst));
+        server.shutdown(std::net::Shutdown::Both).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn a_broken_stream_ends_the_connection() {
+        let mut c = Conn::start(&[]);
+        use std::io::Write as _;
+        // A frame announcing an absurd length.
+        c.server.write_all(&[0xFF; 16]).unwrap();
+        c.until(|m| matches!(m, FromAgent::Hello { .. }).then_some(()));
+        c.agent.take().unwrap().join().expect("serve returned");
+    }
+
+    #[test]
+    fn unknown_sessions_and_missing_kwin_are_refused_at_startup() {
+        let err = build_desktop(&["--session".into(), "x11".into()])
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("unknown --session: x11"));
+        assert!(build_desktop(&["--outputs".into(), "0".into()]).is_err());
+    }
 }
