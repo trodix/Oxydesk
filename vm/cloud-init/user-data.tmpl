@@ -11,7 +11,7 @@ users:
 ssh_pwauth: false
 disable_root: true
 write_files:
-  - path: /usr/local/sbin/provision-rdsktp.sh
+  - path: /usr/local/sbin/provision-oxydesk.sh
     permissions: "0755"
     content: |
       #!/bin/bash
@@ -28,6 +28,6 @@ write_files:
         apt-get install -y --no-install-recommends "$p" || echo "optional missing: $p"
       done
       loginctl enable-linger @VM_USER@ || exit 1
-      touch /var/lib/rdsktp-provisioned
+      touch /var/lib/oxydesk-provisioned
 runcmd:
-  - [ bash, -c, "/usr/local/sbin/provision-rdsktp.sh > /var/log/provision-rdsktp.log 2>&1" ]
+  - [ bash, -c, "/usr/local/sbin/provision-oxydesk.sh > /var/log/provision-oxydesk.log 2>&1" ]

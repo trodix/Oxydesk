@@ -1,4 +1,4 @@
-# RustyDesktop: working rules
+# Oxydesk: working rules
 
 ## Language
 
@@ -17,7 +17,7 @@ fits. Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `
 ## Architecture
 
 Hexagonal (see `docs/decisions/001-hexagonal-architecture.md`): `crates/core` holds the domain and the ports; the other
-crates are adapters that depend only on `core` (checked by `ci/check-deps.sh`); `rdsktp` and the `bins/*` assemble them.
+crates are adapters that depend only on `core` (checked by `ci/check-deps.sh`); `oxydesk` and the `bins/*` assemble them.
 Logic that can be decided without I/O belongs in pure functions or in `core`, so that it can be tested without a compositor,
 a socket or a VM.
 
@@ -50,4 +50,4 @@ synthetic desktop (`--session synthetic`).
 
 Zones that `cargo test` cannot reach and that the VM scenarios (mstsc, FreeRDP, login mode) cover instead: PAM
 (`bins/authd/src/pam.rs`), the Wayland clipboard, PulseAudio capture, DMA-BUF import, the real KWin start-up
-(`crates/session`, `--features kwin`), `bins/rdsktp-testapp`, and the `main` functions.
+(`crates/session`, `--features kwin`), `bins/oxydesk-testapp`, and the `main` functions.

@@ -20,10 +20,10 @@ Status: accepted. Measured on the Debian 13 VM (KWin 6.3.6, xdg-desktop-portal-k
 - **Capture**: `zkde_screencast.stream_output` → PipeWire node → PipeWire consumer (`pipewire` crate). No portal (no user prompt).
 - **Input**: `org_kde_kwin_fake_input` (same authorisation mechanism, no D-Bus/libei dependency). libei remains the alternative
   if fake_input goes away (KDE calls the interface an implementation detail).
-- The package installs two desktop files, `/usr/share/applications/rdsktp.desktop` (`Exec=/usr/bin/rdsktp`, direct KWin
-  mode) and `/usr/share/applications/rdsktp-agent.desktop` (`Exec=/usr/bin/rdsktp-agent`, login mode, ADR 008), both with these
+- The package installs two desktop files, `/usr/share/applications/oxydesk.desktop` (`Exec=/usr/bin/oxydesk`, direct KWin
+  mode) and `/usr/share/applications/oxydesk-agent.desktop` (`Exec=/usr/bin/oxydesk-agent`, login mode, ADR 008), both with these
   interfaces (`dist/`).
-- Separate adapters (`rdsktp-capture`, `rdsktp-input`), each opening its own Wayland connection.
+- Separate adapters (`oxydesk-capture`, `oxydesk-input`), each opening its own Wayland connection.
 - Build prerequisites: `libpipewire-0.3-dev`, `libclang` (bindgen); Fedora: `pipewire-devel clang-devel`.
 
 ## Addendum: KWin needs OpenGL and a working DRM render node

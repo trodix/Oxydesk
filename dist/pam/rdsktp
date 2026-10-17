@@ -1,3 +1,0 @@
-# Authentication of remote users by rdsktp-authd.
-auth     include  common-auth
-account  include  common-account

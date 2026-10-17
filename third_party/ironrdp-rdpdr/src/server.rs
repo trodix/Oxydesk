@@ -214,7 +214,7 @@ pub trait RdpdrServerBackend: AsAny + fmt::Debug + Send {
     /// The client's computer name arrived during the initialization handshake.
     fn on_client_name(&mut self, computer_name: &str);
 
-    /// rdsktp patch: a drive I/O request was just sent under `completion_id`; the matching
+    /// oxydesk patch: a drive I/O request was just sent under `completion_id`; the matching
     /// completion callback carries the same id in its `DeviceIoResponse`. `tag` is the one given to
     /// [`RdpdrServer::set_next_tag`] before the request, to tell which caller it belongs to.
     fn on_request_sent(&mut self, _completion_id: u32, _tag: Option<u64>) {}
@@ -497,7 +497,7 @@ pub struct RdpdrServer {
     /// `preferred_dos_name()`, which is everything a registry entry needs.
     devices: HashMap<u32, DeviceAnnounceHeader>,
     pending_irps: IrpTracker,
-    /// rdsktp patch: tag of the next request, handed to the backend with its completion id.
+    /// oxydesk patch: tag of the next request, handed to the backend with its completion id.
     next_tag: Option<u64>,
     backend: Box<dyn RdpdrServerBackend>,
 }
@@ -558,7 +558,7 @@ impl RdpdrServer {
         }
     }
 
-    /// rdsktp patch: sends the request described by `message` (what `ServerEvent::Rdpdr` carries).
+    /// oxydesk patch: sends the request described by `message` (what `ServerEvent::Rdpdr` carries).
     pub fn send_message(&mut self, message: RdpdrServerMessage) -> PduResult<Vec<SvcMessage>> {
         match message {
             RdpdrServerMessage::Create {
@@ -672,7 +672,7 @@ impl RdpdrServer {
         }
     }
 
-    /// rdsktp patch: tags the next `drive_*` request (see [`RdpdrServerBackend::on_request_sent`]).
+    /// oxydesk patch: tags the next `drive_*` request (see [`RdpdrServerBackend::on_request_sent`]).
     pub fn set_next_tag(&mut self, tag: Option<u64>) {
         self.next_tag = tag;
     }
@@ -699,7 +699,7 @@ impl RdpdrServer {
             capabilities: vec![
                 CapabilityMessage::new_general(0),
                 CapabilityMessage::new_drive(),
-                // rdsktp patch: printers are announced only if the server supports them.
+                // oxydesk patch: printers are announced only if the server supports them.
                 CapabilityMessage::new_printer(),
             ],
             kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
@@ -735,7 +735,7 @@ impl RdpdrServer {
             "received ClientCoreCapabilityResponse"
         );
         self.state = RdpdrServerState::Active;
-        // rdsktp patch: the drives of a Windows client are announced once the user is logged on
+        // oxydesk patch: the drives of a Windows client are announced once the user is logged on
         // (PAKID_CORE_USER_LOGGEDON); the session of an RDP server always is.
         Ok(vec![SvcMessage::from(RdpdrPdu::UserLoggedon)])
     }

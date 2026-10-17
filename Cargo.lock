@@ -247,10 +247,10 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "bench"
 version = "0.1.0"
 dependencies = [
- "rdsktp-capture",
- "rdsktp-core",
- "rdsktp-encode",
- "rdsktp-session",
+ "oxydesk-capture",
+ "oxydesk-core",
+ "oxydesk-encode",
+ "oxydesk-session",
 ]
 
 [[package]]
@@ -2232,6 +2232,231 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxydesk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "oxydesk-audio",
+ "oxydesk-capture",
+ "oxydesk-clipboard",
+ "oxydesk-core",
+ "oxydesk-drivefs",
+ "oxydesk-encode",
+ "oxydesk-input",
+ "oxydesk-rdp",
+ "oxydesk-remote",
+ "oxydesk-scaling",
+ "oxydesk-session",
+ "oxydesk-spool",
+ "rcgen",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "oxydesk-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "oxydesk-agent-proto",
+ "oxydesk-audio",
+ "oxydesk-capture",
+ "oxydesk-clipboard",
+ "oxydesk-core",
+ "oxydesk-drivefs",
+ "oxydesk-encode",
+ "oxydesk-input",
+ "oxydesk-remote",
+ "oxydesk-scaling",
+ "oxydesk-session",
+ "oxydesk-spool",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "oxydesk-agent-proto"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "oxydesk-audio"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-core",
+]
+
+[[package]]
+name = "oxydesk-authd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "libloading",
+ "oxydesk-authd-proto",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "oxydesk-authd-proto"
+version = "0.1.0"
+dependencies = [
+ "nix 0.30.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "oxydesk-capture"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-core",
+ "pipewire",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "oxydesk-clipboard"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "oxydesk-core",
+ "tracing",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "oxydesk-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "oxydesk-cups-backend"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "oxydesk-spool",
+]
+
+[[package]]
+name = "oxydesk-drivefs"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "libc",
+ "oxydesk-core",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-encode"
+version = "0.1.0"
+dependencies = [
+ "cros-libva",
+ "libc",
+ "openh264",
+ "openh264-sys2",
+ "oxydesk-core",
+]
+
+[[package]]
+name = "oxydesk-input"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-core",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "oxydesk-rdp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hmac",
+ "ironrdp-cliprdr",
+ "ironrdp-core",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-pdu",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpsnd",
+ "ironrdp-server",
+ "ironrdp-svc",
+ "md-5 0.11.0",
+ "oxydesk-core",
+ "png",
+ "rustls",
+ "socket2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-remote"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-agent-proto",
+ "oxydesk-authd-proto",
+ "oxydesk-core",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-scaling"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-core",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-session"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-core",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-spool"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "oxydesk-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "oxydesk-testapp"
+version = "0.1.0"
+dependencies = [
+ "oxydesk-audio",
+ "oxydesk-capture",
+ "oxydesk-clipboard",
+ "oxydesk-core",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "p256"
 version = "0.14.0-rc.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2800,239 +3025,14 @@ dependencies = [
  "ironrdp-session",
  "ironrdp-svc",
  "openh264",
+ "oxydesk-core",
+ "oxydesk-rdp",
  "png",
- "rdsktp-core",
- "rdsktp-rdp",
  "rustls",
  "serde",
  "serde_json",
  "tracing",
  "x509-cert",
-]
-
-[[package]]
-name = "rdsktp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rcgen",
- "rdsktp-audio",
- "rdsktp-capture",
- "rdsktp-clipboard",
- "rdsktp-core",
- "rdsktp-drivefs",
- "rdsktp-encode",
- "rdsktp-input",
- "rdsktp-rdp",
- "rdsktp-remote",
- "rdsktp-scaling",
- "rdsktp-session",
- "rdsktp-spool",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rdsktp-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "rdsktp-agent-proto",
- "rdsktp-audio",
- "rdsktp-capture",
- "rdsktp-clipboard",
- "rdsktp-core",
- "rdsktp-drivefs",
- "rdsktp-encode",
- "rdsktp-input",
- "rdsktp-remote",
- "rdsktp-scaling",
- "rdsktp-session",
- "rdsktp-spool",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rdsktp-agent-proto"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "rdsktp-audio"
-version = "0.1.0"
-dependencies = [
- "rdsktp-core",
-]
-
-[[package]]
-name = "rdsktp-authd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "libloading",
- "rdsktp-authd-proto",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rdsktp-authd-proto"
-version = "0.1.0"
-dependencies = [
- "nix 0.30.1",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "rdsktp-capture"
-version = "0.1.0"
-dependencies = [
- "pipewire",
- "rdsktp-core",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
-]
-
-[[package]]
-name = "rdsktp-clipboard"
-version = "0.1.0"
-dependencies = [
- "fuser",
- "rdsktp-core",
- "tracing",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
-]
-
-[[package]]
-name = "rdsktp-core"
-version = "0.1.0"
-dependencies = [
- "libc",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "rdsktp-cups-backend"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rdsktp-spool",
-]
-
-[[package]]
-name = "rdsktp-drivefs"
-version = "0.1.0"
-dependencies = [
- "fuser",
- "libc",
- "rdsktp-core",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-encode"
-version = "0.1.0"
-dependencies = [
- "cros-libva",
- "libc",
- "openh264",
- "openh264-sys2",
- "rdsktp-core",
-]
-
-[[package]]
-name = "rdsktp-input"
-version = "0.1.0"
-dependencies = [
- "rdsktp-core",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
-]
-
-[[package]]
-name = "rdsktp-rdp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "hmac",
- "ironrdp-cliprdr",
- "ironrdp-core",
- "ironrdp-displaycontrol",
- "ironrdp-dvc",
- "ironrdp-egfx",
- "ironrdp-pdu",
- "ironrdp-rdpdr",
- "ironrdp-rdpsnd",
- "ironrdp-server",
- "ironrdp-svc",
- "md-5 0.11.0",
- "png",
- "rdsktp-core",
- "rustls",
- "socket2",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-remote"
-version = "0.1.0"
-dependencies = [
- "rdsktp-agent-proto",
- "rdsktp-authd-proto",
- "rdsktp-core",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-scaling"
-version = "0.1.0"
-dependencies = [
- "rdsktp-core",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-session"
-version = "0.1.0"
-dependencies = [
- "rdsktp-core",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-spool"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rdsktp-core",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "rdsktp-testapp"
-version = "0.1.0"
-dependencies = [
- "rdsktp-audio",
- "rdsktp-capture",
- "rdsktp-clipboard",
- "rdsktp-core",
- "wayland-client",
- "wayland-protocols",
 ]
 
 [[package]]

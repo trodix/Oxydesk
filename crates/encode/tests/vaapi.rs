@@ -6,10 +6,10 @@
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use openh264::OpenH264API;
-use rdsktp_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
-use rdsktp_core::layout::OutputId;
-use rdsktp_core::ports::FrameEncoder;
-use rdsktp_encode::{VaapiConfig, VaapiEncoder};
+use oxydesk_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
+use oxydesk_core::layout::OutputId;
+use oxydesk_core::ports::FrameEncoder;
+use oxydesk_encode::{VaapiConfig, VaapiEncoder};
 
 const W: u32 = 1920;
 const H: u32 = 1080;
@@ -44,7 +44,7 @@ fn frame(n: u32) -> Frame {
 }
 
 fn decoder() -> Option<Decoder> {
-    let path = std::env::var("RDSKTP_OPENH264_LIB").ok().or_else(|| {
+    let path = std::env::var("OXYDESK_OPENH264_LIB").ok().or_else(|| {
         [
             "/usr/lib64/libopenh264.so.8",
             "/usr/lib/x86_64-linux-gnu/libopenh264.so.8",
@@ -98,7 +98,7 @@ fn to_dmabuf(f: &Frame) -> Option<Frame> {
     let size = px.len().div_ceil(4096) * 4096;
     // SAFETY: plain syscalls on descriptors created here; every return value is checked.
     unsafe {
-        let mem = libc::memfd_create(c"rdsktp-test".as_ptr(), libc::MFD_ALLOW_SEALING);
+        let mem = libc::memfd_create(c"oxydesk-test".as_ptr(), libc::MFD_ALLOW_SEALING);
         if mem < 0 || libc::ftruncate(mem, size as i64) != 0 {
             return None;
         }

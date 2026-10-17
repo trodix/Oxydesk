@@ -1,8 +1,8 @@
-//! Protocol between `rdsktp` (unprivileged) and `authd` (root: PAM + session startup).
+//! Protocol between `oxydesk` (unprivileged) and `authd` (root: PAM + session startup).
 //!
 //! One request = one Unix connection. Frame: `[length: u32 big-endian][JSON]`. On success,
 //! the `Granted` response carries, through `SCM_RIGHTS`, a descriptor already connected to the user's
-//! session agent: no user socket path is exposed to `rdsktp`.
+//! session agent: no user socket path is exposed to `oxydesk`.
 
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};

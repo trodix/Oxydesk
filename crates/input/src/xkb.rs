@@ -1,12 +1,12 @@
 //! Keyboard layout of the KWin session: `kxkbrc` (group `Layout`) written with `kwriteconfig6`, then KWin
 //! is told to reload it (signal `reloadConfig` of `org.kde.keyboard`, the one sent by the keyboard KCM).
 //!
-//! The layout belongs to the session user (service or login user). `RDSKTP_KEYBOARD_LAYOUT=off` disables
+//! The layout belongs to the session user (service or login user). `OXYDESK_KEYBOARD_LAYOUT=off` disables
 //! the adoption of the client's layout, for a user who shares the D-Bus session of a real desktop.
 
 use std::process::{Command, Stdio};
 
-use rdsktp_core::{InputError, XkbLayout};
+use oxydesk_core::{InputError, XkbLayout};
 
 /// `kwriteconfig6` arguments (one command per key) for a single-layout configuration.
 pub fn config_commands(layout: &XkbLayout) -> Vec<Vec<String>> {
@@ -26,7 +26,7 @@ pub fn config_commands(layout: &XkbLayout) -> Vec<Vec<String>> {
 }
 
 pub fn disabled() -> bool {
-    std::env::var("RDSKTP_KEYBOARD_LAYOUT").is_ok_and(|v| v == "off")
+    std::env::var("OXYDESK_KEYBOARD_LAYOUT").is_ok_and(|v| v == "off")
 }
 
 pub fn apply(layout: &XkbLayout) -> Result<(), InputError> {

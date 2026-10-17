@@ -83,14 +83,14 @@ pub trait Session {
         Err("image clipboard not supported by this backend".into())
     }
     /// Puts files on the client's clipboard (their contents are read by range when the server pastes).
-    fn set_clipboard_files(&mut self, _list: rdsktp_core::FileList) -> Result<(), String> {
+    fn set_clipboard_files(&mut self, _list: oxydesk_core::FileList) -> Result<(), String> {
         Err("file clipboard not supported by this backend".into())
     }
     /// Files received from the server's clipboard.
     fn next_clipboard_files(
         &mut self,
         _timeout: Duration,
-    ) -> Result<Option<rdsktp_core::FileList>, String> {
+    ) -> Result<Option<oxydesk_core::FileList>, String> {
         Err("file clipboard not supported by this backend".into())
     }
     /// Next audio packet (`None` if nothing before the timeout).

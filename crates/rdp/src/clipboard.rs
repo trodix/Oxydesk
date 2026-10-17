@@ -12,7 +12,7 @@ use ironrdp_cliprdr::pdu::{
     FileContentsRequest, FileContentsResponse, FileDescriptor, FormatDataRequest,
     FormatDataResponse, LockDataId,
 };
-use rdsktp_core::files::FileList;
+use oxydesk_core::files::FileList;
 
 use crate::clipfiles::{self, Fetcher, RemoteSource, Server};
 
@@ -319,13 +319,13 @@ mod tests {
 
     struct NoSource;
 
-    impl rdsktp_core::files::FileSource for NoSource {
+    impl oxydesk_core::files::FileSource for NoSource {
         fn read(
             &self,
             _: u32,
             _: u64,
             _: u32,
-        ) -> Result<Vec<u8>, rdsktp_core::error::ClipboardError> {
+        ) -> Result<Vec<u8>, oxydesk_core::error::ClipboardError> {
             Ok(Vec::new())
         }
     }

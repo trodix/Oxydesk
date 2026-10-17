@@ -6,8 +6,8 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rdsktp_core::error::ClipboardError;
-use rdsktp_core::files::{FileEntry, FileList, FileSource, MAX_ENTRIES};
+use oxydesk_core::error::ClipboardError;
+use oxydesk_core::files::{FileEntry, FileList, FileSource, MAX_ENTRIES};
 
 /// Largest range served by one `read` call.
 const MAX_READ: u32 = 8 * 1024 * 1024;
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn walks_directories_and_reads_ranges() {
-        let dir = std::env::temp_dir().join(format!("rdsktp-lf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oxydesk-lf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("d/sub")).unwrap();
         std::fs::write(dir.join("d/b.txt"), b"0123456789").unwrap();

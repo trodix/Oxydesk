@@ -6,7 +6,7 @@
 
 <!-- Delete this section if the PR is not a bug fix. -->
 
-- **rdsktp version / commit**: <!-- `rdsktp --version`, `git rev-parse --short HEAD`, or the .deb version -->
+- **oxydesk version / commit**: <!-- `oxydesk --version`, `git rev-parse --short HEAD`, or the .deb version -->
 - **Server OS and KWin version**: <!-- e.g. Debian 13, KWin 6.3.6 (`kwin_wayland --version`) -->
 - **Session mode**: <!-- `--login` (PAM + agent), `--session kwin`, `--session synthetic` / `--test-mode` -->
 - **Client and version**: <!-- mstsc (Windows build), xfreerdp 3.x, Remmina... -->
@@ -15,7 +15,7 @@
   1.
   2.
 - **Expected / actual**:
-- **Logs**: <!-- `journalctl -u rdsktp -u rdsktp-authd`, agent log, client log (trim secrets) -->
+- **Logs**: <!-- `journalctl -u oxydesk -u oxydesk-authd`, agent log, client log (trim secrets) -->
 
 ## Tests
 

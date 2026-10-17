@@ -21,7 +21,7 @@ pub struct PrintersCheck {
 }
 
 fn payload(kib: u64) -> Vec<u8> {
-    let mut out = b"%!PS-RDSKTP bonjour de la session \xc3\xa9\xc3\xa0\n".to_vec();
+    let mut out = b"%!PS-OXYDESK bonjour de la session \xc3\xa9\xc3\xa0\n".to_vec();
     out.extend((0..kib * 1024).map(|i| (i.wrapping_mul(31).wrapping_add(7) % 251) as u8));
     out
 }

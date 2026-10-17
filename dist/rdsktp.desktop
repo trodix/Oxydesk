@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=RustyDesktop (rdsktp)
-Comment=RDP server: screen capture and input injection
-Exec=/usr/bin/rdsktp
-NoDisplay=true
-# Privileged Wayland interfaces that KWin grants to /usr/bin/rdsktp (ADR 004).
-X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input

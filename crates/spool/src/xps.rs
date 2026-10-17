@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rdsktp_core::error::PrintError;
-use rdsktp_core::XpsConverter;
+use oxydesk_core::error::PrintError;
+use oxydesk_core::XpsConverter;
 
 /// Longest conversion: a job whose conversion takes longer is dropped (nothing was sent to the client).
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(120);

@@ -1,5 +1,5 @@
-//! `rdsktp-authd`: the only privileged component. Authenticates through PAM, starts the user's session agent
-//! (`rdsktp-agent@<user>.service`) and hands `rdsktp` a descriptor connected to that agent.
+//! `oxydesk-authd`: the only privileged component. Authenticates through PAM, starts the user's session agent
+//! (`oxydesk-agent@<user>.service`) and hands `oxydesk` a descriptor connected to that agent.
 //! No secret in logs or in argv.
 
 mod pam;
@@ -13,11 +13,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use oxydesk_authd_proto::{read_request, send_response, valid_username, Request, Response};
 use pam::{Pam, PamOutcome};
-use rdsktp_authd_proto::{read_request, send_response, valid_username, Request, Response};
 
-const DEFAULT_SOCKET: &str = "/run/rdsktp/authd.sock";
-const RUNTIME_DIR: &str = "/run/rdsktp";
+const DEFAULT_SOCKET: &str = "/run/oxydesk/authd.sock";
+const RUNTIME_DIR: &str = "/run/oxydesk";
 
 struct Config {
     socket: PathBuf,
@@ -63,7 +63,7 @@ fn lookup_uid(name: &str) -> Option<u32> {
 }
 
 fn agent_socket(uid: u32) -> PathBuf {
-    PathBuf::from(format!("/run/user/{uid}/rdsktp-agent.sock"))
+    PathBuf::from(format!("/run/user/{uid}/oxydesk-agent.sock"))
 }
 
 /// Where the number of outputs wanted for the next start of a user's agent is left; the unit reads it
@@ -76,7 +76,7 @@ fn outputs_file(runtime_dir: &Path, username: &str) -> PathBuf {
 fn outputs_env(outputs: u32) -> Option<String> {
     (1..=16)
         .contains(&outputs)
-        .then(|| format!("RDSKTP_AGENT_OUTPUTS=--outputs {outputs}\n"))
+        .then(|| format!("OXYDESK_AGENT_OUTPUTS=--outputs {outputs}\n"))
 }
 
 /// Records the outputs of a session that is about to be created (an agent that already runs keeps its own:
@@ -107,7 +107,7 @@ fn want_outputs(unit: &str, username: &str, outputs: u32) {
 
 /// Starts the agent (idempotent) and waits for its socket to accept connections.
 fn connect_agent(username: &str, uid: u32, outputs: u32) -> anyhow::Result<UnixStream> {
-    let unit = format!("rdsktp-agent@{username}.service");
+    let unit = format!("oxydesk-agent@{username}.service");
     want_outputs(&unit, username, outputs);
     let status = Command::new("systemctl")
         .args(["start", "--no-block", &unit])
@@ -137,7 +137,7 @@ fn agent_running(username: &str) -> bool {
         .args([
             "is-active",
             "--quiet",
-            &format!("rdsktp-agent@{username}.service"),
+            &format!("oxydesk-agent@{username}.service"),
         ])
         .status()
         .is_ok_and(|s| s.success())
@@ -243,9 +243,9 @@ fn bind(path: &Path) -> anyhow::Result<UnixListener> {
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
-    // Access restricted to root and the `rdsktp` group (owner of the `rdsktp` service).
+    // Access restricted to root and the `oxydesk` group (owner of the `oxydesk` service).
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
-    if let Some(gid) = lookup_gid("rdsktp") {
+    if let Some(gid) = lookup_gid("oxydesk") {
         let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
         // SAFETY: chemin valide.
         unsafe { libc::chown(c.as_ptr(), 0, gid) };
@@ -282,7 +282,7 @@ fn main() -> anyhow::Result<()> {
         socket: arg(&args, "--socket")
             .unwrap_or_else(|| DEFAULT_SOCKET.into())
             .into(),
-        pam_service: arg(&args, "--pam-service").unwrap_or_else(|| "rdsktp".into()),
+        pam_service: arg(&args, "--pam-service").unwrap_or_else(|| "oxydesk".into()),
         min_uid: arg(&args, "--min-uid")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000),
@@ -290,7 +290,7 @@ fn main() -> anyhow::Result<()> {
     });
     anyhow::ensure!(
         unsafe { libc::geteuid() } == 0,
-        "rdsktp-authd must run as root"
+        "oxydesk-authd must run as root"
     );
     let pam = Arc::new(Pam::load(&cfg.pam_service)?);
     let listener = bind(&cfg.socket)?;
@@ -328,7 +328,7 @@ mod outputs_tests {
     fn the_wish_is_an_option_of_the_agent_or_nothing() {
         assert_eq!(
             outputs_env(2).as_deref(),
-            Some("RDSKTP_AGENT_OUTPUTS=--outputs 2\n")
+            Some("OXYDESK_AGENT_OUTPUTS=--outputs 2\n")
         );
         assert_eq!(outputs_env(0), None);
         assert_eq!(outputs_env(17), None);
@@ -337,8 +337,8 @@ mod outputs_tests {
     #[test]
     fn the_file_is_per_user_in_the_runtime_directory() {
         assert_eq!(
-            outputs_file(Path::new("/run/rdsktp"), "alice"),
-            PathBuf::from("/run/rdsktp/agent-alice.env")
+            outputs_file(Path::new("/run/oxydesk"), "alice"),
+            PathBuf::from("/run/oxydesk/agent-alice.env")
         );
     }
 
@@ -360,21 +360,21 @@ mod outputs_tests {
     fn the_agent_socket_is_in_the_runtime_directory_of_the_user() {
         assert_eq!(
             agent_socket(1000),
-            PathBuf::from("/run/user/1000/rdsktp-agent.sock")
+            PathBuf::from("/run/user/1000/oxydesk-agent.sock")
         );
     }
 
     #[test]
     fn accounts_are_looked_up_in_the_system_database() {
         assert_eq!(lookup_uid("root"), Some(0));
-        assert_eq!(lookup_uid("no-such-account-rdsktp"), None);
+        assert_eq!(lookup_uid("no-such-account-oxydesk"), None);
         assert_eq!(lookup_uid("bad\0name"), None);
         assert_eq!(lookup_gid("root"), Some(0));
-        assert_eq!(lookup_gid("no-such-group-rdsktp"), None);
+        assert_eq!(lookup_gid("no-such-group-oxydesk"), None);
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rdsktp-authd-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oxydesk-authd-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -404,7 +404,7 @@ mod outputs_tests {
     fn config(min_uid: u32, known: &[&str]) -> Config {
         Config {
             socket: PathBuf::new(),
-            pam_service: "rdsktp".into(),
+            pam_service: "oxydesk".into(),
             min_uid,
             authenticated: Mutex::new(known.iter().map(|s| (*s).to_owned()).collect()),
         }
@@ -413,7 +413,7 @@ mod outputs_tests {
     fn denied(cfg: &Config, username: &str) -> bool {
         let (server, mut client) = UnixStream::pair().unwrap();
         attach(server, cfg, username).unwrap();
-        let (resp, fd) = rdsktp_authd_proto::recv_response(&mut client).unwrap();
+        let (resp, fd) = oxydesk_authd_proto::recv_response(&mut client).unwrap();
         assert!(fd.is_none(), "no descriptor with a refusal");
         resp == Response::Denied
     }
@@ -428,8 +428,8 @@ mod outputs_tests {
         // Syntactically invalid or unknown names never reach the lookup.
         assert!(denied(&config(0, &["../etc"]), "../etc"));
         assert!(denied(
-            &config(0, &["no-such-account-rdsktp"]),
-            "no-such-account-rdsktp"
+            &config(0, &["no-such-account-oxydesk"]),
+            "no-such-account-oxydesk"
         ));
     }
 }

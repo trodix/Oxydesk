@@ -16,27 +16,27 @@ VM="bash vm/vm.sh"
 (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null || { echo "no server on 127.0.0.1:$PORT: start the Debian VM first (see the header)" >&2; exit 2; }
 rm -rf "$ART"; mkdir -p "$ART"
 # A session that exists keeps its outputs: the agent must start with the monitors of this client.
-$VM ssh "sudo systemctl stop rdsktp-agent@$VUSER; sudo systemctl restart rdsktp" >/dev/null 2>&1
+$VM ssh "sudo systemctl stop oxydesk-agent@$VUSER; sudo systemctl restart oxydesk" >/dev/null 2>&1
 WIN_MONITORS=2 WIN_MONITORS_LEFT="$LEFT" WIN_EXPECT_RESIZE=0 WIN_LAYOUT_CHECK=0 WIN_EXPECT_TONE=0 \
   bash vm/win11.sh test "10.0.2.2:$PORT" "$VUSER" 2>&1 | tee "$ART/win11.log"
 rc=${PIPESTATUS[0]}
 # The panel of the shell goes to the primary output of the compositor, which is the first output of the layout: the
 # client's primary monitor, at (0,0) in the client's own space (1920 pixels from the left of the desktop when the other
 # monitor is at its left).
-listing="$($VM ssh "sudo -u $VUSER env XDG_RUNTIME_DIR=/run/user/\$(id -u $VUSER) WAYLAND_DISPLAY=rdsktp-0 kscreen-doctor -o" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
+listing="$($VM ssh "sudo -u $VUSER env XDG_RUNTIME_DIR=/run/user/\$(id -u $VUSER) WAYLAND_DISPLAY=oxydesk-0 kscreen-doctor -o" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
 echo "$listing" > "$ART/kscreen.txt"
 primary_x="$(echo "$listing" | awk '/^Output:/{n=$3} /priority 1$/{p=n} /Geometry:/{split($2,a,","); g[n]=a[1]} END{print g[p]}')"
 want=0; [[ "$LEFT" == 1 ]] && want=1920
 if [[ "$primary_x" == "$want" ]]; then echo "PASS kwin_primary_is_the_client_primary primary output at x=$primary_x"
 else echo "FAIL kwin_primary_is_the_client_primary primary output at x=$primary_x, expected $want (see $ART/kscreen.txt)"; rc=1; fi
 # The panel of the shell itself (a "dock" window) must be on the primary output, not on the other monitor.
-panel="$($VM ssh "cat > /tmp/rdsktp-panel.js <<'JS'
-for (const w of workspace.windowList()) if (w.dock) print('RDSKTP_PANEL ' + w.output.name);
+panel="$($VM ssh "cat > /tmp/oxydesk-panel.js <<'JS'
+for (const w of workspace.windowList()) if (w.dock) print('OXYDESK_PANEL ' + w.output.name);
 JS
-sudo -u $VUSER env XDG_RUNTIME_DIR=/run/user/\$(id -u $VUSER) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $VUSER)/bus bash -c 'id=\$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/rdsktp-panel.js rdsktp-panel); qdbus6 org.kde.KWin /Scripting/Script\$id org.kde.kwin.Script.run; sleep 1'
-sudo journalctl --since -20sec --no-pager | grep -o 'RDSKTP_PANEL .*' | sort -u" 2>&1)"
+sudo -u $VUSER env XDG_RUNTIME_DIR=/run/user/\$(id -u $VUSER) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $VUSER)/bus bash -c 'id=\$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/oxydesk-panel.js oxydesk-panel); qdbus6 org.kde.KWin /Scripting/Script\$id org.kde.kwin.Script.run; sleep 1'
+sudo journalctl --since -20sec --no-pager | grep -o 'OXYDESK_PANEL .*' | sort -u" 2>&1)"
 echo "$panel" > "$ART/panel.txt"
 primary_name="$(echo "$listing" | awk '/^Output:/{n=$3} /priority 1$/{print n}')"
-if [[ "$panel" == "RDSKTP_PANEL $primary_name" ]]; then echo "PASS panel_on_the_primary_output panel on $primary_name"
+if [[ "$panel" == "OXYDESK_PANEL $primary_name" ]]; then echo "PASS panel_on_the_primary_output panel on $primary_name"
 else echo "FAIL panel_on_the_primary_output panels: [$panel], primary: $primary_name"; rc=1; fi
 exit "$rc"

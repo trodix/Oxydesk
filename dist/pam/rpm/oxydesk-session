@@ -1,0 +1,4 @@
+# Session of the oxydesk-agent@<user>.service agent (authentication already took place in oxydesk-authd).
+auth     required pam_permit.so
+account  include  system-auth
+session  include  system-auth

@@ -1,13 +1,13 @@
 [package]
-name = "rdsktp-remote"
-description = "Adapter: remote desktop served by a session agent (authd + rdsktp-agent)"
+name = "oxydesk-remote"
+description = "Adapter: remote desktop served by a session agent (authd + oxydesk-agent)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-rdsktp-core.workspace = true
-rdsktp-agent-proto.workspace = true
-rdsktp-authd-proto.workspace = true
+oxydesk-core.workspace = true
+oxydesk-agent-proto.workspace = true
+oxydesk-authd-proto.workspace = true
 tracing = "0.1"

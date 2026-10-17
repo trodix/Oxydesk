@@ -7,12 +7,12 @@ publish.workspace = true
 
 [features]
 default = []
-vaapi = ["rdsktp-encode/vaapi"]
+vaapi = ["oxydesk-encode/vaapi"]
 # `--kwin`: benchmark on a real KWin virtual session (PipeWire capture, SHM or DMA-BUF).
-kwin = ["rdsktp-capture/kwin", "dep:rdsktp-session"]
+kwin = ["oxydesk-capture/kwin", "dep:oxydesk-session"]
 
 [dependencies]
-rdsktp-core.workspace = true
-rdsktp-capture.workspace = true
-rdsktp-encode = { workspace = true, features = ["openh264"] }
-rdsktp-session = { workspace = true, optional = true }
+oxydesk-core.workspace = true
+oxydesk-capture.workspace = true
+oxydesk-encode = { workspace = true, features = ["openh264"] }
+oxydesk-session = { workspace = true, optional = true }

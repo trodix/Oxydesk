@@ -2,8 +2,8 @@
 //!
 //! Each printer is a Unix socket `<base>/<name>.sock`: one connection is one job, whose bytes go to the
 //! client as they arrive. A CUPS queue per printer (optional, see [`Cups`]) lets applications print to it:
-//! CUPS converts the document to the language of the printer, then the `rdsktp` backend
-//! (`rdsktp-cups-backend`) copies it to the socket.
+//! CUPS converts the document to the language of the printer, then the `oxydesk` backend
+//! (`oxydesk-cups-backend`) copies it to the socket.
 
 mod cups;
 mod xps;
@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use rdsktp_core::error::PrintError;
-use rdsktp_core::printer::{
+use oxydesk_core::error::PrintError;
+use oxydesk_core::printer::{
     PrintFormat, PrintJob, PrinterHost, PrinterInfo, RemotePrinter, XpsConverter,
 };
 
@@ -33,7 +33,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Time between two looks at the listening socket (also the delay to stop serving a printer).
 const ACCEPT_POLL: Duration = Duration::from_millis(40);
 /// Name of the directory holding the sockets; the CUPS backend only accepts sockets in such a directory.
-pub const SOCKET_DIR: &str = "rdsktp-printers";
+pub const SOCKET_DIR: &str = "oxydesk-printers";
 
 struct Served {
     stop: Arc<AtomicBool>,
@@ -169,7 +169,7 @@ fn run_job(mut stream: UnixStream, printer: &dyn RemotePrinter, name: &str, inpu
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(IDLE_TIMEOUT));
     let outcome = match input {
-        Input::Raw => match printer.begin("rdsktp") {
+        Input::Raw => match printer.begin("oxydesk") {
             Ok(job) => copy_job(&mut stream, job, name),
             Err(e) => Err(e.to_string()),
         },
@@ -217,7 +217,7 @@ fn xps_job(
             .convert(&input, &output)
             .map_err(|e: PrintError| e.to_string())?;
         let mut xps = std::fs::File::open(&output).map_err(|e| e.to_string())?;
-        let mut job = printer.begin("rdsktp").map_err(|e| e.to_string())?;
+        let mut job = printer.begin("oxydesk").map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; READ_BLOCK];
         let mut total = 0u64;
         loop {
@@ -380,8 +380,8 @@ pub fn is_spool_socket(path: &Path, uid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::error::PrintError;
-    use rdsktp_core::printer::PrintLanguage;
+    use oxydesk_core::error::PrintError;
+    use oxydesk_core::printer::PrintLanguage;
 
     #[derive(Default)]
     struct Recorder {

@@ -5,7 +5,7 @@ pub const HELP: &str = "cargo xtask vm-test [options]
   --no-reset            do not start from a fresh overlay
   --keep                do not shut the VM down at the end
   --deb <file>          .deb to deploy (default: the most recent in target/debian/)
-  --build-cmd <cmd>     build command (env XTASK_BUILD_CMD, default: testapp release + cargo deb -p rdsktp)
+  --build-cmd <cmd>     build command (env XTASK_BUILD_CMD, default: testapp release + cargo deb -p oxydesk)
   --client-cmd <cmd>    client command, placeholders {host} {port} {out} (env XTASK_CLIENT_CMD)
   --outputs N                 number of screens (with --session kwin; default 1)
   --multi-resize        client scenario: dynamic number of monitors (Display Control; needs --outputs >= 2)
@@ -17,7 +17,7 @@ pub const HELP: &str = "cargo xtask vm-test [options]
 env: VM_RDP_PORT (default 3390)
 exit code: 0 all pass, 1 failure, 2 arguments";
 
-pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p rdsktp-testapp -p rdsktp-authd -p rdsktp-cups-backend && cargo build --release -p rdsktp-agent --features kwin && cargo deb -p rdsktp";
+pub const DEFAULT_BUILD_CMD: &str = "cargo build --release -p oxydesk-testapp -p oxydesk-authd -p oxydesk-cups-backend && cargo build --release -p oxydesk-agent --features kwin && cargo deb -p oxydesk";
 pub const DEFAULT_CLIENT_CMD: &str =
     "cargo run --quiet --release -p rdp-test-client --features ironrdp -- --host {host} --port {port} --out {out}";
 

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rdsktp_core::ports::SessionProvider;
+use oxydesk_core::ports::SessionProvider;
 
 #[derive(Debug, Clone)]
 pub struct KwinSessionConfig {
@@ -279,7 +279,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
-            "rdsktp-proc-{}-{}",
+            "oxydesk-proc-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -309,22 +309,22 @@ mod tests {
                     "kwin_wayland",
                     "--virtual",
                     "--socket",
-                    "rdsktp-0",
+                    "oxydesk-0",
                     "--width",
                     "1920",
                 ],
             ),
-            (11, &["/usr/bin/kwin_wayland", "--socket", "rdsktp-0"]),
+            (11, &["/usr/bin/kwin_wayland", "--socket", "oxydesk-0"]),
             // Another socket (the user's own desktop, a test session), and another program on ours.
             (12, &["kwin_wayland", "--socket", "wayland-0"]),
-            (13, &["kwin_wayland_wrapper", "--socket", "rdsktp-0"]),
+            (13, &["kwin_wayland_wrapper", "--socket", "oxydesk-0"]),
             (14, &["plasmashell"]),
         ]);
-        let mut found = stale_compositors(&root, "rdsktp-0", me());
+        let mut found = stale_compositors(&root, "oxydesk-0", me());
         found.sort_unstable();
         assert_eq!(found, [10, 11]);
         // Processes of another user are never touched.
-        assert!(stale_compositors(&root, "rdsktp-0", me() + 1).is_empty());
+        assert!(stale_compositors(&root, "oxydesk-0", me() + 1).is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

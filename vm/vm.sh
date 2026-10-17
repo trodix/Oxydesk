@@ -19,7 +19,7 @@ VM_VGA="${VM_VGA:-virtio-gl}"
 VM_SSH_PORT="${VM_SSH_PORT:-2222}"
 VM_RDP_PORT="${VM_RDP_PORT:-3390}"
 VM_USER="${VM_USER:-dev}"
-VM_SERVICE="${VM_SERVICE:-rdsktp}"
+VM_SERVICE="${VM_SERVICE:-oxydesk}"
 VM_IMAGE_FLAVOR="${VM_IMAGE_FLAVOR:-generic}"
 VM_BOOT_TIMEOUT="${VM_BOOT_TIMEOUT:-300}"
 
@@ -72,12 +72,12 @@ is_running() {
 
 make_seed() {
   mkdir -p "$STATE/seed"
-  [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N "" -C "rdsktp-vm-test" -f "$KEY"
+  [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N "" -C "oxydesk-vm-test" -f "$KEY"
   local pub; pub="$(cat "$KEY.pub")"
   sed -e "s|@VM_USER@|$VM_USER|g" -e "s|@SSH_PUBKEY@|$pub|g" \
     "$VM_DIR/cloud-init/user-data.tmpl" > "$STATE/seed/user-data"
   # fixed instance-id: cloud-init does not replay, the seed stays attached on all boots.
-  printf 'instance-id: rdsktp-vm-test\nlocal-hostname: rdsktp-test\n' > "$STATE/seed/meta-data"
+  printf 'instance-id: oxydesk-vm-test\nlocal-hostname: oxydesk-test\n' > "$STATE/seed/meta-data"
   rm -f "$SEED"
   if command -v cloud-localds >/dev/null; then
     cloud-localds "$SEED" "$STATE/seed/user-data" "$STATE/seed/meta-data"
@@ -157,7 +157,7 @@ cmd_create() {
   start_qemu "$tmp"
   wait_ssh
   vm_ssh 'sudo cloud-init status --wait' >/dev/null || log "cloud-init reported an error (marker checked afterwards)"
-  vm_ssh 'test -f /var/lib/rdsktp-provisioned' || { vm_ssh 'sudo tail -n 40 /var/log/provision-rdsktp.log' || true; die "incomplete provisioning (marker missing)"; }
+  vm_ssh 'test -f /var/lib/oxydesk-provisioned' || { vm_ssh 'sudo tail -n 40 /var/log/provision-oxydesk.log' || true; die "incomplete provisioning (marker missing)"; }
   cmd_down
   chmod u+w "$PROVISIONED" 2>/dev/null || true
   mv "$tmp" "$PROVISIONED"; chmod a-w "$PROVISIONED"
@@ -202,13 +202,13 @@ session_test_app() {
   [[ "${VM_TESTAPP:-1}" == 0 ]] && return
   local tone=""
   [[ "${VM_TONE:-0}" == 1 ]] && tone=" --tone"
-  printf '%s' "--session-app \"/usr/lib/rdsktp/rdsktp-testapp 1920 1080${tone} --clipboard-echo\""
+  printf '%s' "--session-app \"/usr/lib/oxydesk/oxydesk-testapp 1920 1080${tone} --clipboard-echo\""
 }
 
-# Configures the rdsktp service for a real KWin session (autologin of $VM_USER): systemd drop-in + restart.
+# Configures the oxydesk service for a real KWin session (autologin of $VM_USER): systemd drop-in + restart.
 cmd_kwin_config() {
   local uid_run="/run/user/$(vm_ssh 'id -u')"
-  vm_ssh 'sudo mkdir -p /etc/systemd/system/rdsktp.service.d && sudo tee /etc/systemd/system/rdsktp.service.d/kwin.conf >/dev/null' <<EOF
+  vm_ssh 'sudo mkdir -p /etc/systemd/system/oxydesk.service.d && sudo tee /etc/systemd/system/oxydesk.service.d/kwin.conf >/dev/null' <<EOF
 [Service]
 User=$VM_USER
 SupplementaryGroups=video render kvm
@@ -219,39 +219,39 @@ PrivateTmp=no
 # fusermount3 (clipboard files) is setuid: it needs privileges the base unit forbids.
 NoNewPrivileges=no
 Environment=XDG_RUNTIME_DIR=$uid_run
-Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
-Environment=RDSKTP_ECHO_FILES=copy
+Environment=${VM_SERVER_ENV:-OXYDESK_PUMP=event}
+Environment=OXYDESK_ECHO_FILES=copy
 ExecStart=
-ExecStart=/usr/bin/rdsktp --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" $(session_test_app) --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp
+ExecStart=/usr/bin/oxydesk --session kwin --outputs ${VM_OUTPUTS:-1} --session-app "plasmashell" $(session_test_app) --listen 0.0.0.0:3389 --state-dir /var/lib/oxydesk
 EOF
-  vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart rdsktp && sleep 5 && systemctl is-active rdsktp && sudo journalctl -u rdsktp -n 20 --no-pager'
+  vm_ssh 'sudo systemctl daemon-reload && sudo systemctl restart oxydesk && sleep 5 && systemctl is-active oxydesk && sudo journalctl -u oxydesk -n 20 --no-pager'
 }
 
-# Remote login mode: rdsktp (user rdsktp, --login) + rdsktp-authd (root) + rdsktp-agent@dev.
+# Remote login mode: oxydesk (user oxydesk, --login) + oxydesk-authd (root) + oxydesk-agent@dev.
 # The test account password comes from RDP_TEST_PASSWORD and goes through standard input (never argv).
 cmd_login_config() {
   [[ -n "${RDP_TEST_PASSWORD:-}" ]] || die "RDP_TEST_PASSWORD required"
   printf '%s:%s\n' "$VM_USER" "$RDP_TEST_PASSWORD" | vm_ssh 'sudo chpasswd'
-  vm_ssh 'sudo mkdir -p /etc/rdsktp /etc/systemd/system/rdsktp.service.d && sudo rm -f /etc/systemd/system/rdsktp.service.d/kwin.conf'
+  vm_ssh 'sudo mkdir -p /etc/oxydesk /etc/systemd/system/oxydesk.service.d && sudo rm -f /etc/systemd/system/oxydesk.service.d/kwin.conf'
   # The print queues of the redirected printers are made by the user: lpadmin needs the administration group of CUPS.
   vm_ssh "sudo usermod -aG lpadmin $VM_USER"
-  vm_ssh 'sudo tee /etc/rdsktp/agent.conf >/dev/null' <<CONF
-RDSKTP_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell $(session_test_app)
-RDSKTP_ECHO_FILES=copy
+  vm_ssh 'sudo tee /etc/oxydesk/agent.conf >/dev/null' <<CONF
+OXYDESK_AGENT_ARGS=--outputs ${VM_OUTPUTS:-1} ${VM_AGENT_EXTRA:-} --session-app plasmashell $(session_test_app)
+OXYDESK_ECHO_FILES=copy
 CONF
-  vm_ssh 'sudo tee /etc/systemd/system/rdsktp.service.d/login.conf >/dev/null' <<CONF
+  vm_ssh 'sudo tee /etc/systemd/system/oxydesk.service.d/login.conf >/dev/null' <<CONF
 [Unit]
-Requires=rdsktp-authd.service
-After=rdsktp-authd.service
+Requires=oxydesk-authd.service
+After=oxydesk-authd.service
 
 [Service]
-User=rdsktp
+User=oxydesk
 DynamicUser=no
-Environment=${VM_SERVER_ENV:-RDSKTP_PUMP=event}
+Environment=${VM_SERVER_ENV:-OXYDESK_PUMP=event}
 ExecStart=
-ExecStart=/usr/bin/rdsktp --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/rdsktp --printer-mode RdsktpXps=xps
+ExecStart=/usr/bin/oxydesk --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/oxydesk --printer-mode OxydeskXps=xps
 CONF
-  vm_ssh 'sudo systemd-sysusers /usr/lib/sysusers.d/rdsktp.conf; sudo systemctl daemon-reload && sudo systemctl restart rdsktp-authd rdsktp && sleep 3 && systemctl is-active rdsktp-authd rdsktp && sudo journalctl -u rdsktp-authd -u rdsktp -n 20 --no-pager'
+  vm_ssh 'sudo systemd-sysusers /usr/lib/sysusers.d/oxydesk.conf; sudo systemctl daemon-reload && sudo systemctl restart oxydesk-authd oxydesk && sleep 3 && systemctl is-active oxydesk-authd oxydesk && sudo journalctl -u oxydesk-authd -u oxydesk -n 20 --no-pager'
 }
 
 cmd_logs() {

@@ -104,7 +104,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             cfg.drives = Some(rdp_test_client::drives::DrivesCheck {
                 share: share.clone().into(),
                 mount: std::path::Path::new(&mount)
-                    .join(rdsktp_core::drive::directory_name(&drive_name)),
+                    .join(oxydesk_core::drive::directory_name(&drive_name)),
                 big_mib: drive_mib,
             });
             Some((share.into(), drive_name))
@@ -117,7 +117,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             cfg.printers = Some(rdp_test_client::printers::PrintersCheck {
                 socket: std::path::Path::new(&socket).join(format!(
                     "{}.sock",
-                    rdsktp_core::printer::printer_name(&printer_name)
+                    oxydesk_core::printer::printer_name(&printer_name)
                 )),
                 record: record.clone().into(),
                 kib: printer_kib,

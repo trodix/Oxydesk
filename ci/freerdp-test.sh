@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # Compatibility test with FreeRDP (the engine of xfreerdp, Remmina, wlfreerdp): the SDL client runs headless
-# (SDL_VIDEODRIVER=offscreen) against the synthetic desktop of `rdsktp --test-mode`. The checks read the
+# (SDL_VIDEODRIVER=offscreen) against the synthetic desktop of `oxydesk --test-mode`. The checks read the
 # client's own traces (capabilities confirmed, graphics reset, surfaces, H.264 frames received) and the
 # server's log. What cannot be seen without a display (pixels, keyboard, clipboard) is not covered here.
 # usage: ci/freerdp-test.sh [out-dir]
-# env: FREERDP (default sdl-freerdp), RDSKTP (server binary), FREERDP_SESSION=kwin (real KWin session of
+# env: FREERDP (default sdl-freerdp), OXYDESK (server binary), FREERDP_SESSION=kwin (real KWin session of
 # this host with the test application, instead of the synthetic desktop)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 FREERDP="${FREERDP:-sdl-freerdp}"
-RDSKTP="${RDSKTP:-target/debug/rdsktp}"
+OXYDESK="${OXYDESK:-target/debug/oxydesk}"
 OUT="$(realpath -m "${1:-artifacts/freerdp-test}")"
 PORT="${FREERDP_TEST_PORT:-33890}"
 SECONDS_RUN="${FREERDP_TEST_SECONDS:-6}"
 command -v "$FREERDP" >/dev/null || { echo "missing client: $FREERDP (Fedora: sudo dnf install freerdp)" >&2; exit 1; }
 if [[ "${FREERDP_SESSION:-}" == kwin ]]; then
-  cargo build -q -p rdsktp -p rdsktp-testapp --features rdsktp/kwin || exit 1
-  SESSION=(--session kwin --kwin-socket rdsktp-freerdp-test
-    --session-app "$(realpath target/debug/rdsktp-testapp) --tone --clipboard-echo")
+  cargo build -q -p oxydesk -p oxydesk-testapp --features oxydesk/kwin || exit 1
+  SESSION=(--session kwin --kwin-socket oxydesk-freerdp-test
+    --session-app "$(realpath target/debug/oxydesk-testapp) --tone --clipboard-echo")
 else
-  [[ -x "$RDSKTP" ]] || cargo build -q -p rdsktp || exit 1
+  [[ -x "$OXYDESK" ]] || cargo build -q -p oxydesk || exit 1
   SESSION=(--test-mode)
 fi
 rm -rf "$OUT"; mkdir -p "$OUT/state"
@@ -34,7 +34,7 @@ check() { # name, condition (0 = ok), detail
 
 start_server() { # name, server args...
   local name="$1"; shift
-  RUST_LOG=info "$RDSKTP" "${SESSION[@]}" --listen "127.0.0.1:$PORT" --state-dir "$OUT/state" "$@" \
+  RUST_LOG=info "$OXYDESK" "${SESSION[@]}" --listen "127.0.0.1:$PORT" --state-dir "$OUT/state" "$@" \
     >"$OUT/$name.server.raw" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && return 0; sleep 0.1; done
@@ -102,14 +102,14 @@ stop_server reconnect
 check reconnect "$([[ $(frames "$OUT/reconnect2.client.log") -ge 20 ]] && echo 0 || echo 1)" "second connection: $(frames "$OUT/reconnect2.client.log") frames"
 
 # 4. NLA (CredSSP): good password accepted, wrong password refused
-export RDSKTP_PASSWORD="nla-test-secret"
+export OXYDESK_PASSWORD="nla-test-secret"
 start_server nla --nla-user test || exit 1
-FREERDP_PASSWORD="$RDSKTP_PASSWORD" client "$OUT/nla_ok.client.log" /sec:nla; rc=$?
+FREERDP_PASSWORD="$OXYDESK_PASSWORD" client "$OUT/nla_ok.client.log" /sec:nla; rc=$?
 check nla_accepted "$([[ $rc -eq 124 && $(frames "$OUT/nla_ok.client.log") -ge 20 ]] && echo 0 || echo 1)" "exit $rc, $(frames "$OUT/nla_ok.client.log") frames"
 FREERDP_PASSWORD="wrong" client "$OUT/nla_bad.client.log" /sec:nla; rc=$?
 check nla_refused "$([[ $rc -ne 124 && $(frames "$OUT/nla_bad.client.log") -eq 0 ]] && echo 0 || echo 1)" "exit $rc, $(frames "$OUT/nla_bad.client.log") frames"
 stop_server nla
-unset RDSKTP_PASSWORD
+unset OXYDESK_PASSWORD
 
 # 5. Server health over the whole run
 check server_no_error "$(! grep -h -E "ERROR|panicked" "$OUT"/*.server.log | grep -v -E "client loop failure|Connection error" | grep -q .; echo $?)" "no ERROR / panic in the server logs"

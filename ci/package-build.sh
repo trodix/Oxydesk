@@ -26,32 +26,32 @@ fi
 [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo build --release --locked -p rdsktp-testapp -p rdsktp-authd -p rdsktp-cups-backend
-cargo build --release --locked -p rdsktp --features kwin
-cargo build --release --locked -p rdsktp-agent --features kwin
+cargo build --release --locked -p oxydesk-testapp -p oxydesk-authd -p oxydesk-cups-backend
+cargo build --release --locked -p oxydesk --features kwin
+cargo build --release --locked -p oxydesk-agent --features kwin
 
 case "$FORMAT" in
   deb)
     command -v cargo-deb >/dev/null || cargo install cargo-deb --locked >/dev/null 2>&1
-    cargo deb --no-build -p rdsktp --output "$OUT/" >/dev/null
+    cargo deb --no-build -p oxydesk --output "$OUT/" >/dev/null
     ;;
   rpm)
     command -v cargo-generate-rpm >/dev/null || cargo install cargo-generate-rpm --locked >/dev/null 2>&1
-    cargo generate-rpm -p bins/rdsktp -o "$OUT/"
+    cargo generate-rpm -p bins/oxydesk -o "$OUT/"
     ;;
   tar)
-    NAME="rdsktp-$VERSION-linux-$ARCH"
+    NAME="oxydesk-$VERSION-linux-$ARCH"
     STAGE="$(mktemp -d)/$NAME"
-    install -d "$STAGE/bin" "$STAGE/lib/rdsktp" "$STAGE/lib/cups-backend" "$STAGE/systemd" "$STAGE/pam" "$STAGE/share"
-    for b in rdsktp rdsktp-authd rdsktp-agent; do install -m755 "target/release/$b" "$STAGE/bin/"; done
-    install -m755 target/release/rdsktp-testapp "$STAGE/lib/rdsktp/"
-    install -m700 target/release/rdsktp-cups-backend "$STAGE/lib/cups-backend/rdsktp"
-    install -m644 dist/rdsktp.service dist/rdsktp-authd.service dist/rdsktp-agent@.service "$STAGE/systemd/"
+    install -d "$STAGE/bin" "$STAGE/lib/oxydesk" "$STAGE/lib/cups-backend" "$STAGE/systemd" "$STAGE/pam" "$STAGE/share"
+    for b in oxydesk oxydesk-authd oxydesk-agent; do install -m755 "target/release/$b" "$STAGE/bin/"; done
+    install -m755 target/release/oxydesk-testapp "$STAGE/lib/oxydesk/"
+    install -m700 target/release/oxydesk-cups-backend "$STAGE/lib/cups-backend/oxydesk"
+    install -m644 dist/oxydesk.service dist/oxydesk-authd.service dist/oxydesk-agent@.service "$STAGE/systemd/"
     install -d "$STAGE/pam/debian" "$STAGE/pam/rpm"
-    install -m644 dist/pam/rdsktp dist/pam/rdsktp-session "$STAGE/pam/debian/"
-    install -m644 dist/pam/rpm/rdsktp dist/pam/rpm/rdsktp-session "$STAGE/pam/rpm/"
-    install -m644 dist/rdsktp.desktop dist/rdsktp-agent.desktop dist/sysusers/rdsktp.conf "$STAGE/share/"
-    install -m644 dist/rdsktp.conf "$STAGE/share/rdsktp-server.conf"
+    install -m644 dist/pam/oxydesk dist/pam/oxydesk-session "$STAGE/pam/debian/"
+    install -m644 dist/pam/rpm/oxydesk dist/pam/rpm/oxydesk-session "$STAGE/pam/rpm/"
+    install -m644 dist/oxydesk.desktop dist/oxydesk-agent.desktop dist/sysusers/oxydesk.conf "$STAGE/share/"
+    install -m644 dist/oxydesk.conf "$STAGE/share/oxydesk-server.conf"
     install -m755 dist/tar/install.sh "$STAGE/install.sh"
     install -m755 dist/tar/uninstall.sh "$STAGE/uninstall.sh"
     install -m644 README.md LICENSE "$STAGE/"

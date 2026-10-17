@@ -4,7 +4,7 @@
 - **`VaapiEncoder` adapter** (`crates/encode`, Cargo feature `vaapi`, off by default): hardware H.264 through `cros-libva`. It
   adds no dependency on other adapters; it implements the existing `FrameEncoder` port.
 - **`AutoEncoder`** (same crate): the back end is chosen at the **first frame** (VA-API needs the size). `--encoder
-  auto|vaapi|openh264` in `rdsktp`, `rdsktp-agent` and `bench`. `auto` (default) falls back to openh264 if VA-API is unavailable
+  auto|vaapi|openh264` in `oxydesk`, `oxydesk-agent` and `bench`. `auto` (default) falls back to openh264 if VA-API is unavailable
   (no DRM node, no driver, no H.264 encoder); `vaapi` and `openh264` never fall back.
 - **Stream produced**: Constrained Baseline/Main/High (depending on the driver), CBR, no B-frames, 1 reference frame, POC type 2,
   one slice, CAVLC, cropping (surfaces aligned to 16).
@@ -21,7 +21,7 @@
   (SPS/PPS/IDR at frames 0 and 15, P otherwise), red/blue markers at the expected positions, mean absolute error < 12 (measured:
   0.98). Ignored without a VA-API encoder or without libopenh264.
 - Unit tests of `h264_headers`; unit tests of `AutoEncoder` (choice, lazy creation, keyframe requests made early).
-- Local end to end (`rdsktp --test-mode --encoder vaapi` + IronRDP `rdp-test-client`, release builds): **7/7**, key→pixel p95
+- Local end to end (`oxydesk --test-mode --encoder vaapi` + IronRDP `rdp-test-client`, release builds): **7/7**, key→pixel p95
   34.1 ms (openh264: 25.4 ms).
 - Fallback: `LIBVA_DRIVER_NAME=bogus` + `--encoder auto` → openh264; `--encoder vaapi` → explicit error.
 
@@ -44,7 +44,7 @@ not latency on simple content.
   `VAProfileNone`/`VideoProc`, BT.601 limited range, same coefficients as the CPU) into the encoder's source surface. The VPP
   context is created at the first DmaBuf frame. If the import fails: one message, then CPU read of the buffer (mmap +
   `DMA_BUF_IOCTL_SYNC`) and the usual path. `openh264` also reads the DmaBuf by mmap (correct, but see the measurements).
-- **Choice**: `--dmabuf auto|on|off` (`rdsktp`, `rdsktp-agent`, `bench --kwin`). `auto` = true only if the encoder can use the
+- **Choice**: `--dmabuf auto|on|off` (`oxydesk`, `oxydesk-agent`, `bench --kwin`). `auto` = true only if the encoder can use the
   GPU (`--encoder vaapi`, or `auto` with usable VA-API). Without a GPU: SHM offer only, behaviour unchanged.
 - `cros-libva` vendored: `ProcPipelineParameter` type and `va_vpp.h` added.
 

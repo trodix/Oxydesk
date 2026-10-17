@@ -7,7 +7,7 @@
 # that point (savevm) and, for each test, restores it, swaps the data CD and the run starts at once.
 $ErrorActionPreference = 'Stop'
 trap { try { Emit ('ERROR ' + ($_ | Out-String).Replace("`r", '').Replace("`n", ' | ')) } catch { }; try { Start-Sleep 2; Stop-Computer -Force } catch { }; exit 1 }
-$log = 'C:\rdsktp\activex-test.log'
+$log = 'C:\oxydesk\activex-test.log'
 $checks = New-Object System.Collections.ArrayList
 $com = $null
 try { $com = New-Object System.IO.Ports.SerialPort 'COM1', 115200; $com.Open() } catch { }
@@ -317,7 +317,7 @@ $adv.RDPPort = [int]$p.port
 $adv.EnableCredSspSupport = $true       # default mstsc behaviour: offers CredSSP, falls back to TLS
 $adv.AuthenticationLevel = 0            # no server certificate warning (self-signed)
 $adv.RedirectClipboard = $true
-$drivesDir = 'C:\rdsktp\drive'
+$drivesDir = 'C:\oxydesk\drive'
 if ($p.drives -eq '1') {
   # Drive redirection: the drives of this machine are mounted by the server. The files the host checks are prepared
   # here, before the connection (the host reads them through the mount and writes others).
@@ -329,20 +329,20 @@ if ($p.drives -eq '1') {
   [IO.File]::WriteAllText("$drivesDir\to-rename.bin", 'rename me', [Text.Encoding]::UTF8)
 }
 if ($p.printers -in @('1','2')) {
-  # printers=2: XPS jobs (ADR 015): the printer RdsktpXps has the "Microsoft PS Class Driver", the server is told to send it XPS
-  # (--printer-mode RdsktpXps=xps) and the driver renders the XPS document it gets in PostScript. printers=1: raw jobs.
+  # printers=2: XPS jobs (ADR 015): the printer OxydeskXps has the "Microsoft PS Class Driver", the server is told to send it XPS
+  # (--printer-mode OxydeskXps=xps) and the driver renders the XPS document it gets in PostScript. printers=1: raw jobs.
   $drv = if ($p.printers -eq '2') { 'Microsoft PS Class Driver' } else { 'Generic / Text Only' }
-  $pname = if ($p.printers -eq '2') { 'RdsktpXps' } else { 'RdsktpTest' }
+  $pname = if ($p.printers -eq '2') { 'OxydeskXps' } else { 'OxydeskTest' }
   # Printer redirection: a "Generic / Text Only" printer on a TCP/IP port (local port 9100) where this script listens.
   # The host sends a job to the socket the server makes for the printer; the spooler of this machine sends it to the
   # listener, checked below. (A printer on a file port is not redirected by mstsc.)
   $adv.RedirectPrinters = $true
   try {
-    Get-Printer -Name 'RdsktpTest','RdsktpXps' -ErrorAction SilentlyContinue | Remove-Printer
-    Get-PrinterPort -Name 'RdsktpPort' -ErrorAction SilentlyContinue | Remove-PrinterPort -ErrorAction SilentlyContinue
-    Add-PrinterPort -Name 'RdsktpPort' -PrinterHostAddress '127.0.0.1' -PortNumber 9100 -ErrorAction Stop
+    Get-Printer -Name 'OxydeskTest','OxydeskXps' -ErrorAction SilentlyContinue | Remove-Printer
+    Get-PrinterPort -Name 'OxydeskPort' -ErrorAction SilentlyContinue | Remove-PrinterPort -ErrorAction SilentlyContinue
+    Add-PrinterPort -Name 'OxydeskPort' -PrinterHostAddress '127.0.0.1' -PortNumber 9100 -ErrorAction Stop
     if (-not (Get-PrinterDriver -Name $drv -ErrorAction SilentlyContinue)) { Add-PrinterDriver -Name $drv -ErrorAction Stop }
-    Add-Printer -Name $pname -DriverName $drv -PortName 'RdsktpPort' -ErrorAction Stop
+    Add-Printer -Name $pname -DriverName $drv -PortName 'OxydeskPort' -ErrorAction Stop
   } catch { Emit ("PRINTER SETUP FAILED: " + $_) }
   Emit ('DRIVERS ' + ((Get-PrinterDriver -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '))
   Emit ('PRINTERS ' + ((Get-Printer | ForEach-Object { $_.Name + '@' + $_.PortName + '/' + $_.PrinterStatus }) -join ', '))
@@ -397,7 +397,7 @@ try {
   $seen = @{}
   $null = Pump { $c = PixelAt 48 16; $seen[[string]($c.R -gt 150)] = $true; $seen.Count -ge 2 } 10000
   $c = PixelAt 16 16
-  $shot = 'C:\rdsktp\screen.png'
+  $shot = 'C:\oxydesk\screen.png'
   $bmp = New-Object System.Drawing.Bitmap $w, $h
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.CopyFromScreen($form.Location, [System.Drawing.Point]::Empty, $form.ClientSize); $g.Dispose()
@@ -487,7 +487,7 @@ try {
     # which must keep pumping messages (a GetText here would block it).
     $script:got = $null
     if ($bumped) {
-      $out = 'C:\rdsktp\clip.txt'; Remove-Item $out -ErrorAction SilentlyContinue
+      $out = 'C:\oxydesk\clip.txt'; Remove-Item $out -ErrorAction SilentlyContinue
       $cmd = '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())) | Out-File ' + $out + ' -Encoding ascii'
       $pr = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-STA', '-Command', "Add-Type -AssemblyName System.Windows.Forms; $cmd"
       $null = Pump { $pr.HasExited } 20000
@@ -526,7 +526,7 @@ try {
     $detail = "echo announced=$bumped"
     $ok = $false
     if ($bumped) {
-      $out = 'C:\rdsktp\clipimg.txt'; Remove-Item $out -ErrorAction SilentlyContinue
+      $out = 'C:\oxydesk\clipimg.txt'; Remove-Item $out -ErrorAction SilentlyContinue
       $code = "`$i = [Windows.Forms.Clipboard]::GetImage(); if (`$i) { `$o = New-Object System.Collections.ArrayList; [void]`$o.Add(`"`$(`$i.Width)x`$(`$i.Height)`"); for (`$y = 0; `$y -lt `$i.Height; `$y++) { for (`$x = 0; `$x -lt `$i.Width; `$x++) { `$c = `$i.GetPixel(`$x, `$y); [void]`$o.Add(`"`$(`$c.R),`$(`$c.G),`$(`$c.B)`") } }; `$o -join ';' | Out-File '$out' -Encoding ascii }"
       $done = RunChild $code 60000
       if ($done -and (Test-Path $out)) {
@@ -572,7 +572,7 @@ public static class FileDiff {
   # Explorer creates the destination at its final size at once: the copy is finished when the file can be opened exclusively.
   function Unlocked([string]$f) { try { $h = [IO.File]::Open($f, 'Open', 'Read', 'None'); $h.Close(); return $true } catch { return $false } }
   function FilesRoundTrip([string]$name, [string[]]$paths, [string]$check, [int]$ms) {
-    $dest = 'C:\rdsktp\paste'
+    $dest = 'C:\oxydesk\paste'
     Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $dest | Out-Null
     $sc = New-Object System.Collections.Specialized.StringCollection
     foreach ($f in $paths) { [void]$sc.Add($f) }
@@ -605,8 +605,8 @@ public static class FileDiff {
     Check $name ([bool]($bumped -and $ok)) $detail
   }
   # Real-time scanning of a freshly written 128 MiB file can make Explorer's range reads fail (CB_RESPONSE_FAIL): not under test.
-  try { Add-MpPreference -ExclusionPath 'C:\rdsktp' -ErrorAction Stop } catch { Emit ('DEFENDER EXCLUSION FAILED: ' + $_) }
-  $fr = 'C:\rdsktp\files'
+  try { Add-MpPreference -ExclusionPath 'C:\oxydesk' -ErrorAction Stop } catch { Emit ('DEFENDER EXCLUSION FAILED: ' + $_) }
+  $fr = 'C:\oxydesk\files'
   Remove-Item $fr -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory "$fr\tree\sub" | Out-Null
   $rng = New-Object System.Random 42

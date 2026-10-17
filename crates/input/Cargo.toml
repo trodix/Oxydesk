@@ -1,5 +1,5 @@
 [package]
-name = "rdsktp-input"
+name = "oxydesk-input"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ default = []
 kwin = ["dep:wayland-client", "dep:wayland-backend", "dep:wayland-scanner"]
 
 [dependencies]
-rdsktp-core.workspace = true
+oxydesk-core.workspace = true
 wayland-client = { version = "0.31", optional = true }
 wayland-backend = { version = "0.3", optional = true }
 wayland-scanner = { version = "0.31", optional = true }

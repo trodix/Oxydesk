@@ -27,7 +27,7 @@ jobs:
       - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
       - run: |
           . "$HOME/.cargo/env"
-          F="--features rdsktp/kwin,rdsktp-agent/kwin,bench/kwin,rdsktp/vaapi,rdsktp-agent/vaapi,bench/vaapi,rdsktp-encode/openh264"
+          F="--features oxydesk/kwin,oxydesk-agent/kwin,bench/kwin,oxydesk/vaapi,oxydesk-agent/vaapi,bench/vaapi,oxydesk-encode/openh264"
           cargo clippy --workspace --all-targets $F -- -D warnings
           cargo test --workspace $F
   coverage:

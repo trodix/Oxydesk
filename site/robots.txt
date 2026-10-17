@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://trodix.github.io/RustyDesktop/sitemap.xml
+Sitemap: https://trodix.github.io/Oxydesk/sitemap.xml

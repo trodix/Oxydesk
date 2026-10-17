@@ -1,10 +1,10 @@
-//! Server configuration file (`/etc/rdsktp/rdsktp.conf`): pure parsing and merging with the command line.
+//! Server configuration file (`/etc/oxydesk/oxydesk.conf`): pure parsing and merging with the command line.
 //!
-//! Format: one `key = value` per line, keys are the long options of `rdsktp` without the `--`. `#` or `;` at
+//! Format: one `key = value` per line, keys are the long options of `oxydesk` without the `--`. `#` or `;` at
 //! the start of a line starts a comment (no trailing comments: a value may contain `#`). Blank lines are ignored,
 //! a value may be wrapped in double quotes. Unknown keys are an error (a typo must not be silently ignored).
 //!
-//! Precedence, highest first: command line, drop-in files (`rdsktp.conf.d/*.conf`, in name order), main file,
+//! Precedence, highest first: command line, drop-in files (`oxydesk.conf.d/*.conf`, in name order), main file,
 //! built-in defaults. A key given on the command line replaces the file's value (for a repeatable key such as
 //! `session-app`, the whole list); the keys that choose the mode (`test-mode`, `login`, `session`) replace each
 //! other as a group.

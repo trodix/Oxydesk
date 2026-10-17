@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use rdsktp_agent_proto::{Rect, ToAgent};
-use rdsktp_core::error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError};
-use rdsktp_core::frame::{Frame, FrameData};
-use rdsktp_core::layout::{Layout, OutputId};
-use rdsktp_core::ports::*;
+use oxydesk_agent_proto::{Rect, ToAgent};
+use oxydesk_core::error::{AudioError, CaptureError, ClipboardError, EncodeError, InputError};
+use oxydesk_core::frame::{Frame, FrameData};
+use oxydesk_core::layout::{Layout, OutputId};
+use oxydesk_core::ports::*;
 
 use crate::link::AgentLink;
 
@@ -41,7 +41,7 @@ pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
 struct RemoteCapture(Arc<AgentLink>);
 
 impl CaptureSource for RemoteCapture {
-    fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
+    fn set_waker(&mut self, wake: Arc<oxydesk_core::wake::Wake>) {
         self.0.set_waker(wake);
     }
 
@@ -49,7 +49,7 @@ impl CaptureSource for RemoteCapture {
         self.0.set_raw_pixels(raw);
     }
 
-    fn take_cursor(&mut self) -> Option<rdsktp_core::CursorUpdate> {
+    fn take_cursor(&mut self) -> Option<oxydesk_core::CursorUpdate> {
         self.0.take_cursor()
     }
 
@@ -146,7 +146,7 @@ impl InputSink for RemoteInput {
     fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
         self.send(ToAgent::Key { scancode, pressed })
     }
-    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+    fn set_keyboard_layout(&mut self, layout: &oxydesk_core::XkbLayout) -> Result<(), InputError> {
         self.send(ToAgent::KeyboardLayout {
             layout: layout.layout.clone(),
             variant: layout.variant.clone(),
@@ -193,14 +193,14 @@ impl ClipboardBackend for RemoteClipboard {
     fn poll_image(&mut self) -> Result<Option<Vec<u8>>, ClipboardError> {
         Ok(self.0.take_clipboard_image())
     }
-    fn set_files(&mut self, list: rdsktp_core::FileList) -> Result<(), ClipboardError> {
+    fn set_files(&mut self, list: oxydesk_core::FileList) -> Result<(), ClipboardError> {
         if self.0.set_clipboard_files(list) {
             Ok(())
         } else {
             Err(ClipboardError::Backend("agent unreachable".into()))
         }
     }
-    fn poll_files(&mut self) -> Result<Option<rdsktp_core::FileList>, ClipboardError> {
+    fn poll_files(&mut self) -> Result<Option<oxydesk_core::FileList>, ClipboardError> {
         Ok(self.0.take_clipboard_files())
     }
 }
@@ -235,7 +235,7 @@ impl Drop for RemoteAudioSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_agent_proto::{read_msg, write_msg, FromAgent};
+    use oxydesk_agent_proto::{read_msg, write_msg, FromAgent};
     use std::os::unix::net::UnixStream;
 
     fn pair() -> (Arc<AgentLink>, UnixStream) {
@@ -300,7 +300,7 @@ mod tests {
         }
         input.wheel(0, -120).unwrap();
         assert_eq!(received(&mut agent), ToAgent::Wheel { dx: 0, dy: -120 });
-        let layout = rdsktp_core::klid_to_xkb(0x040c).expect("French layout");
+        let layout = oxydesk_core::klid_to_xkb(0x040c).expect("French layout");
         input.set_keyboard_layout(&layout).unwrap();
         assert!(matches!(
             received(&mut agent),
@@ -347,7 +347,7 @@ mod tests {
             width: 64,
             height: 64,
             stride: 256,
-            format: rdsktp_core::frame::PixelFormat::Bgra8,
+            format: oxydesk_core::frame::PixelFormat::Bgra8,
             data,
         };
         let out = enc

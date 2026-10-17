@@ -1,4 +1,4 @@
-//! Primary RDP adapter: translates IronRDP into calls to the `rdsktp-core` ports.
+//! Primary RDP adapter: translates IronRDP into calls to the `oxydesk-core` ports.
 //! The only crate that knows IronRDP on the server side.
 
 pub mod clipboard;

@@ -1,0 +1,19 @@
+[Unit]
+Description=Oxydesk - session agent for %i
+After=systemd-user-sessions.service systemd-logind.service
+
+[Service]
+# Runs as the user's identity; PAMName opens a real logind session (XDG_RUNTIME_DIR, session bus).
+User=%i
+PAMName=oxydesk-session
+SupplementaryGroups=video render
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+EnvironmentFile=-/etc/oxydesk/agent.conf
+# Written by oxydesk-authd when it creates the session: as many outputs as the client has monitors. First on the
+# command line, so it wins over a `--outputs` of agent.conf.
+EnvironmentFile=-/run/oxydesk/agent-%i.env
+ExecStart=/usr/bin/oxydesk-agent --session kwin $OXYDESK_AGENT_OUTPUTS $OXYDESK_AGENT_ARGS
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+KillMode=control-group

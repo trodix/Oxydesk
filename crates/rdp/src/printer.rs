@@ -8,8 +8,8 @@ use ironrdp_rdpdr::pdu::efs::{
     RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
 };
 use ironrdp_server::RdpdrServerMessage;
-use rdsktp_core::error::{DriveError, PrintError};
-use rdsktp_core::printer::{
+use oxydesk_core::error::{DriveError, PrintError};
+use oxydesk_core::printer::{
     resolve_format, ModeError, PrintJob, PrintMode, PrinterInfo, RemotePrinter,
 };
 
@@ -188,7 +188,7 @@ impl PrintJob for RdpPrintJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::printer::{PrintFormat, PrintLanguage};
+    use oxydesk_core::printer::{PrintFormat, PrintLanguage};
 
     fn utf16(s: &str) -> Vec<u8> {
         s.encode_utf16()

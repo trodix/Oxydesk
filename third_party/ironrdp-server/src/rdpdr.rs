@@ -1,4 +1,4 @@
-// rdsktp patch: device redirection (drives), backported from IronRDP master (feat(server): wire RdpdrServer).
+// oxydesk patch: device redirection (drives), backported from IronRDP master (feat(server): wire RdpdrServer).
 pub use ironrdp_rdpdr::server::{NoopRdpdrServerBackend, RdpdrServerBackend, RdpdrServerMessage};
 
 use crate::ServerEventSender;

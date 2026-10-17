@@ -18,9 +18,9 @@ use ironrdp_server::{
     GfxServerHandle, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender, TlsIdentityCtx,
 };
-use rdsktp_core::error::{AudioError, LoginError};
-use rdsktp_core::layout::{Layout, MonitorSpec};
-use rdsktp_core::ports::{
+use oxydesk_core::error::{AudioError, LoginError};
+use oxydesk_core::layout::{Layout, MonitorSpec};
+use oxydesk_core::ports::{
     AudioParams, AudioProvider, AudioSource, ClipboardBackend, DesktopPorts, InputSink,
     SessionBroker,
 };
@@ -42,9 +42,9 @@ pub struct ServerConfig {
     /// NLA/CredSSP with preloaded credentials; otherwise TLS only.
     pub nla: Option<(String, String)>,
     /// Failed-login limits (login mode).
-    pub throttle: rdsktp_core::ThrottleConfig,
+    pub throttle: oxydesk_core::ThrottleConfig,
     /// Format of the jobs of each redirected printer (ADR 015).
-    pub printer_modes: rdsktp_core::PrinterModes,
+    pub printer_modes: oxydesk_core::PrinterModes,
     /// How long after a network loss a client resumes its session by itself (Auto-Reconnect cookie); zero: never.
     pub reconnect_timeout: Duration,
     /// A client that stops answering is dropped after this long, which frees the server for its reconnection.
@@ -66,8 +66,8 @@ struct SessionSlot {
     input: Slot<Box<dyn InputSink>>,
     clipboard: Slot<Box<dyn ClipboardBackend>>,
     audio: Slot<Arc<dyn AudioProvider>>,
-    drives: Slot<Arc<dyn rdsktp_core::drive::DriveHost>>,
-    printers: Slot<Arc<dyn rdsktp_core::printer::PrinterHost>>,
+    drives: Slot<Arc<dyn oxydesk_core::drive::DriveHost>>,
+    printers: Slot<Arc<dyn oxydesk_core::printer::PrinterHost>>,
 }
 
 impl SessionSlot {
@@ -115,14 +115,14 @@ impl AudioProvider for SlotAudio {
 /// one being validated.
 #[derive(Clone)]
 struct LoginGuard {
-    throttle: Arc<Mutex<rdsktp_core::LoginThrottle>>,
+    throttle: Arc<Mutex<oxydesk_core::LoginThrottle>>,
     peer: Arc<Mutex<Option<std::net::IpAddr>>>,
 }
 
 impl LoginGuard {
-    fn new(cfg: rdsktp_core::ThrottleConfig) -> Self {
+    fn new(cfg: oxydesk_core::ThrottleConfig) -> Self {
         Self {
-            throttle: Arc::new(Mutex::new(rdsktp_core::LoginThrottle::new(cfg))),
+            throttle: Arc::new(Mutex::new(oxydesk_core::LoginThrottle::new(cfg))),
             peer: Arc::default(),
         }
     }
@@ -504,7 +504,7 @@ impl RdpServerInputHandler for Input {
         }
     }
     fn keyboard_layout(&mut self, klid: u32) {
-        let Some(layout) = rdsktp_core::klid_to_xkb(klid) else {
+        let Some(layout) = oxydesk_core::klid_to_xkb(klid) else {
             tracing::debug!("keyboard layout {klid:#010x}: unknown, the session keeps its own");
             return;
         };
@@ -518,7 +518,7 @@ impl RdpServerInputHandler for Input {
         }
     }
     fn mouse(&mut self, event: MouseEvent) {
-        use rdsktp_core::ports::PointerButton as B;
+        use oxydesk_core::ports::PointerButton as B;
         match event {
             MouseEvent::Move { x, y } => {
                 self.pointer.2 += 1;
@@ -785,7 +785,7 @@ async fn serve(
     // Login mode: the session is made for the client's monitors, up to the maximum; otherwise the capture was
     // created with `outputs` outputs and that is the limit.
     let max_monitors = if has_broker {
-        rdsktp_core::layout::MAX_OUTPUTS
+        oxydesk_core::layout::MAX_OUTPUTS
     } else {
         config.layout.outputs.len()
     };
@@ -804,7 +804,7 @@ async fn serve(
         PumpParams {
             layout: config.layout.clone(),
             fps: config.fps,
-            event: std::env::var("RDSKTP_PUMP")
+            event: std::env::var("OXYDESK_PUMP")
                 .is_ok_and(|v| v == "tick")
                 .not(),
             adaptive: config.adaptive_bitrate,
@@ -892,7 +892,7 @@ mod gfx_tests {
 mod input_tests {
     use super::*;
     use ironrdp_pdu::input::fast_path::SynchronizeFlags;
-    use rdsktp_core::error::InputError;
+    use oxydesk_core::error::InputError;
 
     type Log = Arc<Mutex<Vec<(u16, bool)>>>;
 
@@ -1036,10 +1036,10 @@ mod reconnect_tests {
     use std::time::Duration;
 
     use ironrdp_server::{CredentialDecision, CredentialValidator as _, Credentials};
-    use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
-    use rdsktp_core::frame::Frame;
-    use rdsktp_core::layout::OutputId;
-    use rdsktp_core::ports::CaptureSource;
+    use oxydesk_core::error::{CaptureError, ClipboardError, InputError};
+    use oxydesk_core::frame::Frame;
+    use oxydesk_core::layout::OutputId;
+    use oxydesk_core::ports::CaptureSource;
 
     use super::*;
 
@@ -1122,7 +1122,7 @@ mod reconnect_tests {
             attached: Mutex::default(),
         });
         let shared = Arc::new(Shared::default());
-        let guard = LoginGuard::new(rdsktp_core::ThrottleConfig {
+        let guard = LoginGuard::new(oxydesk_core::ThrottleConfig {
             max_ip_failures: 2,
             ..Default::default()
         });
@@ -1267,8 +1267,8 @@ mod reconnect_tests {
 #[cfg(test)]
 mod forwarding_tests {
     use super::*;
-    use rdsktp_core::error::InputError;
-    use rdsktp_core::ports::PointerButton;
+    use oxydesk_core::error::InputError;
+    use oxydesk_core::ports::PointerButton;
 
     /// An input port that records what the session would receive.
     #[derive(Clone, Default)]

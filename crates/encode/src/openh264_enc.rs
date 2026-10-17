@@ -6,13 +6,13 @@ use openh264::encoder::{
 };
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 use openh264::OpenH264API;
-use rdsktp_core::error::EncodeError;
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
-use rdsktp_core::ports::{EncodedFrame, FrameEncoder};
+use oxydesk_core::error::EncodeError;
+use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
+use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
 
 #[derive(Debug, Clone)]
 pub struct OpenH264Config {
-    /// Path of libopenh264; otherwise `RDSKTP_OPENH264_LIB`, otherwise the usual locations.
+    /// Path of libopenh264; otherwise `OXYDESK_OPENH264_LIB`, otherwise the usual locations.
     pub library: Option<PathBuf>,
     pub bitrate_bps: u32,
     pub fps: f32,
@@ -45,14 +45,14 @@ fn locate(cfg: &OpenH264Config) -> Result<PathBuf, EncodeError> {
     if let Some(p) = &cfg.library {
         return Ok(p.clone());
     }
-    if let Ok(p) = std::env::var("RDSKTP_OPENH264_LIB") {
+    if let Ok(p) = std::env::var("OXYDESK_OPENH264_LIB") {
         return Ok(p.into());
     }
     CANDIDATES
         .iter()
         .map(PathBuf::from)
         .find(|p| p.exists())
-        .ok_or_else(|| EncodeError::Backend("libopenh264 not found (install openh264 / libopenh264-8 or set RDSKTP_OPENH264_LIB)".into()))
+        .ok_or_else(|| EncodeError::Backend("libopenh264 not found (install openh264 / libopenh264-8 or set OXYDESK_OPENH264_LIB)".into()))
 }
 
 /// Software H.264 encoder, Annex-B stream, no B-frames, low latency.
@@ -121,7 +121,7 @@ impl FrameEncoder for OpenH264Encoder {
             FrameData::DmaBuf(dma) => {
                 // No GPU path here: copy the pixels out of the buffer and encode them as SHM.
                 let need = frame.stride as usize * frame.height as usize;
-                let copy = rdsktp_core::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
+                let copy = oxydesk_core::dmabuf::with_pixels(frame, dma, |p| p[..need].to_vec())?;
                 let shm = Frame {
                     output: frame.output,
                     width: frame.width,
@@ -182,7 +182,7 @@ impl FrameEncoder for OpenH264Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::layout::OutputId;
+    use oxydesk_core::layout::OutputId;
 
     #[test]
     fn bgra_with_padded_stride_encodes() {

@@ -1,0 +1,33 @@
+[package]
+name = "oxydesk-agent"
+description = "Oxydesk session agent: runs as the logged-in user (KWin, capture, encoding, input)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# GPU H.264 encoder through VA-API (links libva; needs libva-dev). Falls back to openh264 at run time.
+vaapi = ["oxydesk-encode/vaapi"]
+kwin = ["dep:oxydesk-scaling", "oxydesk-capture/kwin", "oxydesk-input/kwin", "oxydesk-clipboard/wayland", "dep:oxydesk-session", "dep:oxydesk-input", "dep:oxydesk-clipboard"]
+
+[dependencies]
+oxydesk-core.workspace = true
+oxydesk-agent-proto.workspace = true
+oxydesk-capture.workspace = true
+oxydesk-audio.workspace = true
+oxydesk-drivefs.workspace = true
+oxydesk-spool.workspace = true
+oxydesk-encode = { workspace = true, features = ["openh264"] }
+oxydesk-scaling = { workspace = true, optional = true }
+oxydesk-input = { workspace = true, optional = true }
+oxydesk-clipboard = { workspace = true, optional = true }
+oxydesk-session = { workspace = true, optional = true }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+
+[dev-dependencies]
+oxydesk-remote.workspace = true

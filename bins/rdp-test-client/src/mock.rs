@@ -42,7 +42,7 @@ pub struct MockSession {
     beat: bool,
     clip: VecDeque<String>,
     clip_images: VecDeque<Vec<u8>>,
-    clip_files: VecDeque<rdsktp_core::FileList>,
+    clip_files: VecDeque<oxydesk_core::FileList>,
     audio_pos: u64,
     connections: u32,
     monitors: Vec<MonitorRequest>,
@@ -215,7 +215,7 @@ impl Session for MockSession {
         Ok(())
     }
 
-    fn set_clipboard_files(&mut self, list: rdsktp_core::FileList) -> Result<(), String> {
+    fn set_clipboard_files(&mut self, list: oxydesk_core::FileList) -> Result<(), String> {
         let echoed = if self.faults.broken_clipboard {
             crate::files::corrupt(&list)
         } else {
@@ -228,7 +228,7 @@ impl Session for MockSession {
     fn next_clipboard_files(
         &mut self,
         _timeout: Duration,
-    ) -> Result<Option<rdsktp_core::FileList>, String> {
+    ) -> Result<Option<oxydesk_core::FileList>, String> {
         Ok(self.clip_files.pop_front())
     }
 

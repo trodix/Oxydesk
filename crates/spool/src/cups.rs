@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use rdsktp_core::printer::{printer_name, PrintFormat, PrintLanguage, PrinterInfo};
+use oxydesk_core::printer::{printer_name, PrintFormat, PrintLanguage, PrinterInfo};
 
-/// URI scheme of the backend (`rdsktp:/path/to/socket`).
-pub const SCHEME: &str = "rdsktp";
+/// URI scheme of the backend (`oxydesk:/path/to/socket`).
+pub const SCHEME: &str = "oxydesk";
 
 /// Name of the queue of a printer: the user's name keeps the queues of several sessions apart.
 pub fn queue_name(user: &str, printer: &str) -> String {
@@ -163,7 +163,7 @@ impl Cups {
         };
         let prefix = format!("{SCHEME}:{}/", base.display());
         for line in listing.lines() {
-            // "device for NAME: rdsktp:/run/user/1000/rdsktp-printers/NAME.sock"
+            // "device for NAME: oxydesk:/run/user/1000/oxydesk-printers/NAME.sock"
             let Some(rest) = line.strip_prefix("device for ") else {
                 continue;
             };
@@ -202,7 +202,9 @@ mod tests {
 
     #[test]
     fn only_plain_paths_go_in_a_uri() {
-        assert!(uri_safe(Path::new("/run/user/1000/rdsktp-printers/a.sock")));
+        assert!(uri_safe(Path::new(
+            "/run/user/1000/oxydesk-printers/a.sock"
+        )));
         assert!(!uri_safe(Path::new("/run/user/1000/a b.sock")));
         assert!(!uri_safe(Path::new("relative.sock")));
         assert!(!uri_safe(Path::new("/tmp/é.sock")));
@@ -240,7 +242,7 @@ mod tests {
             fake(dir.path(), "lpstat", "", 0),
             "alice",
         );
-        let socket = Path::new("/run/user/1000/rdsktp-printers/Office.sock");
+        let socket = Path::new("/run/user/1000/oxydesk-printers/Office.sock");
         let queue = cups
             .add_queue("Office", &info(), socket, "42-1")
             .expect("queue");
@@ -249,9 +251,8 @@ mod tests {
         let log = std::fs::read_to_string(dir.path().join("lpadmin.log")).unwrap();
         let mut lines = log.lines();
         let add = lines.next().unwrap();
-        assert!(
-            add.contains("-p alice-Office -E -v rdsktp:/run/user/1000/rdsktp-printers/Office.sock")
-        );
+        assert!(add
+            .contains("-p alice-Office -E -v oxydesk:/run/user/1000/oxydesk-printers/Office.sock"));
         assert!(add.contains("-m drv:///sample.drv/generpcl.ppd"));
         assert!(add.contains("-u allow:alice"));
         assert!(add.contains("-L RDP session 42-1"));
@@ -266,22 +267,22 @@ mod tests {
             fake(dir.path(), "lpstat", "", 0),
             "alice",
         );
-        let socket = Path::new("/run/user/1000/rdsktp-printers/Office.sock");
+        let socket = Path::new("/run/user/1000/oxydesk-printers/Office.sock");
         assert!(cups.add_queue("Office", &info(), socket, "42-1").is_none());
     }
 
     #[test]
     fn stale_queues_under_the_base_are_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let listing = "device for alice-Old: rdsktp:/run/user/1000/rdsktp-printers/Old.sock\n\
-                       device for other-Q: rdsktp:/run/user/1001/rdsktp-printers/Q.sock\n\
+        let listing = "device for alice-Old: oxydesk:/run/user/1000/oxydesk-printers/Old.sock\n\
+                       device for other-Q: oxydesk:/run/user/1001/oxydesk-printers/Q.sock\n\
                        device for lj: socket://10.0.0.5:9100";
         let cups = Cups::with_commands(
             fake(dir.path(), "lpadmin", "", 0),
             fake(dir.path(), "lpstat", listing, 0),
             "alice",
         );
-        cups.remove_stale(Path::new("/run/user/1000/rdsktp-printers"));
+        cups.remove_stale(Path::new("/run/user/1000/oxydesk-printers"));
         let log = std::fs::read_to_string(dir.path().join("lpadmin.log")).unwrap();
         assert_eq!(log.trim(), "-x alice-Old");
     }

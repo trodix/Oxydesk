@@ -7,9 +7,9 @@ cd "$(dirname "$0")/.."
 OUT="$(realpath -m "${1:-artifacts/drives-test}")"
 PORT="${DRIVES_TEST_PORT:-33891}"
 [[ -e /dev/fuse ]] && command -v fusermount3 >/dev/null || { echo "SKIP: /dev/fuse or fusermount3 missing"; exit 0; }
-cargo build -q --release -p rdsktp -p rdp-test-client --features rdp-test-client/ironrdp || exit 1
+cargo build -q --release -p oxydesk -p rdp-test-client --features rdp-test-client/ironrdp || exit 1
 rm -rf "$OUT"; mkdir -p "$OUT/state" "$OUT/share" "$OUT/mnt"
-RUST_LOG=info target/release/rdsktp --test-mode --listen "127.0.0.1:$PORT" --state-dir "$OUT/state" --drives-dir "$OUT/mnt" \
+RUST_LOG=info target/release/oxydesk --test-mode --listen "127.0.0.1:$PORT" --state-dir "$OUT/state" --drives-dir "$OUT/mnt" \
   >"$OUT/server.log" 2>&1 & srv=$!
 trap 'kill $srv 2>/dev/null; wait $srv 2>/dev/null' EXIT
 for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break; sleep 0.1; done

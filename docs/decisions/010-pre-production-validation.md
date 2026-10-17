@@ -6,10 +6,10 @@ VM.
 ## 1. Build and CI on Debian 13 (container `ci/Dockerfile.trixie`)
 - Run in the trixie container: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test
   --workspace`, `ci/check-deps.sh`, builds with the `kwin` and `vaapi` features (bindgen of `cros-libva` against the trixie
-  `libva-dev` headers), `cargo deb -p rdsktp`.
+  `libva-dev` headers), `cargo deb -p oxydesk`.
 - Fixes that were needed: `libva-dev` added to the image; `cargo fmt --all` had never been applied (≈39 files); clippy lints
   (`chunks_exact_to_as_chunks`, unused variables outside the `kwin` feature, `field_reassign_with_default`, child process never
-  waited for in `rdsktp-testapp`); `exclude = ["third_party"]` in the workspace (the vendored code was linted as a member).
+  waited for in `oxydesk-testapp`); `exclude = ["third_party"]` in the workspace (the vendored code was linted as a member).
 - CI job `features` added (`.github/workflows/ci.yml`), and later a `coverage` job (reference, never a gate; see the README and
   CLAUDE.md). The `vaapi` feature stays off by default in the `.deb` (no documented `libva2` dependency while it is not enabled).
 
@@ -20,7 +20,7 @@ VM.
   the time; see §4 quinquies and ADR 011).
 - **Real mstsc.exe (Windows 11 Pro, build 26300, QEMU VM `vm/win11.sh`)** against the server in `--login` mode (Debian 13 + KWin,
   PAM): TLS connection, PAM authentication (`session granted ... user=dev`), EGFX V10, KWin desktop displayed, keyboard input
-  proven (three keys sent in the mstsc session change the marker of `rdsktp-testapp`, colour read on the capture). Clipboard,
+  proven (three keys sent in the mstsc session change the marker of `oxydesk-testapp`, colour read on the capture). Clipboard,
   audio, resizing and multi-monitor with mstsc: see §4 quater and ADR 011.
 - **KRDC**: not run (uses FreeRDP; no difference expected but not verified).
 - **`reconnect` scenario** (test client, 8th check): abrupt loss of the link (socket closed without a disconnect PDU) then
@@ -128,10 +128,10 @@ concurrent connection; NVENC; USB redirection.
 - **Covered**:
   - synthetic desktop (`--test-mode`): `cargo xtask test --client`, mstsc check `desktop_resized` (a magenta block drawn at the
     bottom-right corner of the desktop must appear at the right position, the check centring a desktop smaller than its window);
-  - **real KWin 6.7** (Fedora machine): `WIN_SESSION=kwin cargo xtask test --client` starts `rdsktp --session kwin` with
-    `rdsktp-testapp` (which redraws its window and its magenta block at the new size); `desktop_resized` passes, the virtual output
+  - **real KWin 6.7** (Fedora machine): `WIN_SESSION=kwin cargo xtask test --client` starts `oxydesk --session kwin` with
+    `oxydesk-testapp` (which redraws its window and its magenta block at the new size); `desktop_resized` passes, the virtual output
     gets a custom mode (`kscreen-doctor output.Virtual-0.addCustomMode...` then `mode`, then the geometry is read back because
-    `kscreen-doctor` returns 0 even on failure). A `.desktop` authorising `target/debug/rdsktp` and `rdsktp-testapp` is needed
+    `kscreen-doctor` returns 0 even on failure). A `.desktop` authorising `target/debug/oxydesk` and `oxydesk-testapp` is needed
     (`X-KDE-Wayland-Interfaces`, see ADR 004); the `.deb` now depends on `libkscreen-bin`;
   - **login mode**: agent protocol `Resize` / `Resized` (round-trip test and test of the `AgentLink::resize` link with a fake
     agent: answer, refusal, silent agent), `MultiCapture` delegates when there is a single output;
@@ -153,14 +153,14 @@ concurrent connection; NVENC; USB redirection.
   (`--output-count`), which rules out a set of outputs of different sizes.
   **Fallback chosen: scaling on the session side** (`crates/scaling`). `ScalingCapture` first tries the real resize; if refused,
   the desktop keeps its native size (1920x1080), each frame is fitted to the size the client asked for (aspect ratio kept, black
-  bars, bilinear resampling, `ScaleMap` in `rdsktp-core`) and `ScalingInput` maps the mouse back. The fallback is installed in
-  the agent (`--login` mode, where H.264 encoding is done in the agent) and in `rdsktp --session kwin`. Measured on the Debian 13
+  bars, bilinear resampling, `ScaleMap` in `oxydesk-core`) and `ScalingInput` maps the mouse back. The fallback is installed in
+  the agent (`--login` mode, where H.264 encoding is done in the agent) and in `oxydesk --session kwin`. Measured on the Debian 13
   VM (KWin 6.3.6) with mstsc: 9/9 without `WIN_EXPECT_RESIZE=0` (`desktop_resized`, `resize_request_survives`); agent log:
   `desktop 1920x1080 scaled to 1024x576`. On KWin 6.7.5 (host) the real resize still passes. Limits: resampled image (possible
   blur below a factor of 2), extra agent CPU, text less sharp than with a real resize. For a sharp rendering in production: KWin
   ≥ 6.6.
 - **Clipboard on KWin 6.7.5**: the compositor no longer announces `zwlr_data_control_manager_v1` but `ext_data_control_manager_v1`
-  (visible without authorisation). `rdsktp-clipboard` instantiates both protocols (same shape of requests and events,
+  (visible without authorisation). `oxydesk-clipboard` instantiates both protocols (same shape of requests and events,
   `data_control!` macro) and tries `ext` then `wlr` (KWin 6.3: `wlr`). Measured with the mstsc test: `clipboard_roundtrip` and
   `clipboard_roundtrip_large` pass both ways on the KWin 6.7.5 host and on the Debian 13 VM.
 - **Size remembered by KWin**: KWin ≥ 6.6 keeps custom modes in `~/.config/kwinoutputconfig.json`; a later session therefore starts

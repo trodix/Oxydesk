@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use rdsktp_agent_proto::{DriveFailure, DriveOp, DriveResult, DriveStatInfo, ToAgent};
-use rdsktp_core::error::DriveError;
-use rdsktp_core::{DriveHandle, DriveHost, DriveStat, OpenMode, RemoteDrive};
+use oxydesk_agent_proto::{DriveFailure, DriveOp, DriveResult, DriveStatInfo, ToAgent};
+use oxydesk_core::error::DriveError;
+use oxydesk_core::{DriveHandle, DriveHost, DriveStat, OpenMode, RemoteDrive};
 
 use crate::link::AgentLink;
 
@@ -64,7 +64,7 @@ pub(crate) fn execute(drive: &dyn RemoteDrive, op: DriveOp) -> DriveResult {
             len,
         } => {
             // The agent cannot make this side allocate more than one block.
-            if len > rdsktp_core::drive::MAX_BLOCK {
+            if len > oxydesk_core::drive::MAX_BLOCK {
                 return DriveResult::Err(DriveFailure::Invalid);
             }
             drive
@@ -167,7 +167,7 @@ impl DriveHost for AgentDrives {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::{DriveEntry, DriveSpace};
+    use oxydesk_core::{DriveEntry, DriveSpace};
 
     /// A drive that records the calls and fails for the names it does not know.
     #[derive(Default)]
@@ -405,7 +405,7 @@ mod tests {
             ),
             DriveResult::Err(DriveFailure::Invalid)
         );
-        let too_big = rdsktp_core::drive::MAX_BLOCK + 1;
+        let too_big = oxydesk_core::drive::MAX_BLOCK + 1;
         assert_eq!(
             execute(
                 &d,
@@ -417,7 +417,7 @@ mod tests {
             ),
             DriveResult::Err(DriveFailure::Invalid)
         );
-        let max = rdsktp_core::drive::MAX_BLOCK;
+        let max = oxydesk_core::drive::MAX_BLOCK;
         assert!(matches!(
             execute(
                 &d,

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Hexagonal rule: an adapter crate only depends on rdsktp-core, never on another rdsktp-* crate.
-# `rdsktp-rdp` (assembly) and the bins are exempt. The `*-proto` crates are protocol contracts
-# (no logic, no rdsktp dependency) that adapters may share.
+# Hexagonal rule: an adapter crate only depends on oxydesk-core, never on another oxydesk-* crate.
+# `oxydesk-rdp` (assembly) and the bins are exempt. The `*-proto` crates are protocol contracts
+# (no logic, no oxydesk dependency) that adapters may share.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
 for dir in crates/*/; do
   name="$(basename "$dir")"
   case "$name" in core|rdp) continue ;; esac
-  if grep -E '^rdsktp-[a-z-]+' "$dir/Cargo.toml" | grep -Ev '^rdsktp-(core|[a-z]+-proto)\b' >/dev/null; then
+  if grep -E '^oxydesk-[a-z-]+' "$dir/Cargo.toml" | grep -Ev '^oxydesk-(core|[a-z]+-proto)\b' >/dev/null; then
     echo "violation: $name depends on another adapter" >&2; fail=1
   fi
 done
@@ -16,8 +16,8 @@ if grep -E '^(tokio|pipewire|ironrdp|x264|pam)' crates/core/Cargo.toml >/dev/nul
   echo "violation: core depends on a heavy technology" >&2; fail=1
 fi
 for proto in crates/*-proto; do
-  if grep -E '^rdsktp-' "$proto/Cargo.toml" | grep -v '^name' | grep -v '^description' >/dev/null; then
-    echo "violation: $(basename "$proto") must not depend on any rdsktp crate" >&2; fail=1
+  if grep -E '^oxydesk-' "$proto/Cargo.toml" | grep -v '^name' | grep -v '^description' >/dev/null; then
+    echo "violation: $(basename "$proto") must not depend on any oxydesk crate" >&2; fail=1
   fi
 done
 # Only `authd` (privileged) loads PAM.

@@ -5,9 +5,9 @@
 //! never fall back.
 use std::str::FromStr;
 
-use rdsktp_core::error::EncodeError;
-use rdsktp_core::frame::Frame;
-use rdsktp_core::ports::{EncodedFrame, FrameEncoder};
+use oxydesk_core::error::EncodeError;
+use oxydesk_core::frame::Frame;
+use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EncoderChoice {
@@ -158,8 +158,8 @@ impl FrameEncoder for AutoEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::frame::{FrameData, PixelFormat};
-    use rdsktp_core::layout::OutputId;
+    use oxydesk_core::frame::{FrameData, PixelFormat};
+    use oxydesk_core::layout::OutputId;
 
     fn frame(w: u32, h: u32) -> Frame {
         Frame {

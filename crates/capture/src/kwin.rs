@@ -12,12 +12,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use oxydesk_core::error::CaptureError;
+use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
+use oxydesk_core::layout::OutputId;
+use oxydesk_core::ports::CaptureSource;
 use pipewire as pw;
 use pw::{properties::properties, spa};
-use rdsktp_core::error::CaptureError;
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
-use rdsktp_core::layout::OutputId;
-use rdsktp_core::ports::CaptureSource;
 use spa::param::video::{VideoFormat, VideoInfoRaw};
 use spa::pod::Pod;
 use wayland_client::protocol::{wl_output, wl_registry};
@@ -45,9 +45,9 @@ use proto::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 const POINTER_HIDDEN: u32 = 1;
 const POINTER_METADATA: u32 = 4;
 
-/// Pointer mode of the streams: the shape is wanted unless `RDSKTP_POINTER=hidden`.
+/// Pointer mode of the streams: the shape is wanted unless `OXYDESK_POINTER=hidden`.
 fn pointer_mode() -> u32 {
-    match std::env::var("RDSKTP_POINTER").as_deref() {
+    match std::env::var("OXYDESK_POINTER").as_deref() {
         Ok("hidden") => POINTER_HIDDEN,
         _ => POINTER_METADATA,
     }
@@ -142,8 +142,8 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Wl {
 }
 
 type Mailbox = Arc<Mutex<Option<Frame>>>;
-type Cursor = Arc<Mutex<Option<rdsktp_core::cursor::CursorUpdate>>>;
-type Waker = Arc<Mutex<Option<Arc<rdsktp_core::wake::Wake>>>>;
+type Cursor = Arc<Mutex<Option<oxydesk_core::cursor::CursorUpdate>>>;
+type Waker = Arc<Mutex<Option<Arc<oxydesk_core::wake::Wake>>>>;
 
 /// Source factory of a `MultiCapture` over a KWin session: the outputs the session started with (`base` of them)
 /// are captured again by name, beyond that they are virtual outputs that vanish with their capture (KWin 6.7).
@@ -298,13 +298,13 @@ impl KwinCapture {
 }
 
 impl CaptureSource for KwinCapture {
-    fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
+    fn set_waker(&mut self, wake: Arc<oxydesk_core::wake::Wake>) {
         *self.waker.lock().expect("waker") = Some(wake);
     }
 
-    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+    fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
         let update = self.cursor.lock().expect("cursor").take()?;
-        rdsktp_core::cursor::resolve(update)
+        oxydesk_core::cursor::resolve(update)
     }
 
     /// The virtual output gets a custom mode of the requested size (`kscreen-doctor`, libkscreen); the
@@ -575,7 +575,7 @@ impl Drop for Requeue<'_> {
 /// `buffer` must point to a valid `spa_buffer` whose metadata stay valid for the call.
 unsafe fn cursor_update(
     buffer: *const spa::sys::spa_buffer,
-) -> Option<rdsktp_core::cursor::CursorUpdate> {
+) -> Option<oxydesk_core::cursor::CursorUpdate> {
     let b = &*buffer;
     if b.metas.is_null() {
         return None;
@@ -682,7 +682,7 @@ fn run(
         .map_err(|e| format!("PipeWire connection: {e}"))?;
     let stream = pw::stream::StreamBox::new(
         &core,
-        "rdsktp-capture",
+        "oxydesk-capture",
         properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -812,7 +812,7 @@ fn run(
                     height: sz.height,
                     stride: stride as u32,
                     format: pixel,
-                    data: FrameData::DmaBuf(rdsktp_core::DmaBuf {
+                    data: FrameData::DmaBuf(oxydesk_core::DmaBuf {
                         fd,
                         offset: offset as u32,
                         modifier: d.format.modifier(),
@@ -1018,11 +1018,11 @@ fn tracing_log(args: std::fmt::Arguments<'_>) {
     eprintln!("{args}");
 }
 
-/// Diagnostic: `RDSKTP_DUMP_FRAME=/path/img.ppm` writes the 20th received image (PPM) then goes quiet.
+/// Diagnostic: `OXYDESK_DUMP_FRAME=/path/img.ppm` writes the 20th received image (PPM) then goes quiet.
 fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelFormat) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNT: AtomicU32 = AtomicU32::new(0);
-    let Ok(path) = std::env::var("RDSKTP_DUMP_FRAME") else {
+    let Ok(path) = std::env::var("OXYDESK_DUMP_FRAME") else {
         return;
     };
     if COUNT.fetch_add(1, Ordering::Relaxed) != 20 {

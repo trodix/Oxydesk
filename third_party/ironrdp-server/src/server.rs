@@ -213,7 +213,7 @@ pub trait CredentialValidator: Send + Sync {
     /// caller's executor. Native-async backends can simply `.await`.
     async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
 
-    /// rdsktp patch: the client presented an Auto-Reconnect cookie (28 bytes: length, version, logon id,
+    /// oxydesk patch: the client presented an Auto-Reconnect cookie (28 bytes: length, version, logon id,
     /// security verifier) to resume the session it lost. `Accept` replaces the credential check; `Reject`
     /// falls back to [`validate`](Self::validate). The default refuses every cookie.
     async fn validate_reconnect(&self, cookie: &[u8; 28]) -> Result<CredentialDecision, CredentialValidationError> {
@@ -221,7 +221,7 @@ pub trait CredentialValidator: Send + Sync {
         Ok(CredentialDecision::Reject)
     }
 
-    /// rdsktp patch: cookie to hand to the client once the connection is accepted (Save Session Info PDU), so
+    /// oxydesk patch: cookie to hand to the client once the connection is accepted (Save Session Info PDU), so
     /// that it can reconnect by itself after a network loss. `None`: auto-reconnect is not offered.
     fn reconnect_cookie(&self) -> Option<rdp::session_info::ServerAutoReconnect> {
         None
@@ -502,7 +502,7 @@ pub struct RdpServer {
     /// and locks up its input dispatch for seconds on refocus while it
     /// chews through the backlog.
     display_suppressed: Arc<AtomicBool>,
-    /// rdsktp patch: adopts the client's monitors at connection (see `ironrdp_acceptor::MonitorPolicy`).
+    /// oxydesk patch: adopts the client's monitors at connection (see `ironrdp_acceptor::MonitorPolicy`).
     monitor_policy: Option<ironrdp_acceptor::MonitorPolicy>,
 
     /// Latest NetworkAutoDetect round-trip time in milliseconds, or `u32::MAX`
@@ -629,12 +629,12 @@ impl RdpServer {
     /// post-construction reconfiguration.
     ///
     /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
-    /// rdsktp patch: lets the display adopt the client's monitors (GCC Client Monitor Data) before Demand Active.
+    /// oxydesk patch: lets the display adopt the client's monitors (GCC Client Monitor Data) before Demand Active.
     pub fn set_monitor_policy(&mut self, policy: Option<ironrdp_acceptor::MonitorPolicy>) {
         self.monitor_policy = policy;
     }
 
-    /// rdsktp patch: how long a silent peer is waited for before its connection is dropped (default 8 s; zero: the
+    /// oxydesk patch: how long a silent peer is waited for before its connection is dropped (default 8 s; zero: the
     /// kernel decides, after minutes).
     pub fn set_dead_peer_timeout(&mut self, timeout: Duration) {
         self.dead_peer_timeout = timeout;
@@ -1066,7 +1066,7 @@ impl RdpServer {
                         if let Err(error) = detect_dead_peers(&stream, self.dead_peer_timeout) {
                             debug!(?error, "cannot enable dead-peer detection");
                         }
-                        // rdsktp patch: audio produced for the previous connection while it was hanging (up to the
+                        // oxydesk patch: audio produced for the previous connection while it was hanging (up to the
                         // dead-peer timeout) must not be played to the next one.
                         self.drop_stale_waves().await;
                         let started = tokio::time::Instant::now();
@@ -1224,7 +1224,7 @@ impl RdpServer {
                                 debug!("Dropping stale wave");
                                 continue;
                             }
-                            // rdsktp patch: audio sent before the client negotiated its formats is dropped, it must not
+                            // oxydesk patch: audio sent before the client negotiated its formats is dropped, it must not
                             // end the connection.
                             match rdpsnd.wave(data, ts) {
                                 Ok(msgs) => Ok(msgs),
@@ -1255,7 +1255,7 @@ impl RdpServer {
                     };
                     rdpdr.set_next_tag(tag);
                     let msgs = rdpdr.send_message(msg);
-                    // rdsktp patch: a refused drive request (channel not active yet) fails that request only.
+                    // oxydesk patch: a refused drive request (channel not active yet) fails that request only.
                     let msgs = match msgs {
                         Ok(msgs) => msgs,
                         Err(error) => {
@@ -1287,7 +1287,7 @@ impl RdpServer {
                             continue;
                         }
                     };
-                    // rdsktp patch: a clipboard request the channel refuses (a file range of a list the
+                    // oxydesk patch: a clipboard request the channel refuses (a file range of a list the
                     // client has replaced meanwhile, for instance) must not end the connection.
                     let msgs = match msgs {
                         Ok(msgs) => msgs,
@@ -1546,7 +1546,7 @@ impl RdpServer {
 
         self.static_channels = result.static_channels;
         if !result.reactivation {
-            // rdsktp patch: lets the server adopt the client's keyboard layout.
+            // oxydesk patch: lets the server adopt the client's keyboard layout.
             self.handler.lock().await.keyboard_layout(result.keyboard_layout);
             for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
                 debug!(?channel, ?channel_id, "Start");

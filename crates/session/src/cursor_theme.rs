@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rdsktp_core::cursor::{CursorResolver, CursorShape};
+use oxydesk_core::cursor::{CursorResolver, CursorShape};
 
-pub(crate) const ICONS_DIR: &str = "rdsktp-icons";
-pub(crate) const THEME: &str = "rdsktp-blank";
+pub(crate) const ICONS_DIR: &str = "oxydesk-icons";
+pub(crate) const THEME: &str = "oxydesk-blank";
 /// Size the bitmaps are taken at (RDP pointers go up to 96 px; 32 is the classic size).
 const WANTED_SIZE: u32 = 32;
 
@@ -264,7 +264,7 @@ pub(crate) fn install_resolver() {
         tracing::warn!("no cursor theme found: remote cursor shapes unavailable");
         return;
     }
-    rdsktp_core::cursor::install_resolver(Box::new(ThemeResolver::new(chain)));
+    oxydesk_core::cursor::install_resolver(Box::new(ThemeResolver::new(chain)));
 }
 
 #[cfg(test)]
@@ -319,7 +319,7 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rdsktp-cursor-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oxydesk-cursor-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

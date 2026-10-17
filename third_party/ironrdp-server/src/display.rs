@@ -300,7 +300,7 @@ pub trait RdpServerDisplay: Send {
     /// Return a display updates receiver
     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;
 
-    /// rdsktp patch: monitors announced to the client in the Monitor Layout PDU (inclusive coordinates, desktop
+    /// oxydesk patch: monitors announced to the client in the Monitor Layout PDU (inclusive coordinates, desktop
     /// space from (0, 0)). `None`: one monitor covering the whole desktop.
     async fn monitors(&mut self) -> Option<Vec<ironrdp_pdu::gcc::Monitor>> {
         None

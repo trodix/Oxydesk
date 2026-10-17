@@ -8,11 +8,11 @@ mod pixels;
 
 use std::sync::{Arc, Mutex};
 
-use rdsktp_core::error::{CaptureError, InputError};
-use rdsktp_core::frame::{Frame, FrameData};
-use rdsktp_core::layout::{Layout, OutputId};
-use rdsktp_core::ports::{CaptureSource, InputSink, PointerButton};
-use rdsktp_core::ScaleMap;
+use oxydesk_core::error::{CaptureError, InputError};
+use oxydesk_core::frame::{Frame, FrameData};
+use oxydesk_core::layout::{Layout, OutputId};
+use oxydesk_core::ports::{CaptureSource, InputSink, PointerButton};
+use oxydesk_core::ScaleMap;
 
 pub use pixels::scale_frame;
 
@@ -80,11 +80,11 @@ pub struct ScalingCapture {
 }
 
 impl CaptureSource for ScalingCapture {
-    fn set_waker(&mut self, wake: Arc<rdsktp_core::wake::Wake>) {
+    fn set_waker(&mut self, wake: Arc<oxydesk_core::wake::Wake>) {
         self.inner.set_waker(wake);
     }
 
-    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+    fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
         self.inner.take_cursor()
     }
 
@@ -213,7 +213,7 @@ impl InputSink for ScalingInput {
         self.inner.key(scancode, pressed)
     }
 
-    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+    fn set_keyboard_layout(&mut self, layout: &oxydesk_core::XkbLayout) -> Result<(), InputError> {
         self.inner.set_keyboard_layout(layout)
     }
 
@@ -243,7 +243,7 @@ impl InputSink for ScalingInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::frame::PixelFormat;
+    use oxydesk_core::frame::PixelFormat;
 
     /// 8x4 desktop, left half red / right half blue, refuses any resize.
     struct Fixed;
@@ -319,7 +319,7 @@ mod tests {
         let (mut cap, mut input) = wrap(Box::new(FixedPair), Box::new(spy.clone()));
         let layout = Layout {
             outputs: vec![
-                rdsktp_core::layout::OutputInfo {
+                oxydesk_core::layout::OutputInfo {
                     id: OutputId(0),
                     x: 0,
                     y: 0,
@@ -327,7 +327,7 @@ mod tests {
                     height: 2,
                     primary: true,
                 },
-                rdsktp_core::layout::OutputInfo {
+                oxydesk_core::layout::OutputInfo {
                     id: OutputId(1),
                     x: 4,
                     y: 0,

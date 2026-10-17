@@ -1,5 +1,5 @@
 [package]
-name = "rdsktp-scaling"
+name = "oxydesk-scaling"
 description = "Server-side scaling fallback when the compositor cannot resize its desktop"
 edition.workspace = true
 version.workspace = true
@@ -7,5 +7,5 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-rdsktp-core.workspace = true
+oxydesk-core.workspace = true
 tracing = "0.1"

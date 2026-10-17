@@ -1,0 +1,99 @@
+[package]
+name = "oxydesk"
+description = "Headless RDP server for KDE Plasma (Oxydesk)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# GPU H.264 encoder through VA-API (links libva; needs libva-dev). Falls back to openh264 at run time.
+vaapi = ["oxydesk-encode/vaapi"]
+# Real KWin session: PipeWire capture + fake_input input (requires libpipewire-dev and libclang).
+kwin = ["dep:oxydesk-scaling", "oxydesk-capture/kwin", "oxydesk-input/kwin", "oxydesk-clipboard/wayland", "dep:oxydesk-session", "dep:oxydesk-input", "dep:oxydesk-clipboard"]
+
+[dependencies]
+oxydesk-input = { workspace = true, optional = true }
+oxydesk-clipboard = { workspace = true, optional = true }
+oxydesk-audio.workspace = true
+oxydesk-drivefs.workspace = true
+oxydesk-spool.workspace = true
+oxydesk-remote.workspace = true
+oxydesk-session = { workspace = true, optional = true }
+oxydesk-core.workspace = true
+oxydesk-capture.workspace = true
+oxydesk-encode = { workspace = true, features = ["openh264"] }
+oxydesk-scaling = { workspace = true, optional = true }
+oxydesk-rdp.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rcgen = "0.14"
+
+[package.metadata.deb]
+features = ["kwin"]
+name = "oxydesk"
+maintainer = "Sébastien Vallet <sebastien.vallet89@gmail.com>"
+copyright = "2026 Sébastien Vallet, AGPL-3.0-only"
+extended-description = "Headless RDP server for KDE Plasma (Wayland)."
+section = "net"
+priority = "optional"
+depends = "$auto, libopenh264-8, libkscreen-bin, fuse3"
+recommends = "cups, cups-filters, ghostscript"
+assets = [
+    ["target/release/oxydesk", "usr/bin/", "755"],
+    ["../../LICENSE", "usr/share/doc/oxydesk/LICENSE", "644"],
+    ["target/release/oxydesk-testapp", "usr/lib/oxydesk/", "755"],
+    ["../../dist/oxydesk.desktop", "usr/share/applications/", "644"],
+    ["../../dist/oxydesk-agent.desktop", "usr/share/applications/", "644"],
+    ["../../dist/oxydesk.service", "lib/systemd/system/", "644"],
+    ["../../dist/oxydesk.conf", "etc/oxydesk/", "644"],
+    ["target/release/oxydesk-authd", "usr/bin/", "755"],
+    ["target/release/oxydesk-agent", "usr/bin/", "755"],
+    ["../../dist/oxydesk-authd.service", "lib/systemd/system/", "644"],
+    ["../../dist/oxydesk-agent@.service", "lib/systemd/system/", "644"],
+    ["../../dist/pam/oxydesk", "etc/pam.d/", "644"],
+    ["../../dist/pam/oxydesk-session", "etc/pam.d/", "644"],
+    ["../../dist/sysusers/oxydesk.conf", "usr/lib/sysusers.d/", "644"],
+    ["target/release/oxydesk-cups-backend", "usr/lib/cups/backend/oxydesk", "700"],
+]
+maintainer-scripts = "../../dist/debian/"
+
+# RPM (Fedora, RHEL, Rocky) built with cargo-generate-rpm from the same binaries as the .deb. The files that differ from the
+# Debian package: PAM stacks (system-auth instead of common-*), unit directory (/usr/lib/systemd/system), package names.
+[package.metadata.generate-rpm]
+name = "oxydesk"
+summary = "Headless RDP server for KDE Plasma (Wayland)"
+license = "AGPL-3.0-only"
+auto-req = "auto"
+post_install_script = "dist/rpm/post.sh"
+assets = [
+    { source = "target/release/oxydesk", dest = "/usr/bin/oxydesk", mode = "755" },
+    { source = "LICENSE", dest = "/usr/share/doc/oxydesk/LICENSE", mode = "644", doc = true },
+    { source = "target/release/oxydesk-testapp", dest = "/usr/lib/oxydesk/oxydesk-testapp", mode = "755" },
+    { source = "target/release/oxydesk-authd", dest = "/usr/bin/oxydesk-authd", mode = "755" },
+    { source = "target/release/oxydesk-agent", dest = "/usr/bin/oxydesk-agent", mode = "755" },
+    { source = "target/release/oxydesk-cups-backend", dest = "/usr/lib/cups/backend/oxydesk", mode = "700" },
+    { source = "dist/oxydesk.desktop", dest = "/usr/share/applications/oxydesk.desktop", mode = "644" },
+    { source = "dist/oxydesk-agent.desktop", dest = "/usr/share/applications/oxydesk-agent.desktop", mode = "644" },
+    { source = "dist/oxydesk.service", dest = "/usr/lib/systemd/system/oxydesk.service", mode = "644" },
+    { source = "dist/oxydesk-authd.service", dest = "/usr/lib/systemd/system/oxydesk-authd.service", mode = "644" },
+    { source = "dist/oxydesk-agent@.service", dest = "/usr/lib/systemd/system/oxydesk-agent@.service", mode = "644" },
+    { source = "dist/oxydesk.conf", dest = "/etc/oxydesk/oxydesk.conf", mode = "644", config = "noreplace" },
+    { source = "dist/pam/rpm/oxydesk", dest = "/etc/pam.d/oxydesk", mode = "644", config = true },
+    { source = "dist/pam/rpm/oxydesk-session", dest = "/etc/pam.d/oxydesk-session", mode = "644", config = true },
+    { source = "dist/sysusers/oxydesk.conf", dest = "/usr/lib/sysusers.d/oxydesk.conf", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+fuse3 = "*"
+pam = "*"
+systemd = "*"
+
+[package.metadata.generate-rpm.recommends]
+openh264 = "*"
+libkscreen = "*"
+cups = "*"
+ghostscript = "*"

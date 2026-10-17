@@ -2,7 +2,7 @@
 # stores the credentials for the target host and opens the stock mstsc.exe on it.
 # The script is fixed; the CD only provides data. A displays.txt ("WIDTHxHEIGHT") on the CD first puts every display
 # of the guest at that size, side by side (manual tests with several monitors, see `win11.sh manual`).
-$log = 'C:\rdsktp\mstsc-test.log'
+$log = 'C:\oxydesk\mstsc-test.log'
 # Same lines on COM1 (QEMU: -serial file) so that the host can read them.
 try { $com = New-Object System.IO.Ports.SerialPort 'COM1', 115200; $com.Open() } catch { $com = $null }
 function Log([string]$line) { "$(Get-Date -Format o) $line" | Out-File $log -Append; if ($com) { try { $com.WriteLine("MSTSC $line") } catch { } } }
@@ -104,13 +104,13 @@ foreach ($d in Get-PSDrive -PSProvider FileSystem) {
     $addr = ((Get-Content $rdp | Where-Object { $_ -like 'full address:s:*' }) -split ':s:', 2)[1]
     $host_ = $addr.Split(':')[0]
     cmdkey /generic:"TERMSRV/$host_" /user:$user /pass:$pass | Out-Null
-    Copy-Item $rdp C:\rdsktp\target.rdp -Force
+    Copy-Item $rdp C:\oxydesk\target.rdp -Force
     "$(Get-Date -Format o) mstsc -> $addr" | Out-File $log -Append
     # cursorlog.txt holding "nomstsc": pointer test of the bare guest.
     $skip = $remote
-    if ($remote) { Copy-Item $rdp (Join-Path ([Environment]::GetFolderPath('Desktop')) 'rdsktp.rdp') -Force }
+    if ($remote) { Copy-Item $rdp (Join-Path ([Environment]::GetFolderPath('Desktop')) 'oxydesk.rdp') -Force }
     foreach ($c in Get-PSDrive -PSProvider FileSystem) { $f = Join-Path $c.Root 'cursorlog.txt'; if ((Test-Path $f) -and ((Get-Content $f -Raw) -match 'nomstsc')) { $skip = $true } }
-    if (-not $skip) { Start-Process mstsc.exe -ArgumentList 'C:\rdsktp\target.rdp' }
+    if (-not $skip) { Start-Process mstsc.exe -ArgumentList 'C:\oxydesk\target.rdp' }
     break
   }
 }

@@ -16,13 +16,13 @@ members = [
     "crates/authd-proto",
     "crates/remote",
     "bins/authd",
-    "bins/rdsktp-agent",
-    "bins/rdsktp-cups-backend",
+    "bins/oxydesk-agent",
+    "bins/oxydesk-cups-backend",
     "crates/rdp",
     "crates/session",
     "bins/bench",
-    "bins/rdsktp",
-    "bins/rdsktp-testapp",
+    "bins/oxydesk",
+    "bins/oxydesk-testapp",
     "bins/rdp-test-client",
     "xtask",
 ]
@@ -37,20 +37,20 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-rdsktp-core = { path = "crates/core" }
-rdsktp-capture = { path = "crates/capture" }
-rdsktp-clipboard = { path = "crates/clipboard" }
-rdsktp-drivefs = { path = "crates/drivefs" }
-rdsktp-spool = { path = "crates/spool" }
-rdsktp-audio = { path = "crates/audio" }
-rdsktp-agent-proto = { path = "crates/agent-proto" }
-rdsktp-authd-proto = { path = "crates/authd-proto" }
-rdsktp-remote = { path = "crates/remote" }
-rdsktp-input = { path = "crates/input" }
-rdsktp-encode = { path = "crates/encode" }
-rdsktp-scaling = { path = "crates/scaling" }
-rdsktp-session = { path = "crates/session" }
-rdsktp-rdp = { path = "crates/rdp" }
+oxydesk-core = { path = "crates/core" }
+oxydesk-capture = { path = "crates/capture" }
+oxydesk-clipboard = { path = "crates/clipboard" }
+oxydesk-drivefs = { path = "crates/drivefs" }
+oxydesk-spool = { path = "crates/spool" }
+oxydesk-audio = { path = "crates/audio" }
+oxydesk-agent-proto = { path = "crates/agent-proto" }
+oxydesk-authd-proto = { path = "crates/authd-proto" }
+oxydesk-remote = { path = "crates/remote" }
+oxydesk-input = { path = "crates/input" }
+oxydesk-encode = { path = "crates/encode" }
+oxydesk-scaling = { path = "crates/scaling" }
+oxydesk-session = { path = "crates/session" }
+oxydesk-rdp = { path = "crates/rdp" }
 
 # IronRDP patched locally (third_party/): the Monitor Layout PDU announces the real monitors (multi-monitor
 # mstsc) and the client's GCC monitors are exposed. See docs/decisions/011-dynamic-monitors.md.

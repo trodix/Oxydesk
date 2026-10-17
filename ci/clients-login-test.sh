@@ -17,7 +17,7 @@ command -v sshfs >/dev/null || { echo "sshfs is required" >&2; exit 2; }
 CLIENTS=("$@"); [[ ${#CLIENTS[@]} -gt 0 ]] || CLIENTS=(xfreerdp remmina)
 PORT="${VM_RDP_PORT:-3390}"; VUSER="${VM_USER:-dev}"
 ART="$(realpath -m artifacts/clients-login-test)"
-IMAGE=rdsktp-clients:dev
+IMAGE=oxydesk-clients:dev
 VM="bash vm/vm.sh"
 # shellcheck disable=SC1091
 KEY="$PWD/vm/state/id_ed25519"; SSH_PORT="${VM_SSH_PORT:-2222}"
@@ -41,15 +41,15 @@ trap cleanup EXIT
 for c in "${CLIENTS[@]}"; do
   mkdir -p "$ART/$c"
   # Each run starts with no connection: the agent outlives them, the redirections go away with the client.
-  $VM ssh "rm -rf $RUNDIR/rdsktp-printers/* 2>/dev/null; true" >/dev/null 2>&1
+  $VM ssh "rm -rf $RUNDIR/oxydesk-printers/* 2>/dev/null; true" >/dev/null 2>&1
   env=(-e "RDP_PORT=$PORT" -e "RDP_USER=$VUSER" -e "RDP_PASS=$RDP_TEST_PASSWORD" -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)")
 
   # --- Drives: the client shares a directory, the agent mounts it in the VM (FUSE), sshfs shows the mount here.
   name=Partage; [[ "$c" == remmina ]] && name=out_share
   "$ENGINE" run --rm --network host --device /dev/fuse --cap-add SYS_ADMIN --security-opt label=disable "${env[@]}" \
     -v "$ART/$c:/out:Z" "$IMAGE" "$c" drives >"$ART/$c.drives.txt" 2>&1 & cpid=$!
-  $VM ssh "mkdir -p $RUNDIR/rdsktp-drives" >/dev/null 2>&1
-  sshfs "$VUSER@127.0.0.1:$RUNDIR/rdsktp-drives" "$ART/mnt" -p "$SSH_PORT" \
+  $VM ssh "mkdir -p $RUNDIR/oxydesk-drives" >/dev/null 2>&1
+  sshfs "$VUSER@127.0.0.1:$RUNDIR/oxydesk-drives" "$ART/mnt" -p "$SSH_PORT" \
     -o "IdentityFile=$KEY,IdentitiesOnly=yes,StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null,LogLevel=ERROR,cache=no,BatchMode=yes"
   "$CHECK" --out "$ART/$c" --drives-only --drive-share "$ART/$c/share" --drive-mount "$ART/mnt" --drive-name "$name" \
     --drive-mib 16 --timeout 90 >"$ART/$c.drives.json" 2>&1; rc=$?
@@ -62,12 +62,12 @@ for c in "${CLIENTS[@]}"; do
   grep -q FAIL "$ART/$c.drives.txt" && failed=1
 
   # The previous client's printers go away a moment after its disconnection.
-  for _ in $(seq 60); do $VM ssh "test -z \"\$(ls $RUNDIR/rdsktp-printers 2>/dev/null)\"" >/dev/null 2>&1 && break; sleep 0.5; done
+  for _ in $(seq 60); do $VM ssh "test -z \"\$(ls $RUNDIR/oxydesk-printers 2>/dev/null)\"" >/dev/null 2>&1 && break; sleep 0.5; done
   # --- Printers: a queue of the container records the jobs. A job goes to the socket of the agent (forwarded here),
   # then one through the CUPS queue of the user in the VM.
   "$ENGINE" run --rm --network host --security-opt label=disable "${env[@]}" \
     -v "$ART/$c:/out:Z" "$IMAGE" "$c" printers >"$ART/$c.printers.txt" 2>&1 & cpid=$!
-  sock="$RUNDIR/rdsktp-printers/Recorder.sock"
+  sock="$RUNDIR/oxydesk-printers/Recorder.sock"
   for _ in $(seq 120); do $VM ssh "test -S $sock" >/dev/null 2>&1 && break; sleep 0.5; done
   rm -f "$ART/sock/Recorder.sock"
   ssh -i "$KEY" -p "$SSH_PORT" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \

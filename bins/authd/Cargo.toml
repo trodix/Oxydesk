@@ -1,16 +1,16 @@
 [package]
-name = "rdsktp-authd"
+name = "oxydesk-authd"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "rdsktp-authd"
+name = "oxydesk-authd"
 path = "src/main.rs"
 
 [dependencies]
-rdsktp-authd-proto.workspace = true
+oxydesk-authd-proto.workspace = true
 libloading = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

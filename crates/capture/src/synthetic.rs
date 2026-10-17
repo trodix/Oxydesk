@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use rdsktp_core::error::{CaptureError, ClipboardError, InputError};
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
-use rdsktp_core::layout::{Layout, OutputId};
-use rdsktp_core::ports::{CaptureSource, ClipboardBackend, InputSink, PointerButton};
+use oxydesk_core::error::{CaptureError, ClipboardError, InputError};
+use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
+use oxydesk_core::layout::{Layout, OutputId};
+use oxydesk_core::ports::{CaptureSource, ClipboardBackend, InputSink, PointerButton};
 
 // Contract with bins/rdp-test-client (src/contract.rs): keep both in sync.
 pub const BLOCK: u32 = 32;
@@ -220,7 +220,7 @@ struct DesktopState {
     echo: Option<String>,
     /// Files copied by the client, echoed back as the desktop selection.
     image_echo: Option<Vec<u8>>,
-    files_echo: Option<rdsktp_core::FileList>,
+    files_echo: Option<oxydesk_core::FileList>,
 }
 
 impl SyntheticDesktop {
@@ -312,7 +312,7 @@ impl InputSink for SyntheticDesktop {
     }
 
     /// Test hook: the marker shows the layout received (French: `PALETTE[6]`, German: `PALETTE[7]`).
-    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+    fn set_keyboard_layout(&mut self, layout: &oxydesk_core::XkbLayout) -> Result<(), InputError> {
         let marker = match (layout.layout.as_str(), layout.variant.as_str()) {
             ("fr", "") => 6,
             ("de", "") => 7,
@@ -369,8 +369,8 @@ impl ClipboardBackend for SyntheticDesktop {
         Ok(self.state().image_echo.take())
     }
 
-    fn set_files(&mut self, list: rdsktp_core::FileList) -> Result<(), ClipboardError> {
-        if std::env::var("RDSKTP_ECHO_FILES").is_ok_and(|v| v == "copy") {
+    fn set_files(&mut self, list: oxydesk_core::FileList) -> Result<(), ClipboardError> {
+        if std::env::var("OXYDESK_ECHO_FILES").is_ok_and(|v| v == "copy") {
             // The echo must outlive the client's own copy (a real client drops the contents of the
             // clipboard it no longer owns): copy the files aside first, without blocking the caller.
             let desktop = self.clone();
@@ -384,7 +384,7 @@ impl ClipboardBackend for SyntheticDesktop {
         Ok(())
     }
 
-    fn poll_files(&mut self) -> Result<Option<rdsktp_core::FileList>, ClipboardError> {
+    fn poll_files(&mut self) -> Result<Option<oxydesk_core::FileList>, ClipboardError> {
         Ok(self.state().files_echo.take())
     }
 }
@@ -397,8 +397,8 @@ pub mod echo_copy {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
-    use rdsktp_core::error::ClipboardError;
-    use rdsktp_core::{FileList, FileSource};
+    use oxydesk_core::error::ClipboardError;
+    use oxydesk_core::{FileList, FileSource};
 
     const BLOCK: u32 = 512 * 1024;
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -426,7 +426,7 @@ pub mod echo_copy {
     pub fn materialize(list: &FileList) -> Result<FileList, ClipboardError> {
         let err = |e: std::io::Error| ClipboardError::Backend(e.to_string());
         let dir = std::env::temp_dir().join(format!(
-            "rdsktp-echo-{}-{}",
+            "oxydesk-echo-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn apply_layout_adds_resizes_and_removes_outputs() {
-        use rdsktp_core::layout::MonitorSpec;
+        use oxydesk_core::layout::MonitorSpec;
         let spec = |x, w| MonitorSpec {
             x,
             y: 0,

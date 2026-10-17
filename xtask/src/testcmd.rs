@@ -218,14 +218,14 @@ fn check_drive_pattern(path: &Path, size: u64) -> Result<(), String> {
     }
 }
 
-/// Host side of the mstsc drive test: the guest's drive appears under `mnt`; the guest prepared `rdsktp/drive/guest.bin`
+/// Host side of the mstsc drive test: the guest's drive appears under `mnt`; the guest prepared `oxydesk/drive/guest.bin`
 /// and others, which are checked here through the mount, then changed (the guest checks the result).
 fn drives_host_check(mnt: &Path, within: Duration) -> Result<String, String> {
     let start = Instant::now();
     let dir = loop {
         let found = fs::read_dir(mnt).ok().and_then(|d| {
             d.filter_map(|e| e.ok())
-                .map(|e| e.path().join("rdsktp").join("drive"))
+                .map(|e| e.path().join("oxydesk").join("drive"))
                 .find(|p| p.join("to-rename.bin").is_file())
         });
         if let Some(d) = found {
@@ -261,9 +261,9 @@ fn drives_host_check(mnt: &Path, within: Duration) -> Result<String, String> {
     ))
 }
 
-/// The printer of the mstsc test whose jobs are XPS (`--printer-mode RdsktpXps=xps`), and the one of the raw jobs.
-const XPS_PRINTER: &str = "RdsktpXps";
-const RAW_PRINTER: &str = "RdsktpTest";
+/// The printer of the mstsc test whose jobs are XPS (`--printer-mode OxydeskXps=xps`), and the one of the raw jobs.
+const XPS_PRINTER: &str = "OxydeskXps";
+const RAW_PRINTER: &str = "OxydeskTest";
 
 /// Byte `i` of the job of the printer test: a line, then 100000 bytes `A..Z` repeated (same as `rdp-activex-test.ps1`).
 fn printer_job(printer: &str) -> Vec<u8> {
@@ -279,7 +279,7 @@ fn printer_job(printer: &str) -> Vec<u8> {
     job
 }
 
-/// Host side of the mstsc printer test: the guest's printer `RdsktpTest` appears as a socket under `dir`; one job is
+/// Host side of the mstsc printer test: the guest's printer `OxydeskTest` appears as a socket under `dir`; one job is
 /// sent through it (the guest compares what its spooler wrote to the file port).
 fn printers_host_check(dir: &Path, within: Duration, printer: &str) -> Result<String, String> {
     use std::io::{Read, Write};
@@ -392,14 +392,14 @@ fn client(o: &TestOpts) -> Result<(), String> {
             "build",
             "-q",
             "-p",
-            "rdsktp",
+            "oxydesk",
             "-p",
-            "rdsktp-testapp",
+            "oxydesk-testapp",
             "--features",
-            "rdsktp/kwin",
+            "oxydesk/kwin",
         ]
     } else {
-        &["build", "-q", "-p", "rdsktp"]
+        &["build", "-q", "-p", "oxydesk"]
     };
     if !cargo(server_build)
         || !cargo(&[
@@ -421,15 +421,15 @@ fn client(o: &TestOpts) -> Result<(), String> {
     // The directory is named like the real one: the CUPS backend only accepts such a directory.
     let printers_dir = fs::canonicalize(&o.out)
         .map_err(|e| e.to_string())?
-        .join("rdsktp-printers");
-    let mut server = Command::new("target/debug/rdsktp");
+        .join("oxydesk-printers");
+    let mut server = Command::new("target/debug/oxydesk");
     if kwin {
-        let app = fs::canonicalize("target/debug/rdsktp-testapp").map_err(|e| e.to_string())?;
+        let app = fs::canonicalize("target/debug/oxydesk-testapp").map_err(|e| e.to_string())?;
         server.args([
             "--session",
             "kwin",
             "--kwin-socket",
-            "rdsktp-wintest",
+            "oxydesk-wintest",
             "--session-app",
             &format!("{} --tone --clipboard-echo", app.display()),
         ]);
@@ -440,11 +440,11 @@ fn client(o: &TestOpts) -> Result<(), String> {
     let monitors = std::env::var("WIN_MONITORS").unwrap_or_else(|_| "1".into());
     if kwin {
         // The session shares the user's D-Bus: adopting the client's layout would change the layout of the host.
-        server.env("RDSKTP_KEYBOARD_LAYOUT", "off");
+        server.env("OXYDESK_KEYBOARD_LAYOUT", "off");
     }
     let server = server
         // Files echoed by the test desktop are copied aside: mstsc drops the contents of its old clipboard.
-        .env("RDSKTP_ECHO_FILES", "copy")
+        .env("OXYDESK_ECHO_FILES", "copy")
         .args(["--width", "1280", "--height", "720"])
         .arg("--outputs")
         .arg(&monitors)

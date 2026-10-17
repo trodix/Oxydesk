@@ -182,7 +182,7 @@ case "${1:-}" in
     launch 0 -vnc 127.0.0.1:7,display=gpu0 -vnc 127.0.0.1:8,display=gpu1
     if [[ -f "$S/manual/rdpaccess.txt" ]]; then # the UAC prompt of the guest is accepted by key presses until it reports success
       ( for _ in $(seq 1 300); do running || break; grep -q 'MSTSC rdp enabled' "$S/serial.log" && break; mon "sendkey alt-y" >/dev/null 2>&1; sleep 3; done ) >/dev/null 2>&1 &
-      echo "Remote Desktop of the guest: xfreerdp /v:127.0.0.1:3391 /u:tester /p:\$(cat $S/password) /multimon /f /cert:ignore  (then open the rdsktp icon)"
+      echo "Remote Desktop of the guest: xfreerdp /v:127.0.0.1:3391 /u:tester /p:\$(cat $S/password) /multimon /f /cert:ignore  (then open the oxydesk icon)"
     fi
     echo "booting: VNC 127.0.0.1:5907 (display 1) and 127.0.0.1:5908 (display 2); mstsc opens by itself after the logon" ;;
   view) # view [EXTRA options]: the guest's Remote Desktop (started by `manual`) on the tester's monitors: one window, clipboard

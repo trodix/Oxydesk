@@ -1,6 +1,6 @@
 //! Deterministic audio oracle: tone detection with the Goertzel algorithm.
 
-/// Frequency of the tone emitted by the test servers (`rdsktp-audio::TONE_HZ`).
+/// Frequency of the tone emitted by the test servers (`oxydesk-audio::TONE_HZ`).
 pub const TONE_HZ: f64 = 440.0;
 
 /// 16-bit little-endian interleaved PCM packet received through RDPSND.

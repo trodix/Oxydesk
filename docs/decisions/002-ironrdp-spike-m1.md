@@ -19,7 +19,7 @@ Date: 2026-10-10. Machine: Ryzen 5 5600X, Fedora 44. Tools: `bins/spike`, `bins/
 
 ## Findings from reading the code (settled later)
 - **NLA needs preloaded credentials** (NTLM): incompatible with an arbitrary PAM login. Settled in M7: TLS mode +
-  `CredentialValidator` (PAM validation through `rdsktp-authd`), see ADR 008 and 010.
+  `CredentialValidator` (PAM validation through `oxydesk-authd`), see ADR 008 and 010.
 - **Multi-monitor**: `RdpServerDisplay::size()` exposes a single `DesktopSize` and the acceptor sent a `MonitorLayout` with
   **one** monitor. `ironrdp-egfx` handles several surfaces, `map_surface_to_output(x, y)` and `resize_with_monitors` (≤16).
   Outcome: EGFX surfaces (ADR 006) plus a local patch of the acceptor (ADR 011).

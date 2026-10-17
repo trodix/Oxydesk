@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Real RDP clients (xfreerdp, Remmina) in a container against `rdsktp --test-mode`: nothing to install on the host
+# Real RDP clients (xfreerdp, Remmina) in a container against `oxydesk --test-mode`: nothing to install on the host
 # except Docker or Podman. usage: ci/clients-test.sh [xfreerdp|remmina ...]   (default: both)
-# env: CLIENTS_FULL=0 (only the drive and printer redirections) CLIENTS_DRIVES=0 CLIENTS_PRINTERS=0 CONTAINER_ENGINE (docker|podman, default: whichever is installed) RDSKTP (binary) CLIENTS_TEST_PORT (34100)
+# env: CLIENTS_FULL=0 (only the drive and printer redirections) CLIENTS_DRIVES=0 CLIENTS_PRINTERS=0 CONTAINER_ENGINE (docker|podman, default: whichever is installed) OXYDESK (binary) CLIENTS_TEST_PORT (34100)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -14,14 +14,14 @@ ART=artifacts/clients-test
 # Files written by a rootless Podman container may belong to a sub-uid: remove them from inside its user namespace.
 rm -rf "$ART" 2>/dev/null || { [[ "$ENGINE" == podman ]] && podman unshare rm -rf "$ART"; } || { echo "cannot clean $ART" >&2; exit 2; }
 mkdir -p "$ART"
-IMAGE=rdsktp-clients:dev
+IMAGE=oxydesk-clients:dev
 
 echo "== engine: $ENGINE"
 "$ENGINE" build -q -t "$IMAGE" docker/clients >/dev/null || { echo "image build failed" >&2; exit 2; }
-RDSKTP="${RDSKTP:-}"
-if [[ -z "$RDSKTP" ]]; then
-  cargo build -q -p rdsktp || exit 2
-  RDSKTP="${CARGO_TARGET_DIR:-target}/debug/rdsktp"
+OXYDESK="${OXYDESK:-}"
+if [[ -z "$OXYDESK" ]]; then
+  cargo build -q -p oxydesk || exit 2
+  OXYDESK="${CARGO_TARGET_DIR:-target}/debug/oxydesk"
 fi
 
 # The checker is the test client's `drives` scenario, without the connection.
@@ -30,9 +30,9 @@ DRIVE_CHECK="${CARGO_TARGET_DIR:-target}/release/rdp-test-client"
 failed=0
 for c in "${CLIENTS[@]}"; do
   # A fresh server per client: the synthetic desktop remembers the last size requested by a client.
-  # RDSKTP_ECHO_FILES=copy: the echoed files are copied aside, a client drops the contents of its old clipboard.
+  # OXYDESK_ECHO_FILES=copy: the echoed files are copied aside, a client drops the contents of its old clipboard.
   mkdir -p "$ART/mnt"
-  RDSKTP_ECHO_FILES=copy "$RDSKTP" --test-mode --listen "127.0.0.1:$PORT" --state-dir "$ART/state" --drives-dir "$ART/mnt" --printers "$ART/rdsktp-printers" --printers-cups off >"$ART/server-$c.log" 2>&1 & srv=$!
+  OXYDESK_ECHO_FILES=copy "$OXYDESK" --test-mode --listen "127.0.0.1:$PORT" --state-dir "$ART/state" --drives-dir "$ART/mnt" --printers "$ART/oxydesk-printers" --printers-cups off >"$ART/server-$c.log" 2>&1 & srv=$!
   sleep 1
   mkdir -p "$ART/$c"
   # Drive redirection: the client shares a directory of its container, the server mounts it on this host, and the
@@ -57,7 +57,7 @@ for c in "${CLIENTS[@]}"; do
   if [[ "${CLIENTS_PRINTERS:-1}" == 1 ]]; then
     "$ENGINE" run --rm --network host --security-opt label=disable -e "RDP_PORT=$PORT" -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
       -v "$PWD/$ART/$c:/out:Z" "$IMAGE" "$c" printers >"$ART/$c.printers.txt" 2>&1 & cpid=$!
-    "$DRIVE_CHECK" --out "$ART/$c" --printers-only --printer-socket "$ART/rdsktp-printers" --printer-record "$ART/$c/printed" \
+    "$DRIVE_CHECK" --out "$ART/$c" --printers-only --printer-socket "$ART/oxydesk-printers" --printer-record "$ART/$c/printed" \
       --printer-name Recorder --printer-kib 256 --timeout 60 >"$ART/$c.printers.json" 2>&1; rc=$?
     touch "$ART/$c/printers.done"
     wait "$cpid" 2>/dev/null

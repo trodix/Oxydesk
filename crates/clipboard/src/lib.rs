@@ -13,11 +13,11 @@ pub use wayland::WaylandClipboard;
 #[derive(Debug, Default)]
 pub struct UnavailableClipboard;
 
-impl rdsktp_core::ports::ClipboardBackend for UnavailableClipboard {
-    fn set_text(&mut self, _text: &str) -> Result<(), rdsktp_core::error::ClipboardError> {
+impl oxydesk_core::ports::ClipboardBackend for UnavailableClipboard {
+    fn set_text(&mut self, _text: &str) -> Result<(), oxydesk_core::error::ClipboardError> {
         Ok(())
     }
-    fn poll_text(&mut self) -> Result<Option<String>, rdsktp_core::error::ClipboardError> {
+    fn poll_text(&mut self) -> Result<Option<String>, oxydesk_core::error::ClipboardError> {
         Ok(None)
     }
 }

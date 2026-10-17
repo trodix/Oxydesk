@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use rdsktp_agent_proto::{
+use oxydesk_agent_proto::{
     read_msg, write_msg, DriveResult, FileInfo, FileRange, FromAgent, Rect, ToAgent, MAX_OUTPUTS,
 };
-use rdsktp_core::frame::{Frame, FrameData, PixelFormat};
-use rdsktp_core::layout::OutputId;
-use rdsktp_core::{FileEntry, FileExchange, FileList, RangeRequest, RangeSender};
+use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
+use oxydesk_core::layout::OutputId;
+use oxydesk_core::{FileEntry, FileExchange, FileList, RangeRequest, RangeSender};
 
 /// Pending frames per output. H.264 frames are inter-dependent: one cannot keep only
 /// the last one, they are all delivered in order as long as the queue stays short.
@@ -57,7 +57,7 @@ pub struct AgentLink {
     /// Printers of the client, served by the agent.
     pub(crate) printers: crate::printers::Printers,
     /// Latest pointer change not yet taken (only the last one matters).
-    cursor: Mutex<Option<rdsktp_core::CursorUpdate>>,
+    cursor: Mutex<Option<oxydesk_core::CursorUpdate>>,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
     /// Answer of the agent to the last `Resize` (None while pending).
@@ -67,7 +67,7 @@ pub struct AgentLink {
     layout_reply: Mutex<Option<bool>>,
     layout_cv: Condvar,
     dead: AtomicBool,
-    waker: Mutex<Option<Arc<rdsktp_core::wake::Wake>>>,
+    waker: Mutex<Option<Arc<oxydesk_core::wake::Wake>>>,
 }
 
 fn to_info(e: &FileEntry) -> FileInfo {
@@ -253,10 +253,10 @@ impl AgentLink {
             }
             FromAgent::Cursor(c) => {
                 let update = match c {
-                    None => Some(rdsktp_core::CursorUpdate::Hidden),
+                    None => Some(oxydesk_core::CursorUpdate::Hidden),
                     Some(c) => {
-                        rdsktp_core::CursorShape::new(c.width, c.height, c.hot_x, c.hot_y, c.rgba)
-                            .map(rdsktp_core::CursorUpdate::Shape)
+                        oxydesk_core::CursorShape::new(c.width, c.height, c.hot_x, c.hot_y, c.rgba)
+                            .map(oxydesk_core::CursorUpdate::Shape)
                     }
                 };
                 if let Some(update) = update {
@@ -312,7 +312,7 @@ impl AgentLink {
                 std::thread::spawn(move || {
                     let result = match this.drives.get(drive_id) {
                         Some(drive) => crate::drives::execute(&*drive, op),
-                        None => DriveResult::Err(rdsktp_agent_proto::DriveFailure::NotFound),
+                        None => DriveResult::Err(oxydesk_agent_proto::DriveFailure::NotFound),
                     };
                     this.send(&ToAgent::DriveReply { req_id, result });
                 });
@@ -373,7 +373,7 @@ impl AgentLink {
         Arc::new(crate::drives::AgentDrives(Arc::downgrade(this)))
     }
 
-    pub fn set_waker(&self, wake: Arc<rdsktp_core::wake::Wake>) {
+    pub fn set_waker(&self, wake: Arc<oxydesk_core::wake::Wake>) {
         *self.waker.lock().expect("waker mutex") = Some(wake);
     }
 
@@ -491,7 +491,7 @@ impl AgentLink {
         guard.unwrap_or(false)
     }
 
-    pub fn take_cursor(&self) -> Option<rdsktp_core::CursorUpdate> {
+    pub fn take_cursor(&self) -> Option<oxydesk_core::CursorUpdate> {
         self.cursor.lock().expect("cursor mutex").take()
     }
 
@@ -720,8 +720,8 @@ mod tests {
 
     #[test]
     fn pointer_changes_keep_only_the_latest() {
-        use rdsktp_agent_proto::CursorImage;
-        use rdsktp_core::CursorUpdate;
+        use oxydesk_agent_proto::CursorImage;
+        use oxydesk_core::CursorUpdate;
         let (link, mut agent) = pair();
         let image = |w: u16, len: usize| {
             FromAgent::Cursor(Some(CursorImage {
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn files_flow_both_ways_by_range() {
-        use rdsktp_agent_proto::read_msg;
+        use oxydesk_agent_proto::read_msg;
         let (link, mut agent) = pair();
         let data: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
         let info = |path: &str, size| FileInfo {
@@ -920,13 +920,13 @@ mod tests {
 
         // Server -> desktop: the server offers a list; the agent reads a range, served by the server.
         struct Mem(Vec<u8>);
-        impl rdsktp_core::FileSource for Mem {
+        impl oxydesk_core::FileSource for Mem {
             fn read(
                 &self,
                 _: u32,
                 offset: u64,
                 len: u32,
-            ) -> Result<Vec<u8>, rdsktp_core::error::ClipboardError> {
+            ) -> Result<Vec<u8>, oxydesk_core::error::ClipboardError> {
                 let s = (offset as usize).min(self.0.len());
                 Ok(self.0[s..(s + len as usize).min(self.0.len())].to_vec())
             }
@@ -1045,9 +1045,9 @@ mod tests {
 
     #[test]
     fn printers_are_announced_to_the_agent_and_served_on_its_calls() {
-        use rdsktp_agent_proto::{read_msg, PrintOp, PrintResult};
-        use rdsktp_core::error::PrintError;
-        use rdsktp_core::{
+        use oxydesk_agent_proto::{read_msg, PrintOp, PrintResult};
+        use oxydesk_core::error::PrintError;
+        use oxydesk_core::{
             PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter,
         };
 
@@ -1221,9 +1221,9 @@ mod tests {
 
     #[test]
     fn drives_are_announced_to_the_agent_and_served_on_its_calls() {
-        use rdsktp_agent_proto::{read_msg, DriveFailure, DriveOp, DriveResult};
-        use rdsktp_core::error::DriveError;
-        use rdsktp_core::{
+        use oxydesk_agent_proto::{read_msg, DriveFailure, DriveOp, DriveResult};
+        use oxydesk_core::error::DriveError;
+        use oxydesk_core::{
             DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive,
         };
 
@@ -1292,7 +1292,7 @@ mod tests {
         assert_eq!(name, "Docs");
 
         fn call(agent: &mut UnixStream, req_id: u32, drive_id: u32, op: DriveOp) -> DriveResult {
-            use rdsktp_agent_proto::read_msg;
+            use oxydesk_agent_proto::read_msg;
             write_msg(
                 &mut *agent,
                 &FromAgent::DriveCall {

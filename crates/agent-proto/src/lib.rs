@@ -1,5 +1,5 @@
-//! Protocol between the unprivileged RDP server (`rdsktp`) and the session agent running as
-//! the logged-in user (`rdsktp-agent`), over a Unix socket.
+//! Protocol between the unprivileged RDP server (`oxydesk`) and the session agent running as
+//! the logged-in user (`oxydesk-agent`), over a Unix socket.
 //!
 //! Frame: `[tag: u8][length: u32 big-endian][payload]`. Hand-written binary format
 //! (no serialization dependency); every field is bounded so that a faulty peer cannot
@@ -70,7 +70,7 @@ pub struct DriveStatInfo {
     pub created: i64,
 }
 
-/// Failure of a drive operation (mirrors `rdsktp_core::error::DriveError`).
+/// Failure of a drive operation (mirrors `oxydesk_core::error::DriveError`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveFailure {
     NotFound,

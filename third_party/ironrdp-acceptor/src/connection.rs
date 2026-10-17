@@ -40,9 +40,9 @@ pub struct Acceptor {
     received_reconnect_cookie: Option<[u8; 28]>,
     reactivation: bool,
     honor_client_desktop_size: bool,
-    /// rdsktp patch: monitors announced in the Monitor Layout PDU (empty: one monitor of the desktop size).
+    /// oxydesk patch: monitors announced in the Monitor Layout PDU (empty: one monitor of the desktop size).
     monitors: Vec<gcc::Monitor>,
-    /// rdsktp patch: decides the desktop size and monitors from the client's GCC monitors, before Demand Active.
+    /// oxydesk patch: decides the desktop size and monitors from the client's GCC monitors, before Demand Active.
     monitor_policy: Option<MonitorPolicy>,
 }
 
@@ -78,7 +78,7 @@ fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize
     }
 }
 
-/// rdsktp patch: called with the monitors of the client's GCC Client Monitor Data (empty when none) before the
+/// oxydesk patch: called with the monitors of the client's GCC Client Monitor Data (empty when none) before the
 /// Demand Active is sent; returns the desktop size and the monitors to negotiate and announce, or `None` to keep the
 /// server's.
 pub type MonitorPolicy = std::sync::Arc<dyn Fn(&[gcc::Monitor]) -> Option<(DesktopSize, Vec<gcc::Monitor>)> + Send + Sync>;
@@ -180,14 +180,14 @@ impl Acceptor {
         self.honor_client_desktop_size = honor;
     }
 
-    /// rdsktp patch: monitors announced to the client in the Monitor Layout PDU (inclusive coordinates, desktop
+    /// oxydesk patch: monitors announced to the client in the Monitor Layout PDU (inclusive coordinates, desktop
     /// space starting at (0, 0)). Without it a single monitor covering the desktop is announced, so a client
     /// cannot span several monitors.
     pub fn set_monitors(&mut self, monitors: Vec<gcc::Monitor>) {
         self.monitors = monitors;
     }
 
-    /// rdsktp patch: see `MonitorPolicy`.
+    /// oxydesk patch: see `MonitorPolicy`.
     pub fn set_monitor_policy(&mut self, policy: Option<MonitorPolicy>) {
         self.monitor_policy = policy;
     }
@@ -546,7 +546,7 @@ impl Sequence for Acceptor {
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 if let Some(policy) = &self.monitor_policy {
-                    // rdsktp patch: the server may adopt the client's monitors (empty slice when it sent none).
+                    // oxydesk patch: the server may adopt the client's monitors (empty slice when it sent none).
                     let client: &[gcc::Monitor] = gcc_blocks.monitor.as_ref().map_or(&[], |m| m.monitors.as_slice());
                     if let Some((size, monitors)) = policy(client) {
                         self.desktop_size = size;

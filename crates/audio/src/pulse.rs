@@ -1,12 +1,12 @@
 use std::io::Read;
 use std::process::{Child, ChildStdout, Command, Stdio};
 
-use rdsktp_core::error::AudioError;
-use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource};
+use oxydesk_core::error::AudioError;
+use oxydesk_core::ports::{AudioParams, AudioProvider, AudioSource};
 
 /// Name of the virtual sink created for the session: applications play to it (default sink),
 /// the "monitor" of that sink is captured.
-const SINK: &str = "rdsktp";
+const SINK: &str = "oxydesk";
 
 /// Capture of the "monitor" of a PipeWire null sink, through the PulseAudio API of `pipewire-pulse`
 /// (`pactl` / `parec`, `pulseaudio-utils` package).
@@ -37,7 +37,7 @@ impl PulseCapture {
                     "load-module",
                     "module-null-sink",
                     &format!("sink_name={SINK}"),
-                    "sink_properties=device.description=RustyDesktop",
+                    "sink_properties=device.description=Oxydesk",
                 ])
                 .output()
                 .map_err(|e| backend("pactl", e))?;

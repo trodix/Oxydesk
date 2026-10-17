@@ -42,8 +42,8 @@ use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::ChannelFlags;
-use rdsktp_rdp::clipboard::{announce, Content, LocalContent, SendFn};
-use rdsktp_rdp::RdpClipboard;
+use oxydesk_rdp::clipboard::{announce, Content, LocalContent, SendFn};
+use oxydesk_rdp::RdpClipboard;
 use rustls::pki_types::ServerName;
 use tracing::debug;
 
@@ -57,7 +57,7 @@ pub struct Options {
     pub user: String,
     /// Provided only by `RDP_TEST_PASSWORD`; if present, CredSSP/NLA is enabled.
     pub password: Option<String>,
-    /// TLS only: credentials go in the ClientInfoPdu (`rdsktp --login` mode, no CredSSP).
+    /// TLS only: credentials go in the ClientInfoPdu (`oxydesk --login` mode, no CredSSP).
     pub no_nla: bool,
     pub width: u16,
     pub height: u16,
@@ -75,7 +75,7 @@ struct State {
     seq: u64,
     clip_inbox: VecDeque<String>,
     clip_images: VecDeque<Vec<u8>>,
-    clip_files: VecDeque<rdsktp_core::FileList>,
+    clip_files: VecDeque<oxydesk_core::FileList>,
     audio_inbox: VecDeque<crate::audio::AudioChunk>,
     error: Option<String>,
 }
@@ -101,7 +101,7 @@ enum Command {
     Sync,
     Clipboard(String),
     ClipboardImage(Vec<u8>),
-    ClipboardFiles(rdsktp_core::FileList),
+    ClipboardFiles(oxydesk_core::FileList),
     Monitors(Vec<MonitorRequest>),
     Close,
     /// Drops the socket without the RDP shutdown sequence.
@@ -232,14 +232,14 @@ impl Session for IronRdpSession {
         self.send(Command::ClipboardImage(png.to_vec()))
     }
 
-    fn set_clipboard_files(&mut self, list: rdsktp_core::FileList) -> Result<(), String> {
+    fn set_clipboard_files(&mut self, list: oxydesk_core::FileList) -> Result<(), String> {
         self.send(Command::ClipboardFiles(list))
     }
 
     fn next_clipboard_files(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<rdsktp_core::FileList>, String> {
+    ) -> Result<Option<oxydesk_core::FileList>, String> {
         let deadline = Instant::now() + timeout;
         let mut s = self.shared.lock();
         loop {
@@ -472,7 +472,7 @@ impl DvcProcessor for SurfaceTap {
 }
 
 fn locate_openh264() -> anyhow::Result<PathBuf> {
-    if let Ok(p) = std::env::var("RDSKTP_OPENH264_LIB") {
+    if let Ok(p) = std::env::var("OXYDESK_OPENH264_LIB") {
         return Ok(p.into());
     }
     [
@@ -484,7 +484,7 @@ fn locate_openh264() -> anyhow::Result<PathBuf> {
     .iter()
     .map(PathBuf::from)
     .find(|p| p.exists())
-    .ok_or_else(|| anyhow!("libopenh264 not found (set RDSKTP_OPENH264_LIB)"))
+    .ok_or_else(|| anyhow!("libopenh264 not found (set OXYDESK_OPENH264_LIB)"))
 }
 
 impl OpenH264Decoder {
@@ -706,7 +706,7 @@ fn connector_config(opts: &Options) -> Config {
         },
         bitmap: None,
         client_build: 0,
-        client_name: "rdsktp-test-client".to_owned(),
+        client_name: "oxydesk-test-client".to_owned(),
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: MajorPlatformType::UNIX,
         enable_server_pointer: false,

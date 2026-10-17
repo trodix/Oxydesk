@@ -1,5 +1,5 @@
 //! Adapter of the `SessionBroker` port: authentication and user session delegated to
-//! `rdsktp-authd` (PAM, root) and `rdsktp-agent` (as the user), this process
+//! `oxydesk-authd` (PAM, root) and `oxydesk-agent` (as the user), this process
 //! having no privilege. The desktop ports (`CaptureSource`, `InputSink`, …) are proxies
 //! to the agent; video arrives already encoded.
 
@@ -12,9 +12,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rdsktp_authd_proto::{recv_response, send_request, Request, Response};
-use rdsktp_core::error::LoginError;
-use rdsktp_core::ports::{DesktopPorts, SessionBroker};
+use oxydesk_authd_proto::{recv_response, send_request, Request, Response};
+use oxydesk_core::error::LoginError;
+use oxydesk_core::ports::{DesktopPorts, SessionBroker};
 
 pub use drives::AgentDrives;
 pub use link::AgentLink;
@@ -63,7 +63,7 @@ impl RemoteBroker {
 
     fn outputs_for(&self, outputs: Option<u32>) -> u32 {
         outputs.map_or(self.outputs, |n| {
-            n.clamp(1, rdsktp_core::layout::MAX_OUTPUTS as u32)
+            n.clamp(1, oxydesk_core::layout::MAX_OUTPUTS as u32)
         })
     }
 }
@@ -105,7 +105,7 @@ mod tests {
 
     fn broker_with_authd(answer: Response) -> (RemoteBroker, std::thread::JoinHandle<Request>) {
         let dir = std::env::temp_dir().join(format!(
-            "rdsktp-remote-{}-{:?}",
+            "oxydesk-remote-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -115,8 +115,8 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
-            let request = rdsktp_authd_proto::read_request(&mut conn).unwrap();
-            rdsktp_authd_proto::send_response(&mut conn, &answer, None).unwrap();
+            let request = oxydesk_authd_proto::read_request(&mut conn).unwrap();
+            oxydesk_authd_proto::send_response(&mut conn, &answer, None).unwrap();
             request
         });
         (RemoteBroker::new(path, 1), server)

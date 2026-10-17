@@ -1,8 +1,8 @@
 #![allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks` is too recent for the MSRV
 use std::time::{Duration, Instant};
 
-use rdsktp_core::error::AudioError;
-use rdsktp_core::ports::{AudioParams, AudioProvider, AudioSource};
+use oxydesk_core::error::AudioError;
+use oxydesk_core::ports::{AudioParams, AudioProvider, AudioSource};
 
 /// Frequency of the test tone; the test client detects it (Goertzel).
 pub const TONE_HZ: f32 = 440.0;

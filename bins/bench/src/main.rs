@@ -4,9 +4,9 @@
 
 use std::time::Instant;
 
-use rdsktp_capture::SyntheticSource;
-use rdsktp_core::ports::FrameEncoder;
-use rdsktp_encode::{AutoEncoder, EncoderChoice};
+use oxydesk_capture::SyntheticSource;
+use oxydesk_core::ports::FrameEncoder;
+use oxydesk_encode::{AutoEncoder, EncoderChoice};
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
     args.windows(2)
@@ -24,7 +24,7 @@ enum Source {
     Synthetic(SyntheticSource),
     #[cfg(feature = "kwin")]
     Kwin {
-        capture: Box<dyn rdsktp_core::ports::CaptureSource>,
+        capture: Box<dyn oxydesk_core::ports::CaptureSource>,
         _session: Box<dyn std::any::Any>,
         shm: usize,
         dmabuf: usize,
@@ -37,10 +37,10 @@ impl Source {
         if args.iter().any(|a| a == "--kwin") {
             #[cfg(feature = "kwin")]
             {
-                use rdsktp_core::ports::SessionProvider;
-                let socket = format!("rdsktp-bench-{}", std::process::id());
+                use oxydesk_core::ports::SessionProvider;
+                let socket = format!("oxydesk-bench-{}", std::process::id());
                 let mut session =
-                    rdsktp_session::KwinSession::new(rdsktp_session::KwinSessionConfig {
+                    oxydesk_session::KwinSession::new(oxydesk_session::KwinSessionConfig {
                         socket: socket.clone(),
                         width: w,
                         height: h,
@@ -62,7 +62,7 @@ impl Source {
                     Some("off") => false,
                     _ => choice.wants_dmabuf(),
                 };
-                let capture = rdsktp_capture::KwinCapture::start_with(Some(&socket), 0, dmabuf)
+                let capture = oxydesk_capture::KwinCapture::start_with(Some(&socket), 0, dmabuf)
                     .unwrap_or_else(|e| fail(&format!("capture: {e}")));
                 return Source::Kwin {
                     capture: Box::new(capture),
@@ -79,7 +79,7 @@ impl Source {
         )
     }
 
-    fn next(&mut self) -> rdsktp_core::Frame {
+    fn next(&mut self) -> oxydesk_core::Frame {
         match self {
             Source::Synthetic(s) => s.render(),
             #[cfg(feature = "kwin")]
@@ -89,10 +89,10 @@ impl Source {
                 dmabuf,
                 ..
             } => loop {
-                match capture.recv_latest(rdsktp_core::OutputId(0)) {
+                match capture.recv_latest(oxydesk_core::OutputId(0)) {
                     Ok(Some(f)) => {
                         match f.data {
-                            rdsktp_core::FrameData::DmaBuf(_) => *dmabuf += 1,
+                            oxydesk_core::FrameData::DmaBuf(_) => *dmabuf += 1,
                             _ => *shm += 1,
                         }
                         return f;

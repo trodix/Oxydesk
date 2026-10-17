@@ -14,11 +14,11 @@ for e in podman docker; do [[ -n "$ENGINE" ]] || ! command -v "$e" >/dev/null ||
 PORT="${VM_RDP_PORT:-3390}"; USER_NAME="${VM_USER:-dev}"
 (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null || { echo "no server on 127.0.0.1:$PORT: start the VM first (see the header)" >&2; exit 1; }
 ART=artifacts/lock-test
-IMAGE=rdsktp-clients:dev
+IMAGE=oxydesk-clients:dev
 rm -rf "$ART" 2>/dev/null || { [[ "$ENGINE" == podman ]] && podman unshare rm -rf "$ART"; }
 mkdir -p "$ART"
 "$ENGINE" build -q -t "$IMAGE" docker/clients >/dev/null || { echo "image build failed" >&2; exit 2; }
-NAME=rdsktp-lock-test
+NAME=oxydesk-lock-test
 failed=0
 check() { if [[ "$2" -eq 0 ]]; then echo "PASS  $1  $3"; else echo "FAIL  $1  $3"; failed=1; fi; }
 

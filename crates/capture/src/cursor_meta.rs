@@ -1,7 +1,7 @@
 //! Decoding of the PipeWire cursor metadata (`spa_meta_cursor` followed by a `spa_meta_bitmap`) into the
 //! domain's pointer shape. Pure functions over the raw bytes, so they are tested without PipeWire.
 
-use rdsktp_core::cursor::{CursorShape, CursorUpdate, MAX_CURSOR_SIZE};
+use oxydesk_core::cursor::{CursorShape, CursorUpdate, MAX_CURSOR_SIZE};
 
 // enum spa_video_format
 const RGBX: u32 = 7;

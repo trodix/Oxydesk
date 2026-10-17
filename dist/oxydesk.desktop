@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Oxydesk
+Comment=RDP server: screen capture and input injection
+Exec=/usr/bin/oxydesk
+NoDisplay=true
+# Privileged Wayland interfaces that KWin grants to /usr/bin/oxydesk (ADR 004).
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input

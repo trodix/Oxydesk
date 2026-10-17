@@ -11,11 +11,11 @@ use std::time::Duration;
 use ironrdp_rdpdr::server::RdpdrServer;
 use ironrdp_server::ServerEvent;
 use ironrdp_svc::{SvcMessage, SvcProcessor};
-use rdp_test_client::drive_client::DirectoryDrive;
-use rdsktp_core::{
+use oxydesk_core::{
     PrintFormat, PrintLanguage, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter,
 };
-use rdsktp_rdp::drive::{DriveBackend, EventSender};
+use oxydesk_rdp::drive::{DriveBackend, EventSender};
+use rdp_test_client::drive_client::DirectoryDrive;
 
 type Announced = Vec<(String, PrinterInfo, Arc<dyn RemotePrinter>)>;
 
@@ -183,7 +183,7 @@ fn connect_with(
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rdsktp-print-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("oxydesk-print-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

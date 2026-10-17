@@ -5,14 +5,14 @@ Three processes, three identities:
 
 | Process | Identity | Role |
 |---|---|---|
-| `rdsktp --login` | user `rdsktp` (sysusers), no privilege | RDP server (IronRDP), receives the credentials, assembles the ports |
-| `rdsktp-authd` | root | PAM (`pam_authenticate` + `pam_acct_mgmt`), starts `rdsktp-agent@<user>.service`, passes a connected descriptor to the agent |
-| `rdsktp-agent` | the logged-in user | KWin session, capture, **H.264 encoding**, input, clipboard, audio, drives, printers |
+| `oxydesk --login` | user `oxydesk` (sysusers), no privilege | RDP server (IronRDP), receives the credentials, assembles the ports |
+| `oxydesk-authd` | root | PAM (`pam_authenticate` + `pam_acct_mgmt`), starts `oxydesk-agent@<user>.service`, passes a connected descriptor to the agent |
+| `oxydesk-agent` | the logged-in user | KWin session, capture, **H.264 encoding**, input, clipboard, audio, drives, printers |
 
 - **`SessionBroker` port** (core): `login(user, password) -> Result<DesktopPorts, LoginError>`; `attach` was added for the
   automatic reconnection (ADR 016). `DesktopPorts` groups the ports of a desktop. Adapter: `crates/remote` (`RemoteBroker`),
   whose ports are proxies to the agent (`AgentLink`). The direct desktop ports (`--test-mode`, autologin) are unchanged.
-- **`rdsktp` has no privilege and no PAM dependency** (`ci/check-deps.sh`: PAM outside `bins/authd` is a violation). It never
+- **`oxydesk` has no privilege and no PAM dependency** (`ci/check-deps.sh`: PAM outside `bins/authd` is a violation). It never
   sees a user socket path: authd returns the descriptor through `SCM_RIGHTS`.
 - **Protocols**: `authd-proto` (one request = one connection, JSON bounded to 8 KiB, password masked in `Debug`, user names
   validated `[a-z_][a-z0-9_-]{0,31}` before any use in a systemd unit name); `agent-proto` (binary frames
@@ -27,15 +27,15 @@ Three processes, three identities:
   the agent (`RequestKeyframe`); inter frames received meanwhile are ignored. A new EGFX client also triggers a request
   (`PassthroughEncoder::request_keyframe`). The pump never re-sends an inter frame that was already encoded.
 - **Life cycle**: the KWin session belongs to the agent and survives RDP disconnections; a new connection of the agent
-  replaces the previous one (reconnection). The pump of `rdsktp-rdp` is no longer stopped by a capture error: it waits for the
+  replaces the previous one (reconnection). The pump of `oxydesk-rdp` is no longer stopped by a capture error: it waits for the
   next session.
 - **Credentials**: IronRDP's `with_credential_validator` (async; the blocking login goes through `spawn_blocking`). Refusal →
   `Reject`; back-end error (authd unreachable, agent dead) → validator error, logged without the password. `authd` waits 1 s
   before any negative answer and answers identically for unknown account / wrong password / forbidden account (`--min-uid`,
   default 1000).
-- **Agent unit**: template `rdsktp-agent@.service` (`User=%i`, `PAMName=rdsktp-session` for a real logind session →
+- **Agent unit**: template `oxydesk-agent@.service` (`User=%i`, `PAMName=oxydesk-session` for a real logind session →
   `XDG_RUNTIME_DIR` and session bus). `%U` cannot be used in that context: the agent derives `/run/user/<uid>` itself and waits
-  for the bus before starting KWin. Socket: `<runtime>/rdsktp-agent.sock`, mode 0600. The agent leads its process group and ends
+  for the bus before starting KWin. Socket: `<runtime>/oxydesk-agent.sock`, mode 0600. The agent leads its process group and ends
   it on SIGTERM (KWin, plasmashell and applications live in the logind scope, not the service's cgroup).
 - **PAM through `dlopen`** (`libloading`, `libpam.so.0`): no headers nor `pam` crate on the development machine; the PAM
   conversation answers any hidden prompt with the password, the replies are allocated with `calloc`/`strdup` as PAM requires.
@@ -51,7 +51,7 @@ provided in `--state-dir`). To reassess: NLA with a server-side validator if Iro
 ## Oracles
 - Unit tests: `agent-proto` (round trip of every message, EOF, corrupted input), `authd-proto` (round trip, password absent
   from `Debug`, bounded sizes, usable passed descriptor, name validation), `remote` (gap → resynchronisation on a keyframe,
-  gapless stream, inconsistent Hello, clipboard/audio/agent death), `xtask` (`--session login`), `rdsktp-agent` (settings,
+  gapless stream, inconsistent Hello, clipboard/audio/agent death), `xtask` (`--session login`), `oxydesk-agent` (settings,
   conversions, `serve` against the synthetic desktop).
 - VM test `cargo xtask vm-test --session login` (account `dev`, password taken from `RDP_TEST_PASSWORD`, never an argument):
   the usual scenarios through the real PAM login, plus a **negative control** (`deny-control`): a random wrong password must
@@ -70,7 +70,7 @@ The login path costs ≈ 50 ms more: two 30 Hz paced loops in series (agent, pum
 ratio 0.77 / continuity 0.91 (thresholds passed but lower than with 1 monitor: VM CPU load).
 
 Bugs found by these tests (fixed): `ProtectHome=yes` on authd also hides `/run/user` (agent socket unreachable); KWin grants the
-capture only to an executable with its `.desktop` file (ADR 004): `rdsktp-agent.desktop` added; `Requires=`/`After=` of the test
+capture only to an executable with its `.desktop` file (ADR 004): `oxydesk-agent.desktop` added; `Requires=`/`After=` of the test
 drop-in in the wrong section; the EGFX channel is created *before* the credentials are validated (do not reset it when the
 session is installed); a "refusal" is observed on the client side by the absence of images (the RDP handshake succeeds before
 validation).
@@ -89,7 +89,7 @@ Cause of the extra cost: two 30 Hz paced stages in series (agent, pump). Port `C
 | **login, woken agent, 16 ms cap + woken pump (chosen)** | 60 / 66 ms |
 | login, agent polled at 4 ms + woken pump | 66 / 66 ms |
 
-Defaults kept: pump driven by the capture (`RDSKTP_PUMP=tick` goes back to the fixed pace), agent `--loop event
+Defaults kept: pump driven by the capture (`OXYDESK_PUMP=tick` goes back to the fixed pace), agent `--loop event
 --min-interval-ms 16` (≤ 60 frames/s). Final check: kwin 53.7 ms; synthetic 26.0 ms; login 55.5 ms; login 2 monitors
 77.9 / 74.2 / 69.5 ms, 7/7 (8/8 with 2 monitors). Audio with 2 monitors: one run at ratio 0.73 (threshold passed), the others at
 1.00.

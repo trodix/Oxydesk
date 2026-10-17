@@ -14,8 +14,8 @@ use ironrdp_cliprdr::pdu::{
     ClipboardFileAttributes, ClipboardGeneralCapabilityFlags, FileContentsFlags,
     FileContentsRequest, FileContentsResponse, FileDescriptor,
 };
-use rdsktp_core::error::ClipboardError;
-use rdsktp_core::files::{FileEntry, FileList, FileSource};
+use oxydesk_core::error::ClipboardError;
+use oxydesk_core::files::{FileEntry, FileList, FileSource};
 
 use crate::clipboard::SendFn;
 

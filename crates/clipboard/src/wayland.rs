@@ -9,12 +9,12 @@ use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
-use rdsktp_core::error::ClipboardError;
-use rdsktp_core::files::FileList;
+use oxydesk_core::error::ClipboardError;
+use oxydesk_core::files::FileList;
 
 use crate::fuse::RemoteFiles;
 use crate::local_files::{format_uri_list, list_from_paths, parse_uri_list};
-use rdsktp_core::ports::ClipboardBackend;
+use oxydesk_core::ports::ClipboardBackend;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
 
@@ -380,8 +380,8 @@ pub struct WaylandClipboard {
     files: Option<RemoteFiles>,
 }
 
-/// `$XDG_RUNTIME_DIR/rdsktp-files-<pid>`: one mount per process.
-const MOUNT_PREFIX: &str = "rdsktp-files-";
+/// `$XDG_RUNTIME_DIR/oxydesk-files-<pid>`: one mount per process.
+const MOUNT_PREFIX: &str = "oxydesk-files-";
 
 /// Unmounts and removes the mount directories left by processes that no longer exist.
 fn clean_stale_mounts(runtime: &std::path::Path) {
@@ -429,7 +429,7 @@ impl WaylandClipboard {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let instance_mime = format!(
-            "application/x-rdsktp-instance-{}-{nonce:x}",
+            "application/x-oxydesk-instance-{}-{nonce:x}",
             std::process::id()
         );
         let shared = Arc::new(Shared::default());

@@ -20,7 +20,7 @@ run() {
     set +e
     /ci/package-check.sh $fmt || exit 1
     $remove
-    for f in /usr/bin/rdsktp /usr/bin/rdsktp-authd /usr/lib/systemd/system/rdsktp-authd.service /lib/systemd/system/rdsktp-authd.service /usr/lib/cups/backend/rdsktp; do
+    for f in /usr/bin/oxydesk /usr/bin/oxydesk-authd /usr/lib/systemd/system/oxydesk-authd.service /lib/systemd/system/oxydesk-authd.service /usr/lib/cups/backend/oxydesk; do
       [ ! -e \$f ] || { echo \"FAIL  \$f remains after removal\"; exit 1; }
     done
     echo 'PASS  removal leaves no binary, unit or backend'
@@ -33,16 +33,16 @@ for t in deb rpm tar; do [ -z "${ONLY:-}" ] || [ "$ONLY" = "$t" ] || continue
   case $t in
   deb) for f in "$DIR"/*.deb; do [ -e "$f" ] || continue
          run $DEB "deb on Debian 13" "$DEBS_DEPS && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /pkg/$(basename "$f") >/dev/null" \
-           "DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq rdsktp >/dev/null" deb; done ;;
+           "DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq oxydesk >/dev/null" deb; done ;;
   rpm) for f in "$DIR"/*.rpm; do [ -e "$f" ] || continue
          for img in $FED $ROCKY9 $ROCKY10; do
-           run $img "rpm on ${img##*/}" "$RPM_ROCKY; dnf -y -q install /pkg/$(basename "$f") >/dev/null" "dnf -y -q remove rdsktp >/dev/null" rpm
+           run $img "rpm on ${img##*/}" "$RPM_ROCKY; dnf -y -q install /pkg/$(basename "$f") >/dev/null" "dnf -y -q remove oxydesk >/dev/null" rpm
          done; done ;;
   tar) for f in "$DIR"/*.tar.gz; do [ -e "$f" ] || continue
          b=$(basename "$f")
-         run $DEB "tar.gz on Debian 13" "$DEBS_DEPS && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3 libopenh264-8 libpipewire-0.3-0t64 >/dev/null; mkdir /t && tar -C /t -xzf /pkg/$b && /t/*/install.sh >/dev/null && systemd-sysusers /usr/lib/sysusers.d/rdsktp.conf" "/t/*/uninstall.sh >/dev/null" tar
+         run $DEB "tar.gz on Debian 13" "$DEBS_DEPS && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3 libopenh264-8 libpipewire-0.3-0t64 >/dev/null; mkdir /t && tar -C /t -xzf /pkg/$b && /t/*/install.sh >/dev/null && systemd-sysusers /usr/lib/sysusers.d/oxydesk.conf" "/t/*/uninstall.sh >/dev/null" tar
          for img in $FED $ROCKY9 $ROCKY10; do
-           run $img "tar.gz on ${img##*/}" "$RPM_ROCKY; dnf -y -q install fuse3 pipewire-libs tar gzip >/dev/null; mkdir /t && tar -C /t -xzf /pkg/$b && /t/*/install.sh >/dev/null && systemd-sysusers /usr/lib/sysusers.d/rdsktp.conf" "/t/*/uninstall.sh >/dev/null" tar
+           run $img "tar.gz on ${img##*/}" "$RPM_ROCKY; dnf -y -q install fuse3 pipewire-libs tar gzip >/dev/null; mkdir /t && tar -C /t -xzf /pkg/$b && /t/*/install.sh >/dev/null && systemd-sysusers /usr/lib/sysusers.d/oxydesk.conf" "/t/*/uninstall.sh >/dev/null" tar
          done; done ;;
   esac
 done

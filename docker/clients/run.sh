@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives a real RDP client in a virtual X server against the synthetic desktop of `rdsktp --test-mode` and checks
+# Drives a real RDP client in a virtual X server against the synthetic desktop of `oxydesk --test-mode` and checks
 # what it displays, like a user would: desktop size, live frames, keyboard (marker block colour), clipboard
 # round trip and dynamic resizing.
 # usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives printers
@@ -40,7 +40,7 @@ start_client() { # scenario, extra xfreerdp args...
     remmina)
       cat >"$OUT/remmina.remmina" <<R
 [remmina]
-name=rdsktp
+name=oxydesk
 protocol=RDP
 server=$HOST:$PORT
 username=${RDP_USER:-test}
@@ -133,7 +133,7 @@ scenario_clipboard() {
   start_x 2560 1440
   start_client clipboard /size:"${DW}x${DH}"
   locate "$DW" "$DH" 30 || { check clipboard 1 "desktop not shown"; stop_all; return; }
-  local text="héllo € rdsktp $RANDOM"
+  local text="héllo € oxydesk $RANDOM"
   # Our copy is announced to the server, which echoes it back: the client then owns the clipboard.
   printf '%s' "$text" | xclip -selection clipboard -i
   sleep 3
@@ -183,7 +183,7 @@ scenario_resize() {
     win="$(xdotool search --onlyvisible --class -- xfreerdp 2>/dev/null | head -1)"
     [[ -n "$win" ]] || win="$(xdotool search --onlyvisible --name FreeRDP 2>/dev/null | head -1)"
   else
-    win="$(xdotool search --onlyvisible --name rdsktp 2>/dev/null | head -1)"
+    win="$(xdotool search --onlyvisible --name oxydesk 2>/dev/null | head -1)"
   fi
   [[ -n "$win" ]] || { check resize 1 "client window not found"; stop_all; return; }
   xdotool windowsize "$win" $target_w $target_h
@@ -284,12 +284,12 @@ scenario_clipboard_files() {
   start_x 2560 1440
   start_client clipboard_files /size:"${DW}x${DH}"
   locate "$DW" "$DH" 30 || { check clipboard_files 1 "desktop not shown"; stop_all; return; }
-  local src="$OUT/files-sent/rdsktp-files"
+  local src="$OUT/files-sent/oxydesk-files"
   rm -rf "$OUT/files-sent" "$OUT/files-got"; mkdir -p "$src/sub/deeper"
   : >"$src/empty.txt"; printf 'hello\n' >"$src/hello.txt"
   head -c 1500001 /dev/urandom >"$src/sub/big.bin"; head -c 524288 /dev/urandom >"$src/sub/deeper/block.bin"
   printf 'caf\xc3\xa9' >"$src/sub/café.txt"
-  (cd "$OUT/files-sent" && sha256sum $(find rdsktp-files -type f | sort)) >"$OUT/files.sent.sha"
+  (cd "$OUT/files-sent" && sha256sum $(find oxydesk-files -type f | sort)) >"$OUT/files.sent.sha"
   local uris="file://$PWD/$src"
   uris="file://$(realpath "$src")"
   # One owner only (a second xclip would take the selection from the first); FreeRDP reads the list from
@@ -311,7 +311,7 @@ scenario_clipboard_files() {
   timeout 120 cp -r "$root" "$OUT/files-got/" 2>"$OUT/files.cp.log"
   local cprc=$?
   (cd "$OUT/files-got" && sha256sum $(find "$(basename "$root")" -type f | sort | sed 's|^|./|') 2>/dev/null | sed 's| \./| |') >"$OUT/files.got.sha"
-  sed 's|rdsktp-files|X|' "$OUT/files.sent.sha" >"$OUT/files.sent.norm"; sed "s|$(basename "$root")|X|" "$OUT/files.got.sha" >"$OUT/files.got.norm"
+  sed 's|oxydesk-files|X|' "$OUT/files.sent.sha" >"$OUT/files.sent.norm"; sed "s|$(basename "$root")|X|" "$OUT/files.got.sha" >"$OUT/files.got.norm"
   check clipboard_files_roundtrip "$([[ $cprc -eq 0 ]] && diff -q "$OUT/files.sent.norm" "$OUT/files.got.norm" >/dev/null; echo $?)" "$(wc -l <"$OUT/files.sent.sha") files incl. folders, empty file, 1.5 MB file, accent; copy exit $cprc"
   stop_all
 }

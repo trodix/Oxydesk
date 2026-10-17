@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/rusty-desktop.iml" filepath="$PROJECT_DIR$/.idea/rusty-desktop.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/oxydesk.iml" filepath="$PROJECT_DIR$/.idea/oxydesk.iml" />
     </modules>
   </component>
 </project>

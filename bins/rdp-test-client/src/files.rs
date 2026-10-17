@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use rdsktp_core::error::ClipboardError;
-use rdsktp_core::files::{FileEntry, FileList, FileSource};
+use oxydesk_core::error::ClipboardError;
+use oxydesk_core::files::{FileEntry, FileList, FileSource};
 
 /// Byte `pos` of the file `path`. The contents depend on the path, not on the index: a desktop that
 /// lists a folder in its own order must still find the same bytes in each file.

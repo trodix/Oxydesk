@@ -12,7 +12,7 @@ The clipboard exchanged text and images. Files must travel both ways, including 
 - **Patch in `third_party/ironrdp-server`**: an error returned by the clipboard channel (a range refused by the library's validation, for example) no longer closes the connection; it is logged.
 
 ## Tests
-- Unit: descriptor <-> entry conversion, block reads (`clipfiles`), `FileExchange`, agent messages, agent link (`files_flow_both_ways_by_range`), FUSE (reads at positions beyond 4 GiB without storage), URI list, real agent (`bins/rdsktp-agent/tests/files.rs`).
+- Unit: descriptor <-> entry conversion, block reads (`clipfiles`), `FileExchange`, agent messages, agent link (`files_flow_both_ways_by_range`), FUSE (reads at positions beyond 4 GiB without storage), URI list, real agent (`bins/oxydesk-agent/tests/files.rs`).
 - Test client: `clipboard_files` (7 entries: empty file, odd sizes, nested folders, accented name, exact block and block+1) and `clipboard_files_large` (`--large-file-mib N`, a file generated on the fly, checked byte by byte as a stream, without storage). The file makes the round trip client → server → desktop → server → client.
 - mstsc (Windows 11 VM): file clipboard checks pass, including a 128 MiB file in `--login` mode (`ci/mstsc-login-test.sh`).
 

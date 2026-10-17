@@ -180,7 +180,7 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// rdsktp patch: device redirection (drives) backend, see `RdpdrServerFactory`.
+    /// oxydesk patch: device redirection (drives) backend, see `RdpdrServerFactory`.
     pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
         self.state.rdpdr_factory = rdpdr_factory;
         self

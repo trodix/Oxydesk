@@ -10,9 +10,9 @@ use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_egfx::pdu::Avc420Region;
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_server::{EgfxServerMessage, GfxServerHandle, ServerEvent};
-use rdsktp_core::layout::{Layout, OutputId};
-use rdsktp_core::ports::{CaptureSource, EncoderFactory, FrameEncoder};
-use rdsktp_core::{FrameData, NetSample, RateConfig, RateController, DEFAULT_BITRATE_BPS};
+use oxydesk_core::layout::{Layout, OutputId};
+use oxydesk_core::ports::{CaptureSource, EncoderFactory, FrameEncoder};
+use oxydesk_core::{FrameData, NetSample, RateConfig, RateController, DEFAULT_BITRATE_BPS};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// State shared between the IronRDP factories (created per connection) and the worker threads.
@@ -22,7 +22,7 @@ pub struct Shared {
     pub gfx: Mutex<Option<GfxServerHandle>>,
     pub stop: AtomicBool,
     /// Notified by the capture on every new frame (`event` mode).
-    pub wake: Arc<rdsktp_core::wake::Wake>,
+    pub wake: Arc<oxydesk_core::wake::Wake>,
     /// Capture and encoders of a new session, stored by the composition root (fixed mode) or by
     /// the credential validator (login mode); the pump adopts them on the next tick.
     pub ports: Mutex<Option<PumpPorts>>,
@@ -66,7 +66,7 @@ const RATE_EVERY: Duration = Duration::from_millis(500);
 /// One output = one encoder + its last frame (re-encoded for a new client if the desktop is static).
 struct OutputState {
     encoder: Box<dyn FrameEncoder>,
-    last: Option<rdsktp_core::Frame>,
+    last: Option<oxydesk_core::Frame>,
 }
 
 /// How long a connection may go without a ready EGFX before falling back to bitmap updates.
@@ -74,7 +74,7 @@ const LEGACY_AFTER: Duration = Duration::from_secs(3);
 
 /// The pixels of a pointer PDU: RDP wants BGRA rows from the bottom of the image to the top (the hot spot stays
 /// counted from the top-left corner), the desktop provides RGBA rows from the top.
-fn rdp_pointer_pixels(shape: &rdsktp_core::CursorShape) -> Vec<u8> {
+fn rdp_pointer_pixels(shape: &oxydesk_core::CursorShape) -> Vec<u8> {
     let stride = usize::from(shape.width) * 4;
     if stride == 0 {
         return Vec::new();
@@ -89,10 +89,10 @@ fn rdp_pointer_pixels(shape: &rdsktp_core::CursorShape) -> Vec<u8> {
 }
 
 /// The RDP pointer PDU for a cursor change (a single cache slot: the client keeps the latest shape).
-fn pointer_update(update: &rdsktp_core::CursorUpdate) -> ironrdp_server::DisplayUpdate {
+fn pointer_update(update: &oxydesk_core::CursorUpdate) -> ironrdp_server::DisplayUpdate {
     match update {
-        rdsktp_core::CursorUpdate::Hidden => ironrdp_server::DisplayUpdate::HidePointer,
-        rdsktp_core::CursorUpdate::Shape(s) => {
+        oxydesk_core::CursorUpdate::Hidden => ironrdp_server::DisplayUpdate::HidePointer,
+        oxydesk_core::CursorUpdate::Shape(s) => {
             ironrdp_server::DisplayUpdate::RGBAPointer(ironrdp_server::RGBAPointer {
                 cache_index: 0,
                 width: s.width,
@@ -214,7 +214,7 @@ pub(crate) fn monitors(layout: &Layout) -> Vec<Monitor> {
 /// (login mode: the session was made for the client's monitors) outputs of the configured size side by side.
 /// `None` when the count is not usable.
 fn session_layout(configured: &Layout, outputs: usize) -> Option<Layout> {
-    if !(1..=rdsktp_core::layout::MAX_OUTPUTS).contains(&outputs) {
+    if !(1..=oxydesk_core::layout::MAX_OUTPUTS).contains(&outputs) {
         return None;
     }
     if outputs == configured.outputs.len() {
@@ -260,7 +260,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // Rate regulation of the current connection (restarted with it).
             let mut rate: Option<RateController> = None;
             let mut rate_at = Instant::now();
-            let mut cursor: Option<rdsktp_core::CursorUpdate> = None;
+            let mut cursor: Option<oxydesk_core::CursorUpdate> = None;
             let mut cursor_pending = false;
             // A session of the current connection has just arrived: only then is the layout announced by the client
             // at connection followed. Earlier, the previous session still exists and would take it before the login
@@ -288,14 +288,14 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 if let Some(src) = capture.as_mut() {
                     if let Some(update) = src.take_cursor() {
                         match &update {
-                            rdsktp_core::CursorUpdate::Shape(s) => tracing::debug!(
+                            oxydesk_core::CursorUpdate::Shape(s) => tracing::debug!(
                                 w = s.width,
                                 h = s.height,
                                 hot_x = s.hot_x,
                                 hot_y = s.hot_y,
                                 "pointer shape"
                             ),
-                            rdsktp_core::CursorUpdate::Hidden => tracing::debug!("pointer hidden"),
+                            oxydesk_core::CursorUpdate::Hidden => tracing::debug!("pointer hidden"),
                         }
                         cursor = Some(update);
                         cursor_pending = true;
@@ -315,7 +315,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         tracing::error!(
                             "session ignored: {} encoder(s) (1 to {} expected)",
                             new.encoders.len(),
-                            rdsktp_core::layout::MAX_OUTPUTS
+                            oxydesk_core::layout::MAX_OUTPUTS
                         );
                         continue;
                     };
@@ -768,18 +768,18 @@ mod tests {
         assert_eq!(two.outputs.len(), 2);
         assert_eq!(two.desktop_size(), (3840, 1080));
         assert!(session_layout(&configured, 0).is_none());
-        assert!(session_layout(&configured, rdsktp_core::layout::MAX_OUTPUTS + 1).is_none());
+        assert!(session_layout(&configured, oxydesk_core::layout::MAX_OUTPUTS + 1).is_none());
     }
 
     use super::*;
-    use rdsktp_core::error::{CaptureError, EncodeError};
-    use rdsktp_core::ports::EncodedFrame;
+    use oxydesk_core::error::{CaptureError, EncodeError};
+    use oxydesk_core::ports::EncodedFrame;
 
     #[test]
     fn pointer_pdu_carries_the_shape_and_hidden_hides() {
         let shape =
-            rdsktp_core::CursorShape::new(2, 1, 1, 0, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
-        match pointer_update(&rdsktp_core::CursorUpdate::Shape(shape)) {
+            oxydesk_core::CursorShape::new(2, 1, 1, 0, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        match pointer_update(&oxydesk_core::CursorUpdate::Shape(shape)) {
             ironrdp_server::DisplayUpdate::RGBAPointer(p) => {
                 assert_eq!((p.width, p.height, p.hot_x, p.hot_y), (2, 1, 1, 0));
                 assert_eq!(p.data, vec![3, 2, 1, 4, 7, 6, 5, 8]);
@@ -787,7 +787,7 @@ mod tests {
             other => panic!("pointer shape expected, got {other:?}"),
         }
         assert!(matches!(
-            pointer_update(&rdsktp_core::CursorUpdate::Hidden),
+            pointer_update(&oxydesk_core::CursorUpdate::Hidden),
             ironrdp_server::DisplayUpdate::HidePointer
         ));
     }
@@ -795,8 +795,9 @@ mod tests {
     #[test]
     fn pointer_rows_go_bottom_up_in_bgra() {
         // 1 pixel wide, 2 rows: the top pixel is red, the bottom one is blue.
-        let shape = rdsktp_core::CursorShape::new(1, 2, 0, 0, vec![255, 0, 0, 255, 0, 0, 255, 128])
-            .unwrap();
+        let shape =
+            oxydesk_core::CursorShape::new(1, 2, 0, 0, vec![255, 0, 0, 255, 0, 0, 255, 128])
+                .unwrap();
         assert_eq!(
             rdp_pointer_pixels(&shape),
             vec![255, 0, 0, 128, 0, 0, 255, 255]
@@ -808,7 +809,10 @@ mod tests {
     }
 
     impl CaptureSource for Capture {
-        fn recv_latest(&mut self, _: OutputId) -> Result<Option<rdsktp_core::Frame>, CaptureError> {
+        fn recv_latest(
+            &mut self,
+            _: OutputId,
+        ) -> Result<Option<oxydesk_core::Frame>, CaptureError> {
             Ok(None)
         }
         fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
@@ -823,7 +827,7 @@ mod tests {
     struct Encoder;
 
     impl FrameEncoder for Encoder {
-        fn encode(&mut self, _: &rdsktp_core::Frame) -> Result<EncodedFrame, EncodeError> {
+        fn encode(&mut self, _: &oxydesk_core::Frame) -> Result<EncodedFrame, EncodeError> {
             Ok(EncodedFrame::default())
         }
     }
@@ -938,14 +942,14 @@ mod tests {
     #[test]
     fn monitors_put_the_primary_at_the_origin() {
         let layout = Layout::from_monitors(&[
-            rdsktp_core::layout::MonitorSpec {
+            oxydesk_core::layout::MonitorSpec {
                 x: 0,
                 y: 0,
                 width: 1920,
                 height: 1080,
                 primary: true,
             },
-            rdsktp_core::layout::MonitorSpec {
+            oxydesk_core::layout::MonitorSpec {
                 x: -1920,
                 y: 0,
                 width: 1920,
@@ -972,7 +976,7 @@ mod tests {
 
     // --- clients without EGFX: bitmap updates -------------------------------------------------------------------
 
-    use rdsktp_core::{Frame, FrameData, PixelFormat};
+    use oxydesk_core::{Frame, FrameData, PixelFormat};
     use std::collections::VecDeque;
 
     /// A capture that answers from a script, one answer per call.

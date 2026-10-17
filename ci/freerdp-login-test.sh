@@ -51,11 +51,11 @@ check login_wrong_password "$([[ $rc -ne 124 && $(count wrong "Got GFX") -eq 0 ]
 for i in 2 3 4 5; do SECS=6 client "wrong$i" "wrong-$RANDOM" >/dev/null; done
 SECS=6 client blocked "$RDP_TEST_PASSWORD"; rc=$?
 check login_blocked_after_failures "$([[ $rc -ne 124 && $(count blocked "Got GFX") -eq 0 ]] && echo 0 || echo 1)" "right password refused while blocked (exit $rc)"
-journal=$(bash vm/vm.sh logs journal rdsktp 2>&1)
+journal=$(bash vm/vm.sh logs journal oxydesk 2>&1)
 check login_failures_logged "$(grep -q "login failed" <<<"$journal"; echo $?)" "failures logged"
 check login_block_logged "$(grep -q -E "blocked after too many failures|dropped: too many failed logins" <<<"$journal"; echo $?)" "block logged"
 # The counters live in the server's memory: a restart releases the VM for the next run.
-bash vm/vm.sh ssh 'sudo systemctl restart rdsktp' >/dev/null 2>&1
+bash vm/vm.sh ssh 'sudo systemctl restart oxydesk' >/dev/null 2>&1
 
 echo
 [[ $failed -eq 0 ]] && echo "freerdp-login: all checks passed" || echo "freerdp-login: failures (logs in $OUT)"

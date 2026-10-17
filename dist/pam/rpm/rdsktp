@@ -1,3 +1,0 @@
-# Authentication of remote users by rdsktp-authd (Fedora / RHEL / Rocky stack).
-auth     substack system-auth
-account  include  system-auth

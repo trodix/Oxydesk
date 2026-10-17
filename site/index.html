@@ -3,38 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RustyDesktop – RDP remote desktop server for KDE Plasma Wayland</title>
-<meta name="description" content="RustyDesktop (rdsktp) is an open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust. Connect from Windows, Linux or macOS: one real desktop session per user, H.264 video, multi-monitor, clipboard, audio, drives and printers.">
-<link rel="canonical" href="https://trodix.github.io/RustyDesktop/">
+<title>Oxydesk – RDP remote desktop server for KDE Plasma Wayland</title>
+<meta name="description" content="Oxydesk is an open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust. Connect from Windows, Linux or macOS: one real desktop session per user, H.264 video, multi-monitor, clipboard, audio, drives and printers.">
+<link rel="canonical" href="https://trodix.github.io/Oxydesk/">
 <meta name="theme-color" content="#d9480f">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="RustyDesktop">
-<meta property="og:url" content="https://trodix.github.io/RustyDesktop/">
-<meta property="og:title" content="RustyDesktop – RDP remote desktop server for KDE Plasma Wayland">
+<meta property="og:site_name" content="Oxydesk">
+<meta property="og:url" content="https://trodix.github.io/Oxydesk/">
+<meta property="og:title" content="Oxydesk – RDP remote desktop server for KDE Plasma Wayland">
 <meta property="og:description" content="An open source RDP remote desktop server for KDE Plasma on Wayland: connect from Windows mstsc, FreeRDP or Remmina to a real desktop session.">
-<meta property="og:image" content="https://trodix.github.io/RustyDesktop/img/og.jpg">
+<meta property="og:image" content="https://trodix.github.io/Oxydesk/img/og.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="A KDE Plasma desktop served by RustyDesktop and displayed in an RDP client">
+<meta property="og:image:alt" content="A KDE Plasma desktop served by Oxydesk and displayed in an RDP client">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="RustyDesktop – RDP remote desktop server for KDE Plasma Wayland">
+<meta name="twitter:title" content="Oxydesk – RDP remote desktop server for KDE Plasma Wayland">
 <meta name="twitter:description" content="An open source RDP remote desktop server for KDE Plasma on Wayland: connect from Windows mstsc, FreeRDP or Remmina to a real desktop session.">
-<meta name="twitter:image" content="https://trodix.github.io/RustyDesktop/img/og.jpg">
+<meta name="twitter:image" content="https://trodix.github.io/Oxydesk/img/og.jpg">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "RustyDesktop",
-  "alternateName": "rdsktp",
+  "name": "Oxydesk",
   "description": "An open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust: one real desktop session per user, H.264 video, multi-monitor, clipboard, audio, shared folders and printers.",
-  "url": "https://trodix.github.io/RustyDesktop/",
+  "url": "https://trodix.github.io/Oxydesk/",
   "applicationCategory": "NetworkApplication",
   "operatingSystem": "Linux (KDE Plasma on Wayland)",
   "license": "https://www.gnu.org/licenses/agpl-3.0.html",
   "keywords": "RDP, remote desktop, Wayland, KDE Plasma, RDP server, Rust",
   "programmingLanguage": "Rust",
-  "codeRepository": "https://github.com/trodix/RustyDesktop",
-  "downloadUrl": "https://github.com/trodix/RustyDesktop/releases",
+  "codeRepository": "https://github.com/trodix/Oxydesk",
+  "downloadUrl": "https://github.com/trodix/Oxydesk/releases",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 </script>
@@ -44,29 +43,29 @@
 </head>
 <body>
 <nav><div class="wrap">
-  <a class="brand" href="#">Rusty<span>Desktop</span></a>
+  <a class="brand" href="#">Oxy<span>desk</span></a>
   <a class="l h" href="#features">Features</a>
   <a class="l h" href="#install">Install</a>
   <a class="l h" href="#limits">Limits</a>
   <a class="l h" href="#credits">Credits</a>
   <a class="l h" href="docs.html">Documentation</a>
   <a class="l h" href="api/">API</a>
-  <a class="btn gh-btn" href="https://github.com/trodix/RustyDesktop"><svg class="gh" viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+  <a class="btn gh-btn" href="https://github.com/trodix/Oxydesk"><svg class="gh" viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
 </div></nav>
 
 <header class="hero"><div class="wrap">
   <span class="badge">Open source · AGPL-3.0 · written in Rust</span>
   <h1>Your <em>KDE Plasma</em> desktop, from any RDP client</h1>
-  <p class="lead">RustyDesktop is a headless RDP remote desktop server for KDE Plasma on Wayland. Log in with your Linux account from Windows <code>mstsc</code>, FreeRDP or Remmina and get your own real desktop session, with sound, clipboard, shared folders and printers.</p>
+  <p class="lead">Oxydesk is a headless RDP remote desktop server for KDE Plasma on Wayland. Log in with your Linux account from Windows <code>mstsc</code>, FreeRDP or Remmina and get your own real desktop session, with sound, clipboard, shared folders and printers.</p>
   <div class="cta">
     <a class="btn primary" href="#install">Install in two minutes</a>
-    <a class="btn" href="https://github.com/trodix/RustyDesktop/releases">Download packages</a>
+    <a class="btn" href="https://github.com/trodix/Oxydesk/releases">Download packages</a>
   </div>
   <div class="shot">
     <div class="bar"><i></i><i></i><i></i></div>
     <img src="img/desktop.webp" fetchpriority="high" alt="A KDE Plasma Wayland remote desktop on Debian 13 displayed in an RDP client" width="1920" height="1080">
   </div>
-  <p class="cap">A Plasma session on Debian 13 served by <code>rdsktp</code> and captured from its RDP stream.</p>
+  <p class="cap">A Plasma session on Debian 13 served by <code>oxydesk</code> and captured from its RDP stream.</p>
 </div></header>
 
 <section id="why"><div class="wrap">
@@ -94,7 +93,7 @@
 
 <section id="install"><div class="wrap">
   <h2>Install</h2>
-  <p class="sub">Packages for <b>x86_64</b> and <b>aarch64</b> are attached to every <a href="https://github.com/trodix/RustyDesktop/releases">GitHub release</a>.</p>
+  <p class="sub">Packages for <b>x86_64</b> and <b>aarch64</b> are attached to every <a href="https://github.com/trodix/Oxydesk/releases">GitHub release</a>.</p>
   <div class="two">
     <div>
       <table>
@@ -109,17 +108,17 @@
       <ol class="steps">
         <li><b>Install the package</b> for your distribution from the latest release.</li>
         <li><b>Start the services</b>
-<pre>systemctl enable --now rdsktp-authd rdsktp</pre></li>
+<pre>systemctl enable --now oxydesk-authd oxydesk</pre></li>
         <li><b>Connect</b> an RDP client to port <code>3389</code> with a Linux account and its password.</li>
       </ol>
-      <p>Configuration lives in <code>/etc/rdsktp/rdsktp.conf</code>, fully commented, with drop-ins in <code>rdsktp.conf.d/</code>. Every setting is explained in the <a href="docs.html">documentation</a>.</p>
+      <p>Configuration lives in <code>/etc/oxydesk/oxydesk.conf</code>, fully commented, with drop-ins in <code>oxydesk.conf.d/</code>. Every setting is explained in the <a href="docs.html">documentation</a>.</p>
     </div>
   </div>
 </div></section>
 
 <section id="limits" class="alt"><div class="wrap">
   <h2>Known limits, honestly</h2>
-  <p class="sub">RustyDesktop is young. Here is what does not work, or is not verified, today.</p>
+  <p class="sub">Oxydesk is young. Here is what does not work, or is not verified, today.</p>
   <ul class="limits">
     <li><b>No NLA in login mode.</b> Authentication is TLS only (dynamic accounts, an IronRDP limit). Use it on a network you trust or behind a VPN.</li>
     <li><b>KWin 6.3 (Debian 13):</b> the number of monitors is fixed when a user's session starts, and resizing is done by scaling, with black bars. A newer KWin gives a real resize.</li>
@@ -142,7 +141,7 @@
 
 <section id="credits" class="alt"><div class="wrap">
   <h2>Standing on the shoulders of giants</h2>
-  <p class="sub">RustyDesktop exists thanks to these projects and their maintainers. Thank you.</p>
+  <p class="sub">Oxydesk exists thanks to these projects and their maintainers. Thank you.</p>
   <div class="credits">
     <div class="credit"><b><a href="https://github.com/Devolutions/IronRDP">IronRDP</a></b><span>The Rust RDP protocol implementation at the core of the server, by Devolutions. We carry a few local patches (multi-monitor, reconnection cookie, drive and printer correlation) and hope to upstream them.</span></div>
     <div class="credit"><b><a href="https://github.com/cisco/openh264">OpenH264</a></b><span>Cisco's H.264 encoder, loaded at run time.</span></div>
@@ -163,14 +162,14 @@
   <h2>Try it, and tell us what breaks</h2>
   <p class="sub" style="margin-inline:auto">Bug reports with your versions and environment are the most useful contribution.</p>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/trodix/RustyDesktop/releases">Download</a>
-    <a class="btn" href="https://github.com/trodix/RustyDesktop/issues/new/choose">Report a bug</a>
+    <a class="btn primary" href="https://github.com/trodix/Oxydesk/releases">Download</a>
+    <a class="btn" href="https://github.com/trodix/Oxydesk/issues/new/choose">Report a bug</a>
   </div>
 </div></section>
 
 <footer><div class="wrap">
-  <span>RustyDesktop is released under <a href="https://github.com/trodix/RustyDesktop/blob/develop/LICENSE">AGPL-3.0-only</a>. Not affiliated with Microsoft, KDE or Devolutions.</span>
-  <span><a href="https://github.com/trodix/RustyDesktop">Source</a> · <a href="docs.html">Documentation</a> · <a href="api/">API</a></span>
+  <span>Oxydesk is released under <a href="https://github.com/trodix/Oxydesk/blob/develop/LICENSE">AGPL-3.0-only</a>. Not affiliated with Microsoft, KDE or Devolutions.</span>
+  <span><a href="https://github.com/trodix/Oxydesk">Source</a> · <a href="docs.html">Documentation</a> · <a href="api/">API</a></span>
   <span class="fr">Made in France <svg viewBox="0 0 20 20" width="18" height="18" role="img" aria-label="French flag"><clipPath id="frc"><circle cx="10" cy="10" r="10"/></clipPath><g clip-path="url(#frc)"><rect width="7" height="20" fill="#0055a4"/><rect x="7" width="6" height="20" fill="#fff"/><rect x="13" width="7" height="20" fill="#ef4135"/></g><circle cx="10" cy="10" r="9.5" fill="none" stroke="currentColor" stroke-opacity=".3"/></svg></span>
 </div></footer>
 </body>

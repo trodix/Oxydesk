@@ -15,9 +15,9 @@ the listener.
    (a new one is issued on resumption), bound to the client address, valid `reconnect-timeout` (default 10 s, 0 = disabled)
    **counted from the loss**, not from the login. A deliberate disconnection (connection ended without error) forgets it. The
    proof is compared in constant time (`hmac::verify_slice`).
-3. **Attach without a password**: `SessionBroker::attach` → `Attach` request to `rdsktp-authd`, which grants it only for an
+3. **Attach without a password**: `SessionBroker::attach` → `Attach` request to `oxydesk-authd`, which grants it only for an
    account **it authenticated through PAM itself since it started**, above the minimum uid, whose agent is running; it never
-   starts a session. A compromised `rdsktp` therefore cannot join a session it did not see opened.
+   starts a session. A compromised `oxydesk` therefore cannot join a session it did not see opened.
 4. **A client retrying without a valid cookie** sends an empty password: refused without counting as a login failure (otherwise
    mstsc's ~20 attempts would lock its address out).
 5. **Free the listener quickly**: TCP keepalive and `TCP_USER_TIMEOUT` on accepted connections (`dead-peer-timeout`, default
@@ -26,7 +26,7 @@ the listener.
    packet sent before the RDPSND negotiation is ignored instead of ending the connection (observed symptom: the resumption was
    accepted then immediately closed, "client format not yet received").
 
-Both settings are in `/etc/rdsktp/rdsktp.conf` (`reconnect-timeout`, `dead-peer-timeout`) and available as options.
+Both settings are in `/etc/oxydesk/oxydesk.conf` (`reconnect-timeout`, `dead-peer-timeout`) and available as options.
 
 ## Limits
 - Windows are kept, but the monitor layout is that of the returning client.

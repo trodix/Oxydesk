@@ -28,10 +28,10 @@ use ironrdp_rdpdr::pdu::efs::{
 use ironrdp_server::{
     RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage, ServerEvent, ServerEventSender,
 };
-use rdsktp_core::drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode};
-use rdsktp_core::error::DriveError;
-use rdsktp_core::printer::{PrintFormat, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter};
-use rdsktp_core::RemoteDrive;
+use oxydesk_core::drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode};
+use oxydesk_core::error::DriveError;
+use oxydesk_core::printer::{PrintFormat, PrinterHost, PrinterInfo, PrinterModes, RemotePrinter};
+use oxydesk_core::RemoteDrive;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::printer::{announced_printer, RdpPrinter};
@@ -720,7 +720,7 @@ impl DriveBackend {
     }
 
     fn unique_printer_name(&self, wanted: &str) -> String {
-        let base = rdsktp_core::printer_name(wanted);
+        let base = oxydesk_core::printer_name(wanted);
         let mut name = base.clone();
         let mut n = 2;
         while self.printers.values().any(|(p, _)| *p == name) {
@@ -768,7 +768,7 @@ impl DriveBackend {
     }
 
     fn unique_name(&self, wanted: &str) -> String {
-        let base = rdsktp_core::drive::directory_name(wanted);
+        let base = oxydesk_core::drive::directory_name(wanted);
         let mut name = base.clone();
         let mut n = 2;
         while self.drives.values().any(|(d, _)| *d == name) {

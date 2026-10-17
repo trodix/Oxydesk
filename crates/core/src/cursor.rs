@@ -41,7 +41,7 @@ impl CursorShape {
 
 /// Turns the shapes the compositor reports into the ones to show. KWin's virtual backend paints its own
 /// cursor into the captured image whatever the pointer mode, so the session runs a transparent cursor theme
-/// whose files only tell *which* cursor is wanted (see `rdsktp-session`); the resolver swaps those markers for
+/// whose files only tell *which* cursor is wanted (see `oxydesk-session`); the resolver swaps those markers for
 /// the real theme's bitmaps. Shapes it does not recognise (application cursors) pass through.
 pub trait CursorResolver: Send + Sync {
     /// `None`: the marker is known but has no bitmap to show (the client keeps its current cursor).

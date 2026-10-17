@@ -4,11 +4,11 @@
 - Port `AudioProvider::open(AudioParams) -> AudioSource` (core): the source is opened **in the format negotiated** with the
   client (16-bit PCM, 44.1 kHz or 48 kHz, stereo); `AudioSource::read_exact` blocks until a packet is full.
 - Adapters (`crates/audio`): `ToneProvider` (440 Hz sine paced in real time, `--test-mode`) and `PulseCapture` (capture of the
-  monitor of a PipeWire null sink `rdsktp`, created when the session starts and made the default).
+  monitor of a PipeWire null sink `oxydesk`, created when the session starts and made the default).
 - `PulseCapture` v1 goes through the PulseAudio API tools of `pipewire-pulse` (`pactl`, `parec`, package `pulseaudio-utils`)
   rather than a native libpipewire binding: simpler to verify. A native capture (the `pipewire` crate, already used for the
   screen) remains possible behind the same port.
-- `rdsktp-rdp`: `SoundFactory` (IronRDP RDPSND, `with_sound_factory`); on negotiation, a thread reads 20 ms packets and sends
+- `oxydesk-rdp`: `SoundFactory` (IronRDP RDPSND, `with_sound_factory`); on negotiation, a thread reads 20 ms packets and sends
   them as `ServerEvent::Rdpsnd(Wave)`. PCM only; Opus not done (no proven client need).
 - **Format order: 44.1 kHz first, then 48 kHz.** The server picks the first format both sides share. Measured with the stock
   Windows client (mstscax, Win11 26300): a 48 kHz stream is played at 44.1/48 of its pitch on a 44.1 kHz device (440 Hz heard as
@@ -29,7 +29,7 @@ Negative controls: 1 kHz tone (mock, unit test) and a KWin session with no playb
 
 ## Verified (Debian 13 VM)
 `--session synthetic` and `--session kwin`: 7/7, `audio_tone` ratio 1.00, continuity ≈ 1.0 (kwin: testapp `--tone` → `paplay` →
-sink `rdsktp` → `parec` → RDPSND). Two `login` runs on 2026-10-17 measured ratio 0.00 (silence): the VM launcher no longer started the test
+sink `oxydesk` → `parec` → RDPSND). Two `login` runs on 2026-10-17 measured ratio 0.00 (silence): the VM launcher no longer started the test
 application with `--tone`, a harness bug fixed with `VM_TONE=1` (ADR 010 §4 ter). After the fix the login run gives ratio 1.00.
 
 ## Manual test

@@ -5,8 +5,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: rdsktp version
-      description: "`rdsktp --version`, commit hash or .deb version"
+      label: oxydesk version
+      description: "`oxydesk --version`, commit hash or .deb version"
     validations: {required: true}
   - type: input
     id: server
@@ -45,5 +45,5 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: "`journalctl -u rdsktp -u rdsktp-authd`, agent and client logs (remove secrets)"
+      description: "`journalctl -u oxydesk -u oxydesk-authd`, agent and client logs (remove secrets)"
       render: shell

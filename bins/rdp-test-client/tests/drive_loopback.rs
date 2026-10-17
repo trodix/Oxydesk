@@ -12,10 +12,10 @@ use std::time::Duration;
 use ironrdp_rdpdr::server::RdpdrServer;
 use ironrdp_server::ServerEvent;
 use ironrdp_svc::{SvcMessage, SvcProcessor};
+use oxydesk_core::error::DriveError;
+use oxydesk_core::{DriveHost, OpenMode, RemoteDrive};
+use oxydesk_rdp::drive::{DriveBackend, EventSender};
 use rdp_test_client::drive_client::DirectoryDrive;
-use rdsktp_core::error::DriveError;
-use rdsktp_core::{DriveHost, OpenMode, RemoteDrive};
-use rdsktp_rdp::drive::{DriveBackend, EventSender};
 
 #[derive(Default)]
 struct Host {
@@ -109,7 +109,7 @@ fn pattern(len: usize) -> Vec<u8> {
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rdsktp-drive-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("oxydesk-drive-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

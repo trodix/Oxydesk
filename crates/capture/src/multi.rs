@@ -1,7 +1,7 @@
-use rdsktp_core::error::CaptureError;
-use rdsktp_core::frame::Frame;
-use rdsktp_core::layout::{Layout, OutputId, OutputInfo};
-use rdsktp_core::ports::CaptureSource;
+use oxydesk_core::error::CaptureError;
+use oxydesk_core::frame::Frame;
+use oxydesk_core::layout::{Layout, OutputId, OutputInfo};
+use oxydesk_core::ports::CaptureSource;
 
 /// Creates the source of output `index` (size and position in `OutputInfo`) when the layout grows.
 pub type SourceFactory =
@@ -12,7 +12,7 @@ pub type SourceFactory =
 pub struct MultiCapture {
     sources: Vec<Box<dyn CaptureSource>>,
     factory: Option<SourceFactory>,
-    waker: Option<std::sync::Arc<rdsktp_core::wake::Wake>>,
+    waker: Option<std::sync::Arc<oxydesk_core::wake::Wake>>,
 }
 
 impl MultiCapture {
@@ -32,14 +32,14 @@ impl MultiCapture {
 }
 
 impl CaptureSource for MultiCapture {
-    fn set_waker(&mut self, wake: std::sync::Arc<rdsktp_core::wake::Wake>) {
+    fn set_waker(&mut self, wake: std::sync::Arc<oxydesk_core::wake::Wake>) {
         for s in &mut self.sources {
             s.set_waker(wake.clone());
         }
         self.waker = Some(wake);
     }
 
-    fn take_cursor(&mut self) -> Option<rdsktp_core::cursor::CursorUpdate> {
+    fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
         // The pointer is shown on every output's stream; the latest update found wins.
         self.sources
             .iter_mut()
@@ -124,7 +124,7 @@ impl CaptureSource for MultiCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::frame::{FrameData, PixelFormat};
+    use oxydesk_core::frame::{FrameData, PixelFormat};
 
     struct Fixed(u8);
     impl CaptureSource for Fixed {
@@ -210,14 +210,14 @@ mod tests {
     fn client_arrangement() -> Layout {
         // The client's primary monitor (output 0) is at the right of the other one.
         Layout::from_monitors(&[
-            rdsktp_core::layout::MonitorSpec {
+            oxydesk_core::layout::MonitorSpec {
                 x: 0,
                 y: 0,
                 width: 800,
                 height: 600,
                 primary: true,
             },
-            rdsktp_core::layout::MonitorSpec {
+            oxydesk_core::layout::MonitorSpec {
                 x: -800,
                 y: 0,
                 width: 800,

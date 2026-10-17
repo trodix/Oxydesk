@@ -10,7 +10,7 @@ use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError};
 use ironrdp_server::{
     RdpsndServerHandler, RdpsndServerMessage, ServerEvent, ServerEventSender, SoundServerFactory,
 };
-use rdsktp_core::ports::{AudioParams, AudioProvider};
+use oxydesk_core::ports::{AudioParams, AudioProvider};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::pump::Shared;
@@ -153,8 +153,8 @@ impl Drop for SoundHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::error::AudioError;
-    use rdsktp_core::ports::AudioSource;
+    use oxydesk_core::error::AudioError;
+    use oxydesk_core::ports::AudioSource;
 
     struct Nothing;
 

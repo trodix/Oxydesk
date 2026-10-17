@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use rdsktp_agent_proto::{PrintOp, PrintResult, ToAgent};
-use rdsktp_core::error::PrintError;
-use rdsktp_core::{PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
+use oxydesk_agent_proto::{PrintOp, PrintResult, ToAgent};
+use oxydesk_core::error::PrintError;
+use oxydesk_core::{PrintFormat, PrintJob, PrintLanguage, PrinterHost, PrinterInfo, RemotePrinter};
 
 use crate::link::AgentLink;
 
@@ -90,7 +90,7 @@ pub(crate) fn execute(link: &AgentLink, printer_id: u32, op: PrintOp) -> PrintRe
         return PrintResult::Refused("unknown printer".into());
     };
     // The agent cannot make this side relay more than one block at a time.
-    if matches!(&op, PrintOp::Write { data, .. } if data.len() > rdsktp_core::printer::MAX_PRINT_BLOCK as usize)
+    if matches!(&op, PrintOp::Write { data, .. } if data.len() > oxydesk_core::printer::MAX_PRINT_BLOCK as usize)
     {
         return PrintResult::Refused("block too large".into());
     }

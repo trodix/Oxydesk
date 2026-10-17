@@ -11,7 +11,7 @@ case "$FORMAT" in
 esac
 ARCH="$(uname -m)"
 "$ENGINE" run --rm --security-opt label=disable -v "$PWD":/src:ro -v "$OUT":/out \
-  -v "rdsktp-target-$KEY-$ARCH":/work/target -v "rdsktp-cargo-$KEY-$ARCH":/root/.cargo -v "rdsktp-rustup-$KEY-$ARCH":/root/.rustup \
+  -v "oxydesk-target-$KEY-$ARCH":/work/target -v "oxydesk-cargo-$KEY-$ARCH":/root/.cargo -v "oxydesk-rustup-$KEY-$ARCH":/root/.rustup \
   "$IMAGE" bash -c '
     set -euo pipefail
     cd /src && tar --exclude=./target --exclude=./artifacts --exclude=./dist-out --exclude=./.git -cf - . | tar -C /work -xf -

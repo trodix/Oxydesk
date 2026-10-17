@@ -1,4 +1,4 @@
-# Real RDP clients (xfreerdp, Remmina) driven in a virtual X server, to test rdsktp without installing
+# Real RDP clients (xfreerdp, Remmina) driven in a virtual X server, to test oxydesk without installing
 # anything on the development machine. Docker and Podman build and run it the same way (ci/clients-test.sh).
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8

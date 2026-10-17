@@ -1,4 +1,4 @@
-# RustyDesktop (`rdsktp`)
+# Oxydesk
 
 Headless RDP server for KDE Plasma (Wayland), written in Rust, as a replacement for xrdp. Built on
 [IronRDP](https://github.com/Devolutions/IronRDP) (with a few local patches in `third_party/`). H.264 video over
@@ -20,7 +20,7 @@ Tested with Windows `mstsc`, FreeRDP (`xfreerdp`, `sdl-freerdp`) and Remmina.
 
 ## Install
 
-Packages for **x86_64** and **aarch64** are attached to each [GitHub release](https://github.com/trodix/RustyDesktop/releases):
+Packages for **x86_64** and **aarch64** are attached to each [GitHub release](https://github.com/trodix/Oxydesk/releases):
 
 | Format | Targets |
 |---|---|
@@ -32,23 +32,23 @@ Run-time dependencies: `fuse3`, `libopenh264`, `libkscreen` (`kscreen-doctor`); 
 `ghostscript` (printers). Then:
 
 ```
-systemctl enable --now rdsktp-authd rdsktp
+systemctl enable --now oxydesk-authd oxydesk
 ```
 
 and connect an RDP client to port 3389 with a Linux account and password.
 
 ## Configuration
 
-`/etc/rdsktp/rdsktp.conf` (fully commented) holds `key = value` lines; the keys are the long options of `rdsktp`
-without the `--` (`rdsktp --help`). Precedence, highest first:
+`/etc/oxydesk/oxydesk.conf` (fully commented) holds `key = value` lines; the keys are the long options of `oxydesk`
+without the `--` (`oxydesk --help`). Precedence, highest first:
 
 1. command-line options
-2. drop-ins `/etc/rdsktp/rdsktp.conf.d/*.conf` (alphabetical order)
-3. `/etc/rdsktp/rdsktp.conf`
+2. drop-ins `/etc/oxydesk/oxydesk.conf.d/*.conf` (alphabetical order)
+3. `/etc/oxydesk/oxydesk.conf`
 4. built-in defaults
 
 An unknown key stops the server at start-up. `--config FILE` uses another file. The file is kept on upgrades. The
-NLA password is only read from `RDSKTP_PASSWORD`. The default mode is `login`.
+NLA password is only read from `OXYDESK_PASSWORD`. The default mode is `login`.
 
 ## Build and test
 
@@ -73,7 +73,7 @@ tests themselves are excluded. The test policy is in `CLAUDE.md`.
 
 Integration tests use a Debian 13 VM (`bash vm/vm.sh create`), a Windows 11 VM for `mstsc` (`bash vm/win11.sh install`)
 and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|tar OUT`, then
-`ci/package-test.sh OUT`. Architecture (hexagonal) and design decisions: `docs/decisions/`. API reference (rustdoc): <https://trodix.github.io/RustyDesktop/api/>.
+`ci/package-test.sh OUT`. Architecture (hexagonal) and design decisions: `docs/decisions/`. API reference (rustdoc): <https://trodix.github.io/Oxydesk/api/>.
 
 ## Known limits
 
@@ -87,5 +87,5 @@ and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|t
 
 ## License
 
-[AGPL-3.0-only](https://github.com/trodix/RustyDesktop/blob/develop/LICENSE). Dependencies are permissive (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0); `libopenh264`
+[AGPL-3.0-only](https://github.com/trodix/Oxydesk/blob/develop/LICENSE). Dependencies are permissive (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0); `libopenh264`
 is loaded at run time only; `third_party/` keeps the licenses of its crates.

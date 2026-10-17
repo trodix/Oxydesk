@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -83,15 +83,6 @@ fn skipped(name: &str, note: &str) -> StepResult {
     }
 }
 
-fn newest_deb() -> Option<PathBuf> {
-    fs::read_dir("target/debian")
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "deb"))
-        .max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
-}
-
 fn git(args: &[&str]) -> String {
     Command::new("git")
         .args(args)
@@ -120,10 +111,9 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     let min = |m: u64| Duration::from_secs(m * 60);
 
     // Normal steps: (name, command, timeout, ignored?)
-    let deb = o
-        .deb
-        .clone()
-        .or_else(|| newest_deb().map(|p| p.display().to_string()));
+    // Without `--deb`, `vm.sh deploy` picks the newest package itself, once the build step has produced it: choosing
+    // here would deploy the package of a previous build whenever the file name changes.
+    let deb = o.deb.clone();
     let deploy_cmd = match &deb {
         Some(d) => format!("bash {VM} deploy {}", sq(d)),
         None => format!("bash {VM} deploy"),
@@ -240,18 +230,18 @@ pub fn vm_test(o: &Opts) -> ExitCode {
     // Collection and shutdown: always run.
     let mut always = vec![
         (
-            "journal-rdsktp",
-            format!("bash {VM} logs journal rdsktp"),
+            "journal-oxydesk",
+            format!("bash {VM} logs journal oxydesk"),
             min(2),
         ),
         (
             "journal-authd",
-            format!("bash {VM} logs journal rdsktp-authd"),
+            format!("bash {VM} logs journal oxydesk-authd"),
             min(2),
         ),
         (
             "journal-agent",
-            format!("bash {VM} logs journal rdsktp-agent@dev"),
+            format!("bash {VM} logs journal oxydesk-agent@dev"),
             min(2),
         ),
         ("journal-all", format!("bash {VM} logs journal"), min(2)),

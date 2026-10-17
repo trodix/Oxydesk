@@ -26,7 +26,7 @@ MARK="$($VM ssh 'date +"%Y-%m-%d %H:%M:%S"')"; KW="$($VM ssh "pgrep -u $VUSER -x
 WIN_RECONNECT=1 WIN_EXPECT_RESIZE=0 WIN_LAYOUT_CHECK=0 WIN_EXPECT_TONE=0 bash vm/win11.sh test "10.0.2.2:$PP" "$VUSER" 300 | tee "$OUT/win11.log"
 rc=${PIPESTATUS[0]}
 KW2="$($VM ssh "pgrep -u $VUSER -x kwin_wayland | head -1")"
-$VM ssh "sudo journalctl -u rdsktp -u rdsktp-authd --since '$MARK' --no-pager -o cat | grep -iE 'reconnect|rejoined' | cut -c1-200"
-$VM ssh "sudo journalctl -u rdsktp --since '$MARK' --no-pager -o cat | grep -q 'automatic reconnection accepted'" && echo "PASS cookie_used" || { echo "FAIL cookie_used"; rc=1; }
+$VM ssh "sudo journalctl -u oxydesk -u oxydesk-authd --since '$MARK' --no-pager -o cat | grep -iE 'reconnect|rejoined' | cut -c1-200"
+$VM ssh "sudo journalctl -u oxydesk --since '$MARK' --no-pager -o cat | grep -q 'automatic reconnection accepted'" && echo "PASS cookie_used" || { echo "FAIL cookie_used"; rc=1; }
 [[ -n "$KW" && "$KW" == "$KW2" ]] && echo "PASS same_kwin $KW" || { echo "FAIL same_kwin $KW -> $KW2"; rc=1; }
 exit "$rc"

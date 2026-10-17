@@ -5,9 +5,9 @@ on:
   push:
     tags: ['v*']
     branches: [develop]
-    paths: ['ci/package-*', 'dist/**', 'bins/rdsktp/Cargo.toml', '.github/workflows/package.yml']
+    paths: ['ci/package-*', 'dist/**', 'bins/oxydesk/Cargo.toml', '.github/workflows/package.yml']
   pull_request:
-    paths: ['ci/package-*', 'dist/**', 'bins/rdsktp/Cargo.toml', '.github/workflows/package.yml']
+    paths: ['ci/package-*', 'dist/**', 'bins/oxydesk/Cargo.toml', '.github/workflows/package.yml']
   workflow_dispatch:
 permissions:
   contents: read

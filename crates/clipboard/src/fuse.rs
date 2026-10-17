@@ -1,6 +1,6 @@
 //! Read-only virtual file system exposing the files copied on the remote side.
 //!
-//! The paste of an application reads real paths (`file:///run/user/…/rdsktp-files/3/photo.jpg`);
+//! The paste of an application reads real paths (`file:///run/user/…/oxydesk-files/3/photo.jpg`);
 //! every read of such a file is turned into a range request on the list's `FileSource`. Nothing
 //! is stored: a file of several gigabytes streams through, and a list that is never pasted
 //! costs nothing.
@@ -17,7 +17,7 @@ use fuser::{
     Generation, INodeNo, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
     ReplyOpen, Request,
 };
-use rdsktp_core::files::{FileList, FileSource};
+use oxydesk_core::files::{FileList, FileSource};
 
 /// Lists kept mounted: a paste may still be reading an older one.
 const KEEP_LISTS: usize = 4;
@@ -296,7 +296,7 @@ impl RemoteFiles {
             MountOption::NoDev,
             MountOption::NoSuid,
             MountOption::NoAtime,
-            MountOption::FSName("rdsktp-clipboard".into()),
+            MountOption::FSName("oxydesk-clipboard".into()),
         ];
         config.n_threads = Some(4);
         config.clone_fd = true;
@@ -336,8 +336,8 @@ unsafe fn libc_gid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::error::ClipboardError;
-    use rdsktp_core::files::FileEntry;
+    use oxydesk_core::error::ClipboardError;
+    use oxydesk_core::files::FileEntry;
 
     struct Pattern;
     impl FileSource for Pattern {
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn a_mounted_list_streams_ranges_of_a_huge_file() {
         use std::io::{Read, Seek, SeekFrom};
-        let dir = std::env::temp_dir().join(format!("rdsktp-fuse-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oxydesk-fuse-{}", std::process::id()));
         let fs = match RemoteFiles::mount(&dir) {
             Ok(fs) => fs,
             Err(e) => return eprintln!("FUSE unavailable, test skipped: {e}"),

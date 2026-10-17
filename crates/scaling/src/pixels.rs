@@ -1,7 +1,7 @@
-use rdsktp_core::dmabuf::with_pixels;
-use rdsktp_core::error::EncodeError;
-use rdsktp_core::frame::{Frame, FrameData};
-use rdsktp_core::ScaleMap;
+use oxydesk_core::dmabuf::with_pixels;
+use oxydesk_core::error::EncodeError;
+use oxydesk_core::frame::{Frame, FrameData};
+use oxydesk_core::ScaleMap;
 
 /// Frame fitted into `map.dst`: bilinear resampling of the desktop inside `map.rect`, black elsewhere.
 /// The result is a compact SHM frame of the same pixel format.
@@ -69,8 +69,8 @@ fn scale_pixels(src: &[u8], frame: &Frame, map: &ScaleMap) -> Result<Vec<u8>, En
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdsktp_core::frame::PixelFormat;
-    use rdsktp_core::layout::OutputId;
+    use oxydesk_core::frame::PixelFormat;
+    use oxydesk_core::layout::OutputId;
 
     fn solid(w: u32, h: u32, px: [u8; 4], stride: u32) -> Frame {
         let mut d = vec![0; (stride * h) as usize];

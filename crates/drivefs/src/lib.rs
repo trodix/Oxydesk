@@ -18,9 +18,9 @@ use fuser::{
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow,
     WriteFlags,
 };
-use rdsktp_core::drive::{is_valid_path, join, DriveEntry, DriveHandle, DriveStat};
-use rdsktp_core::error::DriveError;
-use rdsktp_core::{DriveHost, OpenMode, RemoteDrive};
+use oxydesk_core::drive::{is_valid_path, join, DriveEntry, DriveHandle, DriveStat};
+use oxydesk_core::error::DriveError;
+use oxydesk_core::{DriveHost, OpenMode, RemoteDrive};
 
 /// How long the kernel may keep the attributes and names it was given.
 const ATTR_TTL: Duration = Duration::from_secs(1);
@@ -658,7 +658,7 @@ fn mount_one(dir: &Path, name: &str, drive: Arc<dyn RemoteDrive>) -> io::Result<
         MountOption::NoDev,
         MountOption::NoSuid,
         MountOption::NoAtime,
-        MountOption::FSName(format!("rdsktp-drive:{name}")),
+        MountOption::FSName(format!("oxydesk-drive:{name}")),
     ];
     config.n_threads = Some(4);
     config.clone_fd = true;
@@ -836,8 +836,8 @@ mod tests {
                 .and_then(|f| f.set_modified(time(seconds)))
                 .map_err(io_err)
         }
-        fn space(&self) -> Result<rdsktp_core::DriveSpace, DriveError> {
-            Ok(rdsktp_core::DriveSpace {
+        fn space(&self) -> Result<oxydesk_core::DriveSpace, DriveError> {
+            Ok(oxydesk_core::DriveSpace {
                 total: 1 << 30,
                 available: 1 << 29,
             })
@@ -846,7 +846,7 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("rdsktp-drivefs-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("oxydesk-drivefs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -1,0 +1,19 @@
+[Unit]
+Description=Oxydesk - RDP server
+Requires=oxydesk-authd.service
+After=network.target oxydesk-authd.service
+
+[Service]
+# Mode, address and the other settings come from /etc/oxydesk/oxydesk.conf (and oxydesk.conf.d/*.conf); remote login by default.
+ExecStart=/usr/bin/oxydesk
+# Unprivileged account created by sysusers; the PAM login and the sessions are oxydesk-authd's job.
+User=oxydesk
+StateDirectory=oxydesk
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

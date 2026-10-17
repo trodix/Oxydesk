@@ -25,7 +25,7 @@ jobs:
           cargo doc --workspace --no-deps
           mkdir -p _site/api
           cp -r target/doc/. _site/api/
-          echo '<meta http-equiv="refresh" content="0; url=rdsktp_core/index.html">' > _site/api/index.html
+          echo '<meta http-equiv="refresh" content="0; url=oxydesk_core/index.html">' > _site/api/index.html
       - name: Add the landing page
         run: cp -r site/. _site/
       - name: Prerender the settings into the documentation page

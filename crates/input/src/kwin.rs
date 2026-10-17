@@ -4,8 +4,8 @@
 
 use std::sync::Mutex;
 
-use rdsktp_core::error::InputError;
-use rdsktp_core::ports::{InputSink, PointerButton};
+use oxydesk_core::error::InputError;
+use oxydesk_core::ports::{InputSink, PointerButton};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
@@ -101,7 +101,7 @@ impl KwinFakeInput {
             InputError::Backend("org_kde_kwin_fake_input not announced: executable not authorized by KWin (ADR 004)".into())
         })?;
         fake.authenticate(
-            "rdsktp".into(),
+            "oxydesk".into(),
             "RDP server: injection of remote input".into(),
         );
         conn.flush()
@@ -130,7 +130,7 @@ impl InputSink for KwinFakeInput {
         self.flush()
     }
 
-    fn set_keyboard_layout(&mut self, layout: &rdsktp_core::XkbLayout) -> Result<(), InputError> {
+    fn set_keyboard_layout(&mut self, layout: &oxydesk_core::XkbLayout) -> Result<(), InputError> {
         crate::xkb::apply(layout)
     }
 
