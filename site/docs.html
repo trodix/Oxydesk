@@ -18,7 +18,7 @@
 .chip{font:inherit;font-size:14px;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
 .chip[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 #count{color:var(--muted);font-size:14px;margin-left:auto}
-.param{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:16px 20px;margin:0 0 14px;scroll-margin-top:140px}
+.param{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:16px 20px;margin:0 0 14px;scroll-margin-top:calc(var(--stick,260px) + 16px)}
 .param h3{margin:0 0 4px;font-size:18px;display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
 .param h3 a{color:var(--fg)}
 .param .cat{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
@@ -176,8 +176,13 @@ function render() {
 }
 q.addEventListener("input", render);
 document.addEventListener("keydown", e => { if (e.key === "/" && document.activeElement !== q) { e.preventDefault(); q.focus(); } });
+// The nav and the search bar are both sticky: anchors must stop below them, whatever their height (chips wrap on mobile).
+const stick = () => document.documentElement.style.setProperty("--stick", document.querySelector("nav").offsetHeight + document.querySelector(".tools").offsetHeight + "px");
+stick();
+addEventListener("resize", stick);
 render();
-if (location.hash) { const el = document.getElementById(location.hash.slice(1)); if (el) el.scrollIntoView(); }
+stick();
+if (location.hash) { const el = document.getElementById(decodeURIComponent(location.hash.slice(1))); if (el) el.scrollIntoView(); }
 </script>
 </body>
 </html>
