@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [develop]
-    paths: ["docs/**", "README.md", "book.toml", "theme/**", "crates/**", "bins/**", "Cargo.toml", ".github/workflows/pages.yml"]
+    paths: ["site/**", "README.md", "crates/**", "bins/**", "Cargo.toml", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -20,21 +20,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdBook
-        run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          sudo mv mdbook /usr/local/bin/
-      - run: mdbook build
       - name: Build the API reference (rustdoc)
         run: |
           cargo doc --workspace --no-deps
-          mkdir -p book/api
-          cp -r target/doc/. book/api/
-          echo '<meta http-equiv="refresh" content="0; url=rdsktp_core/index.html">' > book/api/index.html
+          mkdir -p _site/api
+          cp -r target/doc/. _site/api/
+          echo '<meta http-equiv="refresh" content="0; url=rdsktp_core/index.html">' > _site/api/index.html
+      - name: Add the landing page
+        run: cp -r site/. _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: book
+          path: _site
   deploy:
     needs: build
     runs-on: ubuntu-latest

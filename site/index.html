@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RustyDesktop – RDP server for KDE Plasma</title>
+<meta name="description" content="RustyDesktop (rdsktp) is a headless RDP server for KDE Plasma on Wayland, written in Rust. One real desktop session per user, H.264 video, multi-monitor, clipboard, audio, drives and printers.">
+<meta property="og:title" content="RustyDesktop – RDP server for KDE Plasma">
+<meta property="og:description" content="Connect to a real KDE Plasma Wayland session from Windows mstsc, FreeRDP or Remmina. Open source, written in Rust.">
+<meta property="og:image" content="https://trodix.github.io/RustyDesktop/img/desktop.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23d9480f'/%3E%3Cpath d='M25 30h50v34H25zM40 74h20' stroke='white' stroke-width='7' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cloud.umami.is/script.js" data-website-id="7adde11e-48d6-4217-af29-48129caf15b5" data-domains="trodix.github.io"></script>
+</head>
+<body>
+<nav><div class="wrap">
+  <a class="brand" href="#">Rusty<span>Desktop</span></a>
+  <a class="l h" href="#features">Features</a>
+  <a class="l h" href="#install">Install</a>
+  <a class="l h" href="#limits">Limits</a>
+  <a class="l h" href="#credits">Credits</a>
+  <a class="l h" href="api/">API</a>
+  <a class="btn" href="https://github.com/trodix/RustyDesktop">GitHub</a>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <span class="badge">Open source · AGPL-3.0 · written in Rust</span>
+  <h1>Your <em>KDE Plasma</em> desktop, from any RDP client</h1>
+  <p class="lead">RustyDesktop is a headless RDP server for Plasma on Wayland. Log in with your Linux account from Windows <code>mstsc</code>, FreeRDP or Remmina and get your own real desktop session, with sound, clipboard, shared folders and printers.</p>
+  <div class="cta">
+    <a class="btn primary" href="#install">Install in two minutes</a>
+    <a class="btn" href="https://github.com/trodix/RustyDesktop/releases">Download packages</a>
+  </div>
+  <div class="shot">
+    <div class="bar"><i></i><i></i><i></i></div>
+    <img src="img/desktop.png" alt="A KDE Plasma desktop on Debian 13 displayed in an RDP client" width="1920" height="1035">
+  </div>
+  <p class="cap">A Plasma session on Debian 13 served by <code>rdsktp</code> and displayed in FreeRDP.</p>
+</div></header>
+
+<section id="why"><div class="wrap">
+  <h2>A real session, not a screen mirror</h2>
+  <p class="sub">Each user who connects gets a genuine logind/KDE session, started after a PAM login. Close the client, come back later: your windows are still there.</p>
+  <div class="grid">
+    <div class="card"><div class="ico">🔐</div><h3>Native Linux login</h3><p>PAM authentication over TLS with your existing accounts. One isolated session per user, with throttling per client address and per account.</p></div>
+    <div class="card"><div class="ico">🔁</div><h3>Survives network drops</h3><p>After a cut, <code>mstsc</code> and FreeRDP reconnect by themselves, without the password. The session and its applications are kept.</p></div>
+    <div class="card"><div class="ico">⚡</div><h3>Modern video path</h3><p>H.264 over the RDP graphics pipeline (EGFX), software OpenH264 or GPU VA-API, with bitrate adapted to the client's link.</p></div>
+  </div>
+</div></section>
+
+<section id="features" class="alt"><div class="wrap">
+  <h2>Everything you expect from a remote desktop</h2>
+  <p class="sub">Tested with Windows <code>mstsc</code>, FreeRDP (<code>xfreerdp</code>, <code>sdl-freerdp</code>) and Remmina.</p>
+  <div class="grid">
+    <div class="card"><div class="ico">🖥️</div><h3>Multi-monitor and resize</h3><p>Up to 16 monitors, dynamic resize through Display Control, layouts that follow the client.</p></div>
+    <div class="card"><div class="ico">📋</div><h3>Clipboard</h3><p>Text, images and files in both directions, including very large files streamed without being stored.</p></div>
+    <div class="card"><div class="ico">🔊</div><h3>Audio</h3><p>Session sound played on the client.</p></div>
+    <div class="card"><div class="ico">📁</div><h3>Drive redirection</h3><p>Folders shared by the client appear in your Linux session as ordinary read-write folders (FUSE).</p></div>
+    <div class="card"><div class="ico">🖨️</div><h3>Printer redirection</h3><p>Client printers show up as CUPS queues, with raw or XPS jobs depending on the printer driver.</p></div>
+    <div class="card"><div class="ico">⌨️</div><h3>Input</h3><p>Keyboard, mouse and cursor shapes.</p></div>
+  </div>
+</div></section>
+
+<section id="install"><div class="wrap">
+  <h2>Install</h2>
+  <p class="sub">Packages for <b>x86_64</b> and <b>aarch64</b> are attached to every <a href="https://github.com/trodix/RustyDesktop/releases">GitHub release</a>.</p>
+  <div class="two">
+    <div>
+      <table>
+        <tr><th>Format</th><th>Targets</th></tr>
+        <tr><td><code>.deb</code></td><td>Debian 13</td></tr>
+        <tr><td><code>.rpm</code></td><td>Fedora, Rocky Linux / RHEL 9 and 10</td></tr>
+        <tr><td><code>.tar.gz</code></td><td>any of the above (<code>./install.sh</code>)</td></tr>
+      </table>
+      <p class="cap">Run-time dependencies: <code>fuse3</code>, <code>libopenh264</code>, <code>libkscreen</code>. Recommended for printers: <code>cups</code>, <code>ghostscript</code>.</p>
+    </div>
+    <div>
+      <ol class="steps">
+        <li><b>Install the package</b> for your distribution from the latest release.</li>
+        <li><b>Start the services</b>
+<pre>systemctl enable --now rdsktp-authd rdsktp</pre></li>
+        <li><b>Connect</b> an RDP client to port <code>3389</code> with a Linux account and its password.</li>
+      </ol>
+      <p>Configuration lives in <code>/etc/rdsktp/rdsktp.conf</code>, fully commented, with drop-ins in <code>rdsktp.conf.d/</code>. See the <a href="https://github.com/trodix/RustyDesktop#configuration">README</a>.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="limits" class="alt"><div class="wrap">
+  <h2>Known limits, honestly</h2>
+  <p class="sub">RustyDesktop is young. Here is what does not work, or is not verified, today.</p>
+  <ul class="limits">
+    <li><b>No NLA in login mode.</b> Authentication is TLS only (dynamic accounts, an IronRDP limit). Use it on a network you trust or behind a VPN.</li>
+    <li><b>KWin 6.3 (Debian 13):</b> the number of monitors is fixed when a user's session starts, and resizing is done by scaling, with black bars. A newer KWin gives a real resize.</li>
+    <li><b>Printers:</b> no full Easy Print (MS-RDPEXPS). Tray, duplex and colour choices are not transferred. Validated with software drivers, not yet with physical printers.</li>
+    <li><b>Clipboard:</b> no primary selection, and not tested with Klipper.</li>
+    <li><b>SELinux enforcing</b> (Fedora, Rocky) is untested and no policy is shipped.</li>
+    <li><b>Not covered:</b> smart cards, microphone, USB redirection, several simultaneous clients per user, HiDPI.</li>
+  </ul>
+  <p>Every limit and the reasoning behind each design choice is tracked in the repository's <a href="https://github.com/trodix/RustyDesktop/tree/develop/docs/decisions">architecture decision records</a>.</p>
+</div></section>
+
+<section id="quality"><div class="wrap">
+  <h2>Built to be tested</h2>
+  <p class="sub">Hexagonal architecture: the domain has no I/O, so it is tested without a compositor or a network.</p>
+  <div class="grid">
+    <div class="card"><h3>~80 % line coverage</h3><p>Measured with <code>cargo-llvm-cov</code>, with a stricter target on parsers, protocols and business logic.</p></div>
+    <div class="card"><h3>Real-client scenarios</h3><p>End-to-end tests drive Windows <code>mstsc</code>, FreeRDP and Remmina against a Debian VM, in login mode as well.</p></div>
+    <div class="card"><h3>Documented decisions</h3><p>Sixteen ADRs explain the protocol choices, the patches to IronRDP and what was measured. <a href="api/">Browse the API reference.</a></p></div>
+  </div>
+</div></section>
+
+<section id="credits" class="alt"><div class="wrap">
+  <h2>Standing on the shoulders of giants</h2>
+  <p class="sub">RustyDesktop exists thanks to these projects and their maintainers. Thank you.</p>
+  <div class="credits">
+    <div class="credit"><b><a href="https://github.com/Devolutions/IronRDP">IronRDP</a></b><span>The Rust RDP protocol implementation at the core of the server, by Devolutions. We carry a few local patches (multi-monitor, reconnection cookie, drive and printer correlation) and hope to upstream them.</span></div>
+    <div class="credit"><b><a href="https://github.com/cisco/openh264">OpenH264</a></b><span>Cisco's H.264 encoder, loaded at run time.</span></div>
+    <div class="credit"><b><a href="https://kde.org/plasma-desktop/">KDE Plasma and KWin</a></b><span>The desktop and compositor we serve, with <code>libkscreen</code>.</span></div>
+    <div class="credit"><b><a href="https://www.freerdp.com/">FreeRDP</a> and <a href="https://remmina.org/">Remmina</a></b><span>Reference open-source clients we test against.</span></div>
+    <div class="credit"><b><a href="https://pipewire.org/">PipeWire</a></b><span>Screen and audio capture.</span></div>
+    <div class="credit"><b><a href="https://github.com/chromiumos/cros-libva">cros-libva</a> and <a href="https://github.com/intel/libva">libva</a></b><span>GPU-accelerated H.264 encoding (VA-API).</span></div>
+    <div class="credit"><b><a href="https://github.com/cberner/fuser">fuser</a> and <a href="https://github.com/libfuse/libfuse">libfuse</a></b><span>Folders and clipboard files exposed as a file system.</span></div>
+    <div class="credit"><b><a href="https://github.com/Smithay/wayland-rs">wayland-rs</a></b><span>Wayland protocol bindings.</span></div>
+    <div class="credit"><b><a href="https://tokio.rs/">Tokio</a>, <a href="https://github.com/rustls/rustls">rustls</a>, <a href="https://github.com/estk/rcgen">rcgen</a></b><span>Async runtime, TLS and certificate generation.</span></div>
+    <div class="credit"><b><a href="https://www.cups.org/">CUPS</a> and <a href="https://ghostscript.com/">Ghostscript</a></b><span>Printing and PostScript/PDF to XPS conversion.</span></div>
+    <div class="credit"><b><a href="https://github.com/taiki-e/cargo-llvm-cov">cargo-llvm-cov</a></b><span>Test coverage.</span></div>
+    <div class="credit"><b><a href="https://www.rust-lang.org/">Rust</a></b><span>And the many crates in <code>Cargo.lock</code>, all under permissive licenses.</span></div>
+  </div>
+</div></section>
+
+<section><div class="wrap" style="text-align:center">
+  <h2>Try it, and tell us what breaks</h2>
+  <p class="sub" style="margin-inline:auto">Bug reports with your versions and environment are the most useful contribution.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/trodix/RustyDesktop/releases">Download</a>
+    <a class="btn" href="https://github.com/trodix/RustyDesktop/issues/new/choose">Report a bug</a>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <span>RustyDesktop is released under <a href="https://github.com/trodix/RustyDesktop/blob/develop/LICENSE">AGPL-3.0-only</a>. Not affiliated with Microsoft, KDE or Devolutions.</span>
+  <span><a href="https://github.com/trodix/RustyDesktop">Source</a> · <a href="api/">API</a> · <a href="https://github.com/trodix/RustyDesktop/tree/develop/docs/decisions">ADRs</a></span>
+</div></footer>
+</body>
+</html>

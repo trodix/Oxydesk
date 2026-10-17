@@ -1,3 +1,0 @@
-# Summary
-
-- [Overview](index.md)

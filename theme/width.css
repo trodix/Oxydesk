@@ -1,4 +1,0 @@
-/* Use more of the window: mdBook limits the content to 750px by default. */
-:root {
-    --content-max-width: 1200px;
-}

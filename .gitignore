@@ -7,4 +7,4 @@
 /third_party/*/target
 /third_party/*/Cargo.lock
 dist-out/
-/book
+/_site
