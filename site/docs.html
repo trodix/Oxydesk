@@ -5,7 +5,32 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Documentation – RustyDesktop</title>
 <meta name="description" content="Every setting of RustyDesktop (rdsktp): what it does, its default, and where to set it (configuration file, drop-ins, command line, environment). Searchable.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%231d99f3'/%3E%3Cpath d='M25 30h50v34H25zM40 74h20' stroke='white' stroke-width='7' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="canonical" href="https://trodix.github.io/RustyDesktop/docs.html">
+<meta name="theme-color" content="#d9480f">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RustyDesktop">
+<meta property="og:url" content="https://trodix.github.io/RustyDesktop/docs.html">
+<meta property="og:title" content="Documentation – RustyDesktop">
+<meta property="og:description" content="Every RustyDesktop setting: what it does, its default, and where to set it (configuration file, drop-ins, command line, environment). Searchable.">
+<meta property="og:image" content="https://trodix.github.io/RustyDesktop/img/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A KDE Plasma desktop served by RustyDesktop and displayed in an RDP client">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Documentation – RustyDesktop">
+<meta name="twitter:description" content="Every RustyDesktop setting: what it does, its default, and where to set it (configuration file, drop-ins, command line, environment). Searchable.">
+<meta name="twitter:image" content="https://trodix.github.io/RustyDesktop/img/og.jpg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "RustyDesktop", "item": "https://trodix.github.io/RustyDesktop/" },
+    { "@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://trodix.github.io/RustyDesktop/docs.html" }
+  ]
+}
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23d9480f'/%3E%3Cpath d='M25 30h50v34H25zM40 74h20' stroke='white' stroke-width='7' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <style>
 .dochead{padding:56px 0 34px;text-align:center;background:radial-gradient(900px 380px at 50% -80px,color-mix(in srgb,var(--accent2) 22%,transparent),transparent),radial-gradient(700px 300px at 85% 0,color-mix(in srgb,var(--accent) 18%,transparent),transparent)}
@@ -76,7 +101,7 @@ printer-mode = xps,HP*=raw:pcl</pre>
 
 <h2 class="sec" id="settings">Settings</h2>
 <div id="list" aria-live="polite"></div>
-<noscript><p>This page needs JavaScript to list the settings. The same information is in <code>/etc/rdsktp/rdsktp.conf</code>, which is fully commented, and in <code>rdsktp --help</code>.</p></noscript>
+<noscript><p>Search and filters need JavaScript; the full list is shown below.</p></noscript>
 
 </div></main>
 
@@ -86,63 +111,9 @@ printer-mode = xps,HP*=raw:pcl</pre>
   <span class="fr">Made in France <svg viewBox="0 0 20 20" width="18" height="18" role="img" aria-label="French flag"><clipPath id="frc"><circle cx="10" cy="10" r="10"/></clipPath><g clip-path="url(#frc)"><rect width="7" height="20" fill="#0055a4"/><rect x="7" width="6" height="20" fill="#fff"/><rect x="13" width="7" height="20" fill="#ef4135"/></g><circle cx="10" cy="10" r="9.5" fill="none" stroke="currentColor" stroke-opacity=".3"/></svg></span>
 </div></footer>
 
+<script src="settings.js"></script>
 <script>
-// Each entry: key (config key and long option), cat, type, def (default), modes, where, desc (what it is for).
-const CONF = "rdsktp.conf, a drop-in, or the command line";
-const P = [
- // Mode
- {key:"login", cat:"Mode", type:"yes | (flag)", def:"yes (the default mode)", modes:"—", where:CONF, desc:"Remote login: the client types a Linux account and password, checked by PAM through rdsktp-authd, and gets its own KDE Plasma session. One real session per user, TLS only (no NLA). Needs rdsktp-authd.service."},
- {key:"session", cat:"Mode", type:"kwin", def:"unset", modes:"—", where:CONF, desc:"Serve one virtual KWin session of the user running the server (captured and controlled) instead of per-user logins. Needs a build with the kwin feature."},
- {key:"test-mode", cat:"Mode", type:"yes | (flag)", def:"unset", modes:"—", where:CONF, desc:"Synthetic desktop (test pattern, echo of keyboard and clipboard). For tests only, not a usable desktop. Exactly one of login, session, test-mode is used."},
- {key:"config", cat:"Mode", type:"path", def:"/etc/rdsktp/rdsktp.conf (if present) plus FILE.d/*.conf", modes:"all", where:"command line only (--config FILE)", desc:"Read another configuration file instead of the default one. The command line still wins over it."},
- // Network
- {key:"listen", cat:"Network", type:"ADDR:PORT", def:"0.0.0.0:3389", modes:"all", where:CONF, desc:"Address and port to listen on. Use 127.0.0.1:3389 to accept local connections only (for example behind an SSH tunnel or VPN), or a port above 1024 to move away from the RDP default."},
- {key:"state-dir", cat:"Network", type:"path", def:"/var/lib/rdsktp", modes:"all", where:CONF, desc:"Directory of the self-signed TLS certificate (tls-cert.pem, tls-key.pem), generated at the first start. Replace both files there to use your own certificate."},
- {key:"authd-socket", cat:"Network", type:"path", def:"/run/rdsktp/authd.sock", modes:"login", where:CONF, desc:"Socket of rdsktp-authd, the only privileged component. Change it only if you also moved the authd socket (see rdsktp-authd below)."},
- // Display
- {key:"width", cat:"Display", type:"pixels", def:"1920", modes:"test-mode, session", where:CONF, desc:"Width of the desktop. The client's window size is followed when it can be."},
- {key:"height", cat:"Display", type:"pixels", def:"1080", modes:"test-mode, session", where:CONF, desc:"Height of the desktop. The client's window size is followed when it can be."},
- {key:"outputs", cat:"Display", type:"1 to 16", def:"1", modes:"all", where:CONF, desc:"Number of monitors offered, laid out side by side. In login mode this is only a default: the session follows the monitors the client announces (mstsc /multimon, up to 16)."},
- {key:"fps", cat:"Display", type:"number", def:"30", modes:"all", where:CONF, desc:"Maximum number of frames per second captured and sent. Lower it to save bandwidth and CPU, raise it for smoother motion."},
- // Video
- {key:"encoder", cat:"Video", type:"auto | vaapi | openh264", def:"auto", modes:"all", where:CONF, desc:"H.264 encoder. auto uses the GPU through VA-API when usable, else software OpenH264. vaapi forces the GPU, openh264 forces software (useful on a VM without a GPU, or to rule out a driver problem)."},
- {key:"dmabuf", cat:"Video", type:"auto | on | off", def:"auto", modes:"all", where:CONF, desc:"Offer DMA-BUF capture buffers (zero-copy with a GPU encoder). auto enables them only with a GPU encoder. Turn off if capture shows corruption with a GPU."},
- {key:"adaptive-bitrate", cat:"Video", type:"on | off", def:"on", modes:"all", where:CONF, desc:"Bitrate and number of frames in flight follow what the client's link carries. Turn off to keep a fixed bitrate on a link you know is good."},
- // Audio
- {key:"audio", cat:"Audio", type:"pulse | tone | off", def:"pulse with a KWin session, tone in test-mode", modes:"session, test-mode", where:CONF, desc:"pulse captures the session's sound through PipeWire/PulseAudio. tone plays a test tone (diagnostics). off disables audio."},
- // Authentication
- {key:"nla-user", cat:"Authentication", type:"account name", def:"unset (NLA off)", modes:"session, test-mode (incompatible with login)", where:CONF + "; the password only through the RDSKTP_PASSWORD environment variable", desc:"Enables NLA (network level authentication) for this single account name. The password is never in the configuration file: set RDSKTP_PASSWORD in the service environment (a drop-in of the unit, mode 0600)."},
- {key:"max-login-failures", cat:"Authentication", type:"number", def:"5", modes:"login", where:CONF, desc:"Failed login attempts from one client address before that address is blocked for login-lockout-secs. Protects against password guessing."},
- {key:"max-user-failures", cat:"Authentication", type:"number", def:"10", modes:"login", where:CONF, desc:"Failed login attempts on one account (from any address) before the account is blocked for login-lockout-secs."},
- {key:"login-lockout-secs", cat:"Authentication", type:"seconds", def:"300", modes:"login", where:CONF, desc:"How long an address or account stays blocked after too many failures."},
- // Reconnection
- {key:"reconnect-timeout", cat:"Reconnection", type:"seconds", def:"10 (0 turns it off)", modes:"login", where:CONF, desc:"After a network loss, mstsc and FreeRDP resume their session by themselves, without the password, if they come back within this time. The cookie they present is single use and valid only from the same address; a client that disconnects on purpose gets none. The session and its applications are kept."},
- {key:"dead-peer-timeout", cat:"Reconnection", type:"seconds", def:"8 (0 leaves it to the kernel, which takes minutes)", modes:"all", where:CONF, desc:"A client that stops answering (network cut without a clean close) is dropped after this time. This frees the server so the client can reconnect."},
- // KWin session
- {key:"kwin-socket", cat:"KWin session", type:"name", def:"rdsktp-0", modes:"session", where:CONF, desc:"Name of the Wayland socket of the virtual KWin started for the session."},
- {key:"session-app", cat:"KWin session", type:"command and arguments", def:"none", modes:"session", where:CONF + " (repeat the line for several programs)", desc:"Program started in the session, with its arguments, for example plasmashell or konsole. A list given on the command line replaces the whole list from the file."},
- // Redirections
- {key:"drives-dir", cat:"Redirections", type:"path | off", def:"$XDG_RUNTIME_DIR/rdsktp-drives with a KWin session; off with test-mode", modes:"all", where:CONF, desc:"Drive redirection: folders shared by the client are mounted (FUSE) under DIR/<name> and appear as ordinary read-write folders. off disables it. Needs fuse3."},
- {key:"printers", cat:"Redirections", type:"path | off", def:"$XDG_RUNTIME_DIR/rdsktp-printers with a KWin session", modes:"all", where:CONF, desc:"Printer redirection: one socket per client printer in this directory (any script can print through it). off disables it."},
- {key:"printers-cups", cat:"Redirections", type:"on | off", def:"on when CUPS answers", modes:"all", where:CONF, desc:"Also create a CUPS queue per client printer, so LibreOffice, Firefox or lp can print to it. Queues are named USER-PRINTER and visible only to the session user. Needs the user to be in the CUPS admin group (lpadmin)."},
- {key:"printer-mode", cat:"Redirections", type:"auto | raw | raw:ps|pcl|text | xps, per printer PATTERN=MODE", def:"auto", modes:"all", where:CONF, desc:"Format of the jobs sent to client printers. auto sends raw jobs when the driver name states a language (PostScript, PCL, text), XPS otherwise if the client accepts it, else the printer is refused. Per printer: comma-separated PATTERN=MODE where * matches anything, e.g. xps,HP*=raw:pcl. XPS needs ghostscript."},
- // authd
- {key:"--socket", cat:"rdsktp-authd", type:"path", def:"/run/rdsktp/authd.sock", modes:"login", where:"command line of rdsktp-authd (override ExecStart= in a systemd drop-in)", desc:"Socket on which the privileged authentication helper listens. Must match authd-socket of rdsktp."},
- {key:"--pam-service", cat:"rdsktp-authd", type:"name", def:"rdsktp", modes:"login", where:"command line of rdsktp-authd", desc:"PAM service used to check the credentials. The package installs /etc/pam.d/rdsktp, which includes the system's common-auth and common-account. Edit it to add, for example, two-factor authentication."},
- {key:"--min-uid", cat:"rdsktp-authd", type:"number", def:"1000", modes:"login", where:"command line of rdsktp-authd", desc:"Lowest user id allowed to log in remotely. Keeps system accounts (root and service users) out of reach."},
- // Environment
- {key:"RDSKTP_PASSWORD", cat:"Environment", type:"string", def:"unset", modes:"nla-user", where:"environment of the service (a systemd drop-in with Environment=, file mode 0600)", desc:"The NLA password for nla-user. Read only from the environment so that it never ends up in a configuration file or the process list."},
- {key:"RUST_LOG", cat:"Environment", type:"filter", def:"info", modes:"all", where:"environment of rdsktp, rdsktp-authd and the agent", desc:"Log verbosity (tracing filter), for example RUST_LOG=debug or RUST_LOG=rdsktp_rdp=debug. Read the logs with journalctl -u rdsktp -u rdsktp-authd."},
- {key:"RDSKTP_KEYBOARD_LAYOUT", cat:"Environment", type:"off", def:"unset", modes:"all", where:"environment of the session user", desc:"Set to off to stop adopting the client's keyboard layout, for a user who shares the D-Bus session of a real desktop."},
- {key:"RDSKTP_POINTER", cat:"Environment", type:"hidden", def:"unset (cursor shape sent)", modes:"session", where:"environment of the session user", desc:"Set to hidden to not capture the mouse pointer shape in the video stream."},
- // Files
- {key:"/etc/rdsktp/rdsktp.conf", cat:"Files", type:"file", def:"installed by the package", modes:"all", where:"edit it (kept on upgrades)", desc:"Main configuration file, fully commented. Prefer a drop-in in /etc/rdsktp/rdsktp.conf.d/ for local changes."},
- {key:"/etc/pam.d/rdsktp", cat:"Files", type:"file", def:"includes common-auth and common-account", modes:"login", where:"edit it", desc:"PAM stack used to check remote logins. Changes apply to the next login."},
- {key:"/var/lib/rdsktp/", cat:"Files", type:"directory", def:"created at start", modes:"all", where:"state-dir", desc:"Holds the self-signed TLS certificate and key (tls-cert.pem, tls-key.pem)."}
-];
-
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const cats = [...new Set(P.map(p => p.cat))];
+const cats = [...new Set(SETTINGS.map(p => p.cat))];
 let active = null;
 const q = document.getElementById("q"), list = document.getElementById("list"), count = document.getElementById("count"), chips = document.getElementById("chips");
 
@@ -152,28 +123,13 @@ function mk(label, value) {
   b.onclick = () => { active = value; render(); };
   return b;
 }
-function hl(text, terms) {
-  let out = esc(text);
-  for (const t of terms) { if (!t) continue; out = out.replace(new RegExp("(" + t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")(?![^<]*>)", "gi"), "<mark>$1</mark>"); }
-  return out;
-}
 function render() {
   chips.replaceChildren(mk("All", null), ...cats.map(c => mk(c, c)));
   const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const hit = P.filter(p => (!active || p.cat === active) &&
+  const hit = SETTINGS.filter(p => (!active || p.cat === active) &&
     terms.every(t => Object.values(p).join(" ").toLowerCase().includes(t)));
-  count.textContent = hit.length + " of " + P.length;
-  if (!hit.length) { list.innerHTML = '<p class="empty">No setting matches. Try fewer words.</p>'; return; }
-  const k = p => p.cat === "Environment" || p.cat === "Files" || p.key.startsWith("--") ? p.key : "--" + p.key;
-  list.innerHTML = hit.map(p => `<article class="param" id="${esc(p.key.replace(/[^a-z0-9_-]/gi, "_"))}">
-    <h3><a href="#${esc(p.key.replace(/[^a-z0-9_-]/gi, "_"))}"><code>${hl(p.cat === "Files" || p.cat === "Environment" ? p.key : p.key.replace(/^--/, ""), terms)}</code></a><span class="cat">${esc(p.cat)}</span></h3>
-    <p>${hl(p.desc, terms)}</p>
-    <div class="meta">
-      <span><b>Values:</b> ${hl(p.type, terms)}</span>
-      <span><b>Default:</b> ${hl(p.def, terms)}</span>
-      <span><b>Applies to:</b> ${hl(p.modes, terms)}</span>
-      <span><b>Set it in:</b> ${hl(p.where, terms)}${p.cat==="Files"||p.cat==="Environment"||p.key.startsWith("--")?"":" (as <code>"+esc(k(p))+"</code>)"}</span>
-    </div></article>`).join("");
+  count.textContent = hit.length + " of " + SETTINGS.length;
+  list.innerHTML = hit.length ? hit.map(p => card(p, terms)).join("") : '<p class="empty">No setting matches. Try fewer words.</p>';
 }
 q.addEventListener("input", render);
 document.addEventListener("keydown", e => { if (e.key === "/" && document.activeElement !== q) { e.preventDefault(); q.focus(); } });
