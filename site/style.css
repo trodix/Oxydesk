@@ -11,6 +11,7 @@ nav .brand span{color:var(--accent)}
 nav a.l{color:var(--muted);font-size:15px}nav a.l:hover{color:var(--fg);text-decoration:none}
 .btn{display:inline-block;padding:10px 20px;border-radius:10px;font-weight:600;font-size:16px;border:1px solid var(--line);color:var(--fg);background:var(--card)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.gh-btn{display:inline-flex;align-items:center;gap:8px}
 .btn:hover{text-decoration:none;filter:brightness(1.07)}
 .hero{padding:76px 0 40px;text-align:center;background:radial-gradient(900px 380px at 50% -80px,color-mix(in srgb,var(--accent2) 22%,transparent),transparent),radial-gradient(700px 300px at 85% 0,color-mix(in srgb,var(--accent) 18%,transparent),transparent)}
 .badge{display:inline-block;font-size:14px;color:var(--muted);border:1px solid var(--line);background:var(--card);padding:4px 14px;border-radius:99px}
