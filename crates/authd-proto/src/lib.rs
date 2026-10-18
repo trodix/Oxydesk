@@ -33,11 +33,11 @@ fn default_keep() -> bool {
 #[serde(rename_all = "lowercase")]
 pub enum SessionPolicy {
     /// Always a session of our own (a private virtual KWin).
-    #[default]
     New,
     /// Always the Plasma session the user already has; refused when there is none.
     Attach,
     /// The user's existing Plasma session if there is one, else a session of our own.
+    #[default]
     Auto,
 }
 
@@ -299,7 +299,7 @@ mod tests {
             read_request(&mut b).unwrap(),
             Request::Login {
                 outputs: 0,
-                policy: SessionPolicy::New,
+                policy: SessionPolicy::Auto,
                 keep_virtual_outputs: true,
                 ..
             }
@@ -315,7 +315,7 @@ mod tests {
         ] {
             assert_eq!(p.as_str().parse(), Ok(p));
         }
-        assert_eq!(SessionPolicy::default(), SessionPolicy::New);
+        assert_eq!(SessionPolicy::default(), SessionPolicy::Auto);
         let e = "both".parse::<SessionPolicy>().unwrap_err();
         assert!(e.contains("both") && e.contains("new|attach|auto"));
     }

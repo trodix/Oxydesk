@@ -266,7 +266,7 @@ User=oxydesk
 DynamicUser=no
 Environment=${VM_SERVER_ENV:-OXYDESK_PUMP=event}
 ExecStart=
-ExecStart=/usr/bin/oxydesk --login --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/oxydesk --printer-mode OxydeskXps=xps
+ExecStart=/usr/bin/oxydesk --login --session-policy ${VM_SESSION_POLICY:-new} --outputs ${VM_OUTPUTS:-1} --listen 0.0.0.0:3389 --state-dir /var/lib/oxydesk --printer-mode OxydeskXps=xps
 CONF
   vm_ssh 'sudo systemd-sysusers /usr/lib/sysusers.d/oxydesk.conf; sudo systemctl daemon-reload && sudo systemctl restart oxydesk-authd oxydesk && sleep 3 && systemctl is-active oxydesk-authd oxydesk && sudo journalctl -u oxydesk-authd -u oxydesk -n 20 --no-pager'
 }

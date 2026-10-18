@@ -175,13 +175,13 @@ mod tests {
                 keep_virtual_outputs: true,
             }
         );
-        // Without a setting, a login starts a session of its own, as before.
+        // Without a setting, a login joins the user's session if there is one, else starts one.
         let (broker, authd) = broker_with_authd(Response::Denied);
         let _ = broker.login("bob", "pw", None);
         assert!(matches!(
             authd.join().unwrap(),
             Request::Login {
-                policy: SessionPolicy::New,
+                policy: SessionPolicy::Auto,
                 keep_virtual_outputs: true,
                 ..
             }

@@ -25,8 +25,8 @@ const USAGE: &str = "usage: oxydesk (--test-mode | --login [--authd-socket PATH]
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/oxydesk-printers; `off` disables)
   --adaptive-bitrate on|off  bitrate and frames in flight follow what the client's link carries (default: on)
   --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
-  --session-policy new|attach|auto  login mode: a login starts a session of its own (default), joins the Plasma session the user
-                          already has (refused when there is none) or joins it if there is one, else starts one
+  --session-policy new|attach|auto  login mode: a login joins the Plasma session the user already has if there is one, else starts
+                          one (default), always joins it (refused when there is none) or always starts a session of its own
   --virtual-outputs remove|keep  login mode, joined session: when the client leaves, the monitors it added are kept (default) as
                           virtual displays of the Plasma session (their windows wait on a virtual desktop), or removed
   --reconnect-timeout SECS  login mode: a client that loses its network resumes its session by itself for this long, without
@@ -364,7 +364,7 @@ fn reconnect_timeout(args: &[String]) -> anyhow::Result<std::time::Duration> {
     ))
 }
 
-/// `--session-policy new|attach|auto` (default new).
+/// `--session-policy new|attach|auto` (default auto).
 fn session_policy(args: &[String]) -> anyhow::Result<oxydesk_remote::Policy> {
     match arg::<String>(args, "--session-policy") {
         Some(v) => v.parse().map_err(|e: String| anyhow::anyhow!(e)),
@@ -485,11 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn the_session_policy_defaults_to_a_session_of_our_own_and_rejects_other_words() {
+    fn the_session_policy_defaults_to_auto_and_rejects_other_words() {
         use oxydesk_remote::Policy as SessionPolicy;
-        assert_eq!(session_policy(&[]).unwrap(), SessionPolicy::New);
-        let a = args(&["--session-policy", "auto"]);
-        assert_eq!(session_policy(&a).unwrap(), SessionPolicy::Auto);
+        assert_eq!(session_policy(&[]).unwrap(), SessionPolicy::Auto);
+        let a = args(&["--session-policy", "attach"]);
+        assert_eq!(session_policy(&a).unwrap(), SessionPolicy::Attach);
         let e = session_policy(&args(&["--session-policy", "both"])).unwrap_err();
         assert!(e.to_string().contains("both"));
     }
