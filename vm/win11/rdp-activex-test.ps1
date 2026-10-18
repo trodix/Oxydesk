@@ -7,6 +7,8 @@
 # that point (savevm) and, for each test, restores it, swaps the data CD and the run starts at once.
 $ErrorActionPreference = 'Stop'
 trap { try { Emit ('ERROR ' + ($_ | Out-String).Replace("`r", '').Replace("`n", ' | ')) } catch { }; try { Start-Sleep 2; Stop-Computer -Force } catch { }; exit 1 }
+# Images installed before the rename from C:\rdsktp do not have this folder.
+New-Item -ItemType Directory -Force C:\oxydesk | Out-Null
 $log = 'C:\oxydesk\activex-test.log'
 $checks = New-Object System.Collections.ArrayList
 $com = $null

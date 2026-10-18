@@ -2,6 +2,8 @@
 # stores the credentials for the target host and opens the stock mstsc.exe on it.
 # The script is fixed; the CD only provides data. A displays.txt ("WIDTHxHEIGHT") on the CD first puts every display
 # of the guest at that size, side by side (manual tests with several monitors, see `win11.sh manual`).
+# Images installed before the rename from C:\rdsktp do not have this folder.
+New-Item -ItemType Directory -Force C:\oxydesk | Out-Null
 $log = 'C:\oxydesk\mstsc-test.log'
 # Same lines on COM1 (QEMU: -serial file) so that the host can read them.
 try { $com = New-Object System.IO.Ports.SerialPort 'COM1', 115200; $com.Open() } catch { $com = $null }

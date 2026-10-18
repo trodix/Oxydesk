@@ -67,6 +67,29 @@ impl Canvas {
     }
 }
 
+/// Abscissa of an output whose geometry has not been received yet.
+const UNKNOWN_X: i32 = i32::MIN;
+
+/// The fullscreen window of one output; the protocol objects stay alive as long as the window does.
+type Toplevel = (
+    wl_surface::WlSurface,
+    xdg_surface::XdgSurface,
+    xdg_toplevel::XdgToplevel,
+);
+
+fn open_window(app: &App, qh: &QueueHandle<App>, output: usize, k: usize) -> Toplevel {
+    let compositor = app.compositor.as_ref().expect("wl_compositor");
+    let wm_base = app.wm_base.as_ref().expect("xdg_wm_base");
+    let surface = compositor.create_surface(qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, qh, k);
+    let toplevel = xdg.get_toplevel(qh, k);
+    toplevel.set_title(format!("oxydesk-testapp-{k}"));
+    toplevel.set_app_id("oxydesk-testapp".into());
+    toplevel.set_fullscreen(Some(&app.outputs[output].0));
+    surface.commit();
+    (surface, xdg, toplevel)
+}
+
 #[derive(Default)]
 struct App {
     compositor: Option<wl_compositor::WlCompositor>,
@@ -111,7 +134,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                 "xdg_wm_base" => s.wm_base = Some(reg.bind(name, version.min(2), qh, ())),
                 "wl_output" => {
                     let idx = s.outputs.len();
-                    s.outputs.push((reg.bind(name, version.min(2), qh, idx), 0));
+                    s.outputs
+                        .push((reg.bind(name, version.min(2), qh, idx), UNKNOWN_X));
                 }
                 "wl_seat" => s.seat = Some(reg.bind(name, version.min(5), qh, ())),
                 _ => {}
@@ -459,9 +483,7 @@ fn main() {
     order.sort_by_key(|&i| (app.outputs[i].1, i));
     assert!(!order.is_empty(), "no wl_output output");
 
-    let compositor = app.compositor.clone().expect("wl_compositor");
     let shm = app.shm.clone().expect("wl_shm");
-    let wm_base = app.wm_base.clone().expect("xdg_wm_base");
     app.windows = vec![
         Window {
             size: (width, height),
@@ -469,17 +491,11 @@ fn main() {
         };
         order.len()
     ];
-    let mut surfaces = Vec::new();
+    let mut surfaces: Vec<Toplevel> = Vec::new();
     for (k, &o) in order.iter().enumerate() {
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm_base.get_xdg_surface(&surface, &qh, k);
-        let toplevel = xdg.get_toplevel(&qh, k);
-        toplevel.set_title(format!("oxydesk-testapp-{k}"));
-        toplevel.set_app_id("oxydesk-testapp".into());
-        toplevel.set_fullscreen(Some(&app.outputs[o].0));
-        surface.commit();
-        surfaces.push((surface, xdg, toplevel));
+        surfaces.push(open_window(&app, &qh, o, k));
     }
+    let mut opened = order.clone();
     while !app.windows.iter().all(|w| w.configured) {
         queue.blocking_dispatch(&mut app).expect("configure");
     }
@@ -492,11 +508,12 @@ fn main() {
     }
 
     // Heartbeat: alternates ~10 Hz from a thread (Wayland requests are thread-safe).
-    let canvases = app.canvases.clone();
+    let canvases = Arc::new(Mutex::new(app.canvases.clone()));
+    let thread_canvases = canvases.clone();
     let hb_conn = conn.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(50));
-        for canvas in &canvases {
+        for canvas in thread_canvases.lock().expect("canvases").iter() {
             let mut c = canvas.lock().expect("canvas");
             c.heartbeat_on = !c.heartbeat_on;
             c.fill_block(
@@ -514,6 +531,28 @@ fn main() {
 
     loop {
         queue.blocking_dispatch(&mut app).expect("dispatch");
+        // An output that appeared after the start (the session got a monitor): a window of its own, identity by rank.
+        for o in 0..app.outputs.len() {
+            if opened.contains(&o) || app.outputs[o].1 == UNKNOWN_X {
+                continue;
+            }
+            let k = opened.len();
+            app.windows.push(Window {
+                size: (width, height),
+                configured: false,
+            });
+            let window = open_window(&app, &qh, o, k);
+            while !app.windows[k].configured {
+                queue.blocking_dispatch(&mut app).expect("configure");
+            }
+            let (w, h) = app.windows[k].size;
+            let canvas = Arc::new(Mutex::new(make_canvas(&shm, &qh, &window.0, w, h, k)));
+            canvases.lock().expect("canvases").push(canvas.clone());
+            app.canvases.push(canvas);
+            app.surfaces.push(window.0.clone());
+            surfaces.push(window);
+            opened.push(o);
+        }
         // The compositor changed the size of a window (output resized): new buffer at that size.
         for (k, (surface, _, _)) in surfaces.iter().enumerate() {
             let (w, h) = app.windows[k].size;

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Disposable test VM (QEMU/KVM, Debian 13). See docs/ and brief §11.1.
+# VM_DISTRO=neon: KDE neon (Unstable edition: the latest Plasma, KWin >= 6.7) on an Ubuntu cloud image, in vm/state-neon.
 # Usage: bash vm/vm.sh <create|up|down|reset|ssh|deploy|kwin-config|login-config|logs|status> [args]
 # VM_TESTAPP=0 (with kwin-config / login-config): a bare Plasma session, without the colored-squares test application.
 #
@@ -8,7 +9,12 @@
 set -euo pipefail
 
 VM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE="$VM_DIR/state"
+VM_DISTRO="${VM_DISTRO:-debian}"
+case "$VM_DISTRO" in
+  debian) STATE="$VM_DIR/state" ;;
+  neon) STATE="$VM_DIR/state-neon" ;;
+  *) echo "vm.sh: VM_DISTRO must be debian or neon" >&2; exit 1 ;;
+esac
 
 VM_CPUS="${VM_CPUS:-2}"
 VM_MEM="${VM_MEM:-4096}"
@@ -23,14 +29,25 @@ VM_SERVICE="${VM_SERVICE:-oxydesk}"
 VM_IMAGE_FLAVOR="${VM_IMAGE_FLAVOR:-generic}"
 VM_BOOT_TIMEOUT="${VM_BOOT_TIMEOUT:-300}"
 
-IMAGE_BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
-IMAGE_FILE="debian-13-${VM_IMAGE_FLAVOR}-amd64.qcow2"
+if [[ "$VM_DISTRO" == neon ]]; then
+  # KDE neon has no cloud image: the Ubuntu one it is built on, plus the neon archive added by cloud-init.
+  VM_MEM="${VM_MEM_NEON:-6144}"
+  IMAGE_BASE_URL="https://cloud-images.ubuntu.com/${VM_NEON_BASE:-resolute}/current"
+  IMAGE_FILE="${VM_NEON_BASE:-resolute}-server-cloudimg-amd64.img"
+  SUMS_FILE="SHA256SUMS"; SUMS_TOOL="sha256sum"
+  USER_DATA_TMPL="$VM_DIR/cloud-init/user-data-neon.tmpl"
+else
+  IMAGE_BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
+  IMAGE_FILE="debian-13-${VM_IMAGE_FLAVOR}-amd64.qcow2"
+  SUMS_FILE="SHA512SUMS"; SUMS_TOOL="sha512sum"
+  USER_DATA_TMPL="$VM_DIR/cloud-init/user-data.tmpl"
+fi
 
 BASE="$STATE/base.qcow2"
 PROVISIONED="$STATE/provisioned.qcow2"
 RUN="$STATE/run.qcow2"
 SEED="$STATE/seed.iso"
-KEY="$STATE/id_ed25519"
+KEY="$VM_DIR/state/id_ed25519" # shared by the distros: the other scripts use it
 PIDFILE="$STATE/qemu.pid"
 CONSOLE="$STATE/console.log"
 
@@ -71,11 +88,11 @@ is_running() {
 }
 
 make_seed() {
-  mkdir -p "$STATE/seed"
+  mkdir -p "$STATE/seed" "$(dirname "$KEY")"
   [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N "" -C "oxydesk-vm-test" -f "$KEY"
   local pub; pub="$(cat "$KEY.pub")"
   sed -e "s|@VM_USER@|$VM_USER|g" -e "s|@SSH_PUBKEY@|$pub|g" \
-    "$VM_DIR/cloud-init/user-data.tmpl" > "$STATE/seed/user-data"
+    "$USER_DATA_TMPL" > "$STATE/seed/user-data"
   # fixed instance-id: cloud-init does not replay, the seed stays attached on all boots.
   printf 'instance-id: oxydesk-vm-test\nlocal-hostname: oxydesk-test\n' > "$STATE/seed/meta-data"
   rm -f "$SEED"
@@ -143,10 +160,10 @@ cmd_create() {
     log "downloading $IMAGE_FILE"
     curl -fL --retry 3 -o "$BASE.part" "$IMAGE_BASE_URL/$IMAGE_FILE"
     local want got
-    want="$(curl -fsSL "$IMAGE_BASE_URL/SHA512SUMS" | awk -v f="$IMAGE_FILE" '$2==f {print $1}')"
-    [[ -n "$want" ]] || die "SHA512 not found for $IMAGE_FILE"
-    got="$(sha512sum "$BASE.part" | awk '{print $1}')"
-    [[ "$want" == "$got" ]] || { rm -f "$BASE.part"; die "wrong SHA512 for $IMAGE_FILE"; }
+    want="$(curl -fsSL "$IMAGE_BASE_URL/$SUMS_FILE" | awk -v f="$IMAGE_FILE" '$2==f || $2=="*"f {print $1}')"
+    [[ -n "$want" ]] || die "checksum not found for $IMAGE_FILE"
+    got="$($SUMS_TOOL "$BASE.part" | awk '{print $1}')"
+    [[ "$want" == "$got" ]] || { rm -f "$BASE.part"; die "wrong checksum for $IMAGE_FILE"; }
     mv "$BASE.part" "$BASE"; chmod a-w "$BASE"
   fi
   make_seed
