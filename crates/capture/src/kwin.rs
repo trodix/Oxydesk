@@ -839,10 +839,20 @@ fn run(
             let Some(data) = datas.first_mut() else {
                 return;
             };
-            let (size, stride, offset) = {
+            let (size, stride, offset, chunk_flags) = {
                 let c = data.chunk();
-                (c.size() as usize, c.stride(), c.offset() as usize)
+                (c.size() as usize, c.stride(), c.offset() as usize, c.flags().bits())
             };
+            // Each distinct set of chunk flags is reported once (a buffer the producer marks empty or corrupted holds
+            // no new picture, only an older content of the buffer ring).
+            static SEEN_FLAGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let bit = 1u32 << (chunk_flags & 0x1f);
+            if SEEN_FLAGS.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0 {
+                eprintln!("capture: buffer chunk flags {chunk_flags:#x} (size {size})");
+            }
+            if !carries_picture(chunk_flags) {
+                return;
+            }
             let sz = d.format.size();
             let pixel = match d.format.format() {
                 VideoFormat::BGRx | VideoFormat::BGRA => PixelFormat::Bgra8,
@@ -1097,8 +1107,24 @@ fn dump_debug_frame(src: &[u8], w: u32, h: u32, stride: usize, format: PixelForm
     let _ = std::fs::write(path, out);
 }
 
+/// KWin sends buffers flagged `SPA_CHUNK_FLAG_CORRUPTED` (measured: 0x1 with a full size) when only the pointer moved:
+/// they hold an older content of its buffer ring, and showing it made the page jump back at each pointer motion.
+fn carries_picture(chunk_flags: i32) -> bool {
+    const CORRUPTED: i32 = 1 << 0;
+    const EMPTY: i32 = 1 << 1;
+    chunk_flags & (CORRUPTED | EMPTY) == 0
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn buffers_marked_corrupted_or_empty_carry_no_new_picture() {
+        assert!(carries_picture(0));
+        assert!(!carries_picture(1));
+        assert!(!carries_picture(2));
+        assert!(!carries_picture(3));
+    }
+
     #[test]
     fn rank_follows_positions_not_registry_order() {
         // Virtual-1 announced second but at the left: rank 0 is registry index 1 (its name, not "Virtual-0", is the one
