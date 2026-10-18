@@ -523,6 +523,9 @@ pub enum ServerEvent {
     Rdpdr(Option<u64>, RdpdrServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
+    /// oxydesk patch: hands the client its Auto-Reconnect cookie after the connection was accepted (a login typed on
+    /// a screen of the server, once it succeeded).
+    ReconnectCookie(rdp::session_info::ServerAutoReconnect),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     #[cfg(feature = "egfx")]
     Egfx(EgfxServerMessage),
@@ -978,7 +981,11 @@ impl RdpServer {
         let mut kept = Vec::new();
         let mut dropped = 0usize;
         while let Ok(event) = receiver.try_recv() {
-            if matches!(event, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))) {
+            // A cookie belongs to the connection it was made for: it must not reach the next one.
+            if matches!(
+                event,
+                ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..)) | ServerEvent::ReconnectCookie(_)
+            ) {
                 dropped += 1;
             } else {
                 kept.push(event);
@@ -1180,6 +1187,7 @@ impl RdpServer {
         &mut self,
         events: &mut Vec<ServerEvent>,
         writer: &mut impl FramedWrite,
+        io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
     ) -> Result<RunState> {
@@ -1211,6 +1219,9 @@ impl RdpServer {
                 }
                 ServerEvent::SetCredentials(creds) => {
                     self.set_credentials(Some(creds));
+                }
+                ServerEvent::ReconnectCookie(cookie) => {
+                    send_reconnect_cookie(cookie, io_channel_id, user_channel_id, writer).await?;
                 }
                 ServerEvent::Rdpsnd(s) => {
                     let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
@@ -1453,7 +1464,7 @@ impl RdpServer {
                 }
                 let mut this = this.lock().await;
                 match this
-                    .dispatch_server_events(&mut events, &mut event_writer, user_channel_id, message_channel_id)
+                    .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id, message_channel_id)
                     .await?
                 {
                     RunState::Continue => continue,
@@ -1496,7 +1507,15 @@ impl RdpServer {
                         debug!("Auto-reconnect cookie accepted");
                         resumed = true;
                     }
-                    Ok(CredentialDecision::Reject) => debug!("Auto-reconnect cookie refused"),
+                    Ok(CredentialDecision::Reject) => {
+                        debug!("Auto-reconnect cookie refused");
+                        // oxydesk patch: a client resuming by cookie (no password of its own) keeps waiting for its
+                        // session to come back and never shows what is sent instead. Ending the connection makes
+                        // it start over with a full logon, which is then served normally (login screen included).
+                        if result.credentials.as_ref().map_or(true, |c| c.password.is_empty()) {
+                            bail!("automatic reconnection refused");
+                        }
+                    }
                     Err(e) => {
                         error!(error = %e, "Credential validator backend error");
                         send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
