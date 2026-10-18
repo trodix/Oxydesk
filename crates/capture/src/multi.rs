@@ -13,6 +13,8 @@ pub struct MultiCapture {
     sources: Vec<Box<dyn CaptureSource>>,
     factory: Option<SourceFactory>,
     waker: Option<std::sync::Arc<oxydesk_core::wake::Wake>>,
+    /// Whether each source last reported a visible pointer.
+    shown: Vec<bool>,
 }
 
 impl MultiCapture {
@@ -21,6 +23,7 @@ impl MultiCapture {
             sources,
             factory: None,
             waker: None,
+            shown: Vec::new(),
         }
     }
 
@@ -40,11 +43,31 @@ impl CaptureSource for MultiCapture {
     }
 
     fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
-        // The pointer is shown on every output's stream; the latest update found wins.
-        self.sources
-            .iter_mut()
-            .filter_map(|s| s.take_cursor())
-            .last()
+        use oxydesk_core::cursor::CursorUpdate;
+        // Every output's stream reports the pointer, and one that does not have it says "hidden": taking the latest
+        // update made the pointer flicker as soon as it moved. A shape wins, and the pointer is hidden only when
+        // no output shows it.
+        self.shown.resize(self.sources.len(), false);
+        let mut shape = None;
+        let mut hidden = false;
+        for (source, shown) in self.sources.iter_mut().zip(&mut self.shown) {
+            match source.take_cursor() {
+                Some(update @ CursorUpdate::Shape(_)) => {
+                    *shown = true;
+                    shape = Some(update);
+                }
+                Some(CursorUpdate::Hidden) => {
+                    *shown = false;
+                    hidden = true;
+                }
+                None => {}
+            }
+        }
+        match shape {
+            Some(update) => Some(update),
+            None if hidden && !self.shown.iter().any(|&s| s) => Some(CursorUpdate::Hidden),
+            None => None,
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
@@ -148,6 +171,30 @@ mod tests {
         };
         assert_eq!(d[0], 2);
         assert!(m.recv_latest(OutputId(2)).is_err());
+    }
+
+    struct Pointer(Vec<oxydesk_core::cursor::CursorUpdate>);
+    impl CaptureSource for Pointer {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(None)
+        }
+        fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
+            (!self.0.is_empty()).then(|| self.0.remove(0))
+        }
+    }
+
+    #[test]
+    fn a_pointer_shown_by_one_output_is_not_hidden_by_the_others() {
+        use oxydesk_core::cursor::{CursorShape, CursorUpdate};
+        let shape = || CursorUpdate::Shape(CursorShape::new(1, 1, 0, 0, vec![1, 2, 3, 4]).unwrap());
+        let mut m = MultiCapture::new(vec![
+            Box::new(Pointer(vec![CursorUpdate::Hidden, CursorUpdate::Hidden])),
+            Box::new(Pointer(vec![shape(), CursorUpdate::Hidden])),
+        ]);
+        assert!(matches!(m.take_cursor(), Some(CursorUpdate::Shape(_))));
+        // The pointer left the second output and no other shows it: hidden.
+        assert_eq!(m.take_cursor(), Some(CursorUpdate::Hidden));
+        assert_eq!(m.take_cursor(), None);
     }
 
     struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<String>>>, u8);
