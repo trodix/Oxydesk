@@ -73,6 +73,7 @@
   <p class="sub">Each user who connects gets a genuine logind/KDE session, started after a PAM login. Close the client, come back later: your windows are still there.</p>
   <div class="grid">
     <div class="card"><div class="ico">🔐</div><h3>Native Linux login</h3><p>PAM authentication over TLS with your existing accounts. One isolated session per user, with throttling per client address and per account.</p></div>
+    <div class="card"><div class="ico">🖥️</div><h3>Your desktop or a new one</h3><p>Sign in to a session of your own, or join the Plasma session already open on the machine's screen (<code>session-policy</code>). The real monitors are never changed.</p></div>
     <div class="card"><div class="ico">🔁</div><h3>Survives network drops</h3><p>After a cut, <code>mstsc</code> and FreeRDP reconnect by themselves, without the password. The session and its applications are kept.</p></div>
     <div class="card"><div class="ico">⚡</div><h3>Modern video path</h3><p>H.264 over the RDP graphics pipeline (EGFX), software OpenH264 or GPU VA-API, with bitrate adapted to the client's link.</p></div>
   </div>
@@ -82,7 +83,7 @@
   <h2>Everything you expect from a remote desktop</h2>
   <p class="sub">Tested with Windows <code>mstsc</code>, FreeRDP (<code>xfreerdp</code>, <code>sdl-freerdp</code>) and Remmina.</p>
   <div class="grid">
-    <div class="card"><div class="ico">🖥️</div><h3>Multi-monitor and resize</h3><p>Up to 16 monitors, dynamic resize through Display Control, layouts that follow the client.</p></div>
+    <div class="card"><div class="ico">🖥️</div><h3>Multi-monitor and resize</h3><p>Up to 16 monitors, dynamic resize through Display Control, layouts that follow the client. In a joined session, monitors the desktop does not have become virtual displays with a virtual desktop each (KWin 6.7 or later), and their windows come back on reconnection.</p></div>
     <div class="card"><div class="ico">📋</div><h3>Clipboard</h3><p>Text, images and files in both directions, including very large files streamed without being stored.</p></div>
     <div class="card"><div class="ico">🔊</div><h3>Audio</h3><p>Session sound played on the client.</p></div>
     <div class="card"><div class="ico">📁</div><h3>Drive redirection</h3><p>Folders shared by the client appear in your Linux session as ordinary read-write folders (FUSE).</p></div>
@@ -134,7 +135,7 @@
   <p class="sub">Hexagonal architecture: the domain has no I/O, so it is tested without a compositor or a network.</p>
   <div class="grid">
     <div class="card"><h3>~80 % line coverage</h3><p>Measured with <code>cargo-llvm-cov</code>, with a stricter target on parsers, protocols and business logic.</p></div>
-    <div class="card"><h3>Real-client scenarios</h3><p>End-to-end tests drive Windows <code>mstsc</code>, FreeRDP and Remmina against a Debian VM, in login mode as well.</p></div>
+    <div class="card"><h3>Real-client scenarios</h3><p>End-to-end tests drive Windows <code>mstsc</code>, FreeRDP and Remmina against Debian and KDE neon VMs, in login mode and against an existing Plasma session as well.</p></div>
     <div class="card"><h3>Documented code</h3><p>Every crate is documented with rustdoc, ports and domain included. <a href="api/">Browse the API reference.</a></p></div>
   </div>
 </div></section>
