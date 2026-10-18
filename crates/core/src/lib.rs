@@ -8,7 +8,9 @@ pub mod drive;
 pub mod error;
 pub mod files;
 pub mod frame;
+pub mod greeter;
 pub mod keyboard;
+pub mod keymap;
 pub mod layout;
 pub mod pixels;
 pub mod ports;
@@ -26,7 +28,9 @@ pub use error::{
 };
 pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
+pub use greeter::{Action as GreeterAction, Field as GreeterField, Greeter};
 pub use keyboard::{klid_to_xkb, XkbLayout};
+pub use keymap::char_for;
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};
 pub use printer::{
     document_only_driver, printer_name, resolve_format, ModeError, PrintFormat, PrintJob,

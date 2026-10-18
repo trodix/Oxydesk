@@ -5,6 +5,7 @@ pub mod clipboard;
 mod clipfiles;
 pub mod dib;
 pub mod drive;
+mod greeter;
 pub mod printer;
 mod pump;
 mod raw;
@@ -13,4 +14,5 @@ mod server;
 mod sound;
 
 pub use clipboard::{Content, RdpClipboard};
+pub use greeter::GreeterEncoder;
 pub use server::{run, run_with_broker, Ports, ServerConfig};

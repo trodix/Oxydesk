@@ -51,6 +51,9 @@ pub struct ServerConfig {
     pub dead_peer_timeout: Duration,
     /// Bitrate and frames in flight follow what the client's link carries (`--adaptive-bitrate`).
     pub adaptive_bitrate: bool,
+    /// Login mode: a client that connects without a password gets a login screen, whose encoders come from here;
+    /// without it such a client is refused.
+    pub greeter_encoder: Option<crate::greeter::GreeterEncoder>,
 }
 
 /// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
@@ -171,7 +174,8 @@ impl ironrdp_server::ConnectionHandler for GuardHandler {
 
 /// Validates the received credentials (TLS mode) by opening the user's session through the broker.
 struct BrokerValidator {
-    broker: Arc<dyn SessionBroker>,
+    core: Arc<LoginCore>,
+    greeter: Option<(crate::greeter::GreeterEncoder, Layout)>,
     slot: SessionSlot,
     guard: LoginGuard,
     shared: Arc<Shared>,
@@ -215,7 +219,7 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
                 return Ok(CredentialDecision::Reject);
             }
         };
-        let broker = self.broker.clone();
+        let broker = self.core.broker.clone();
         let outputs = self.client_outputs();
         let name = user.clone();
         let outcome = tokio::task::spawn_blocking(move || broker.attach(&name, outputs))
@@ -259,36 +263,77 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
         let (user, pass) = (credentials.username.clone(), credentials.password.clone());
         let ip = self.guard.peer();
         if pass.is_empty() {
-            // A client resuming by cookie that the server no longer honours sends no password, and tries again
-            // and again: that is not a guess to count against its address.
+            // No password (the client did not ask for one, or a client resuming by cookie that the server no longer
+            // honours): the user types it on a login screen, when there is one to show.
+            if self.start_greeter(&user) {
+                tracing::info!(?ip, user = ?user, "login screen shown");
+                return Ok(CredentialDecision::Accept);
+            }
             tracing::info!(?ip, user = ?user, "login refused: no password");
             return Ok(CredentialDecision::Reject);
         }
+        let core = self.core.clone();
+        let outputs = self.client_outputs();
+        let name = user.clone();
+        let outcome = tokio::task::spawn_blocking(move || core.attempt(ip, &name, &pass, outputs))
+            .await
+            .map_err(ironrdp_server::CredentialValidationError::new)?;
+        match outcome {
+            Attempt::Accepted(ports) => {
+                self.accept(&user, ports);
+                Ok(CredentialDecision::Accept)
+            }
+            Attempt::Denied | Attempt::Blocked(_) => Ok(CredentialDecision::Reject),
+            Attempt::Backend(e) => Err(ironrdp_server::CredentialValidationError::new(
+                std::io::Error::other(e),
+            )),
+        }
+    }
+}
+
+/// What a login attempt came to.
+enum Attempt {
+    Accepted(DesktopPorts),
+    Denied,
+    /// Too many failures: not even tried, for this long.
+    Blocked(Duration),
+    Backend(String),
+}
+
+/// The login itself, shared by the credentials sent at connection and the ones typed on the login screen: the
+/// failure limits, then the broker.
+struct LoginCore {
+    broker: Arc<dyn SessionBroker>,
+    guard: LoginGuard,
+}
+
+impl LoginCore {
+    fn attempt(
+        &self,
+        ip: Option<std::net::IpAddr>,
+        user: &str,
+        pass: &str,
+        outputs: Option<u32>,
+    ) -> Attempt {
         let blocked = self.guard.throttle.lock().expect("throttle mutex").blocked(
             ip,
-            &user,
+            user,
             std::time::Instant::now(),
         );
         if let Some(left) = blocked {
             // Not even tried: the broker (PAM) is not asked while the block lasts.
             tracing::warn!(?ip, user = ?user, retry_in_secs = left.as_secs(), "login refused: blocked after too many failures");
-            return Ok(CredentialDecision::Reject);
+            return Attempt::Blocked(left);
         }
-        let broker = self.broker.clone();
-        let outputs = self.client_outputs();
-        let outcome = tokio::task::spawn_blocking(move || broker.login(&user, &pass, outputs))
-            .await
-            .map_err(ironrdp_server::CredentialValidationError::new)?;
-        match outcome {
+        match self.broker.login(user, pass, outputs) {
             Ok(ports) => {
                 self.guard
                     .throttle
                     .lock()
                     .expect("throttle mutex")
-                    .record_success(ip, &credentials.username);
-                tracing::info!(?ip, user = ?credentials.username, "login accepted");
-                self.accept(&credentials.username, ports);
-                Ok(CredentialDecision::Accept)
+                    .record_success(ip, user);
+                tracing::info!(?ip, user = ?user, "login accepted");
+                Attempt::Accepted(ports)
             }
             Err(LoginError::Denied) => {
                 let blocked = self
@@ -296,17 +341,119 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
                     .throttle
                     .lock()
                     .expect("throttle mutex")
-                    .record_failure(ip, &credentials.username, std::time::Instant::now());
-                tracing::warn!(?ip, user = ?credentials.username, blocked, "login failed");
-                Ok(CredentialDecision::Reject)
+                    .record_failure(ip, user, std::time::Instant::now());
+                tracing::warn!(?ip, user = ?user, blocked, "login failed");
+                Attempt::Denied
             }
             Err(LoginError::Backend(e)) => {
                 tracing::error!("login: {e}");
-                Err(ironrdp_server::CredentialValidationError::new(
-                    std::io::Error::other(e),
-                ))
+                Attempt::Backend(e)
             }
         }
+    }
+}
+
+/// How long a client may stay on the login screen: the server serves one client at a time.
+const GREETER_TIMEOUT: Duration = Duration::from_secs(120);
+
+impl BrokerValidator {
+    /// Opens the login screen for the connection being validated, with `user` filled in. `false` when the server
+    /// has no encoder for it.
+    fn start_greeter(&self, user: &str) -> bool {
+        let Some((encoder, layout)) = self.greeter.clone() else {
+            return false;
+        };
+        let ip = self.guard.peer();
+        let outputs = self.client_outputs();
+        // The monitors of the client are followed once its session exists, not by the login screen alone.
+        let client_initial = self
+            .shared
+            .client_initial
+            .lock()
+            .expect("client layout mutex")
+            .clone();
+        // The login screen takes the size negotiated at connection: the session that replaces it must find it unchanged,
+        // or the client is asked to reactivate for a size it already has and the picture stops.
+        let announced = self
+            .shared
+            .announced
+            .lock()
+            .expect("announced mutex")
+            .clone();
+        let state = Arc::new(Mutex::new(oxydesk_core::greeter::Greeter::new(user)));
+        let first = layout
+            .outputs
+            .first()
+            .map_or((1024, 768), |o| (o.width, o.height));
+        let (core, slot, shared) = (self.core.clone(), self.slot.clone(), self.shared.clone());
+        let reconnect = self.reconnect.clone();
+        let screen = state.clone();
+        let submit: crate::greeter::Submit = Box::new(move |user, password, keyboard| {
+            let (core, slot, shared, screen, reconnect) = (
+                core.clone(),
+                slot.clone(),
+                shared.clone(),
+                screen.clone(),
+                reconnect.clone(),
+            );
+            let client_initial = client_initial.clone();
+            let announced = announced.clone();
+            std::thread::spawn(move || {
+                let failed = |message: &str| {
+                    screen.lock().expect("greeter mutex").login_failed(message);
+                    shared.wake.notify();
+                };
+                match core.attempt(ip, &user, &password, outputs) {
+                    Attempt::Accepted(mut ports) => {
+                        // The layout was announced once, to the login screen.
+                        if let Some(Err(e)) = keyboard.map(|k| ports.input.set_keyboard_layout(&k))
+                        {
+                            tracing::warn!("keyboard layout: {e}");
+                        }
+                        *shared.client_initial.lock().expect("client layout mutex") =
+                            client_initial;
+                        *shared.announced.lock().expect("announced mutex") = announced;
+                        slot.install(ports);
+                        // The cookie could not be handed over at connection: the user was not known yet.
+                        if reconnect.enabled() {
+                            let cookie = reconnect.issue(&user, ip, std::time::Instant::now());
+                            if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
+                                let _ = tx.send(ServerEvent::ReconnectCookie(cookie));
+                            }
+                        }
+                        shared.wake.notify();
+                    }
+                    Attempt::Denied => failed("Wrong user name or password"),
+                    Attempt::Blocked(left) => failed(&format!(
+                        "Too many failures: try again in {} min",
+                        left.as_secs().div_ceil(60)
+                    )),
+                    Attempt::Backend(_) => failed("The session cannot be started"),
+                }
+            });
+        });
+        self.slot.install(crate::greeter::ports(
+            state.clone(),
+            self.shared.wake.clone(),
+            first,
+            encoder,
+            submit,
+        ));
+        // A client that never signs in must not keep the server: the screen is alive for as long as the slot holds
+        // its input, and a login or another connection replaces that.
+        let alive = Arc::downgrade(&state);
+        let shared = self.shared.clone();
+        drop(state);
+        std::thread::spawn(move || {
+            std::thread::sleep(GREETER_TIMEOUT);
+            if alive.upgrade().is_some() {
+                tracing::info!("login screen: nobody signed in, the connection ends");
+                if let Some(tx) = shared.sender.lock().expect("sender mutex").as_ref() {
+                    let _ = tx.send(ServerEvent::Quit("login timeout".into()));
+                }
+            }
+        });
+        true
     }
 }
 
@@ -534,6 +681,11 @@ impl RdpServerInputHandler for Input {
                 "pointer button"
             ),
             _ => {}
+        }
+        if let MouseEvent::VerticalScroll { value } = event {
+            tracing::debug!(value, "wheel");
+        } else if let MouseEvent::Scroll { x, y } = event {
+            tracing::debug!(x, y, "wheel (both axes)");
         }
         // The client's point in the layout of the outputs.
         let point = match event {
@@ -769,7 +921,14 @@ async fn serve(
         })))
         .with_credential_validator(broker.map(|broker| {
             Arc::new(BrokerValidator {
-                broker,
+                core: Arc::new(LoginCore {
+                    broker,
+                    guard: guard.clone(),
+                }),
+                greeter: config
+                    .greeter_encoder
+                    .clone()
+                    .map(|encoder| (encoder, config.layout.clone())),
                 slot: slot.clone(),
                 guard: guard.clone(),
                 shared: shared.clone(),
@@ -1130,7 +1289,11 @@ mod reconnect_tests {
         let reconnect = Arc::new(Reconnect::new(Duration::from_secs(10)));
         Rig {
             validator: BrokerValidator {
-                broker: broker.clone(),
+                core: Arc::new(LoginCore {
+                    broker: broker.clone(),
+                    guard: guard.clone(),
+                }),
+                greeter: None,
                 slot: SessionSlot::new(shared.clone()),
                 guard: guard.clone(),
                 shared,
@@ -1166,6 +1329,147 @@ mod reconnect_tests {
         let error = anyhow::anyhow!("connection reset");
         r.handler
             .on_disconnected(peer, Duration::from_secs(60), Some(&error));
+    }
+
+    struct NoEncoder;
+    impl oxydesk_core::ports::FrameEncoder for NoEncoder {
+        fn encode(
+            &mut self,
+            _: &oxydesk_core::Frame,
+        ) -> Result<oxydesk_core::ports::EncodedFrame, oxydesk_core::error::EncodeError> {
+            unreachable!("not used")
+        }
+    }
+
+    fn with_greeter(r: &mut Rig) {
+        r.validator.greeter = Some((
+            Arc::new(|_| Box::new(NoEncoder)),
+            Layout::side_by_side(1, 800, 600),
+        ));
+    }
+
+    /// Types `keys` (set 1 scancodes) on the keyboard of the current session.
+    fn type_on(r: &Rig, keys: &[u16]) {
+        let mut input = r.validator.slot.input.lock().unwrap();
+        let input = input.as_mut().expect("an input");
+        for &k in keys {
+            input.key(k, true).unwrap();
+            input.key(k, false).unwrap();
+        }
+    }
+
+    fn wait_for_ports(r: &Rig) -> bool {
+        for _ in 0..100 {
+            if r.validator.shared.ports.lock().unwrap().is_some() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    // s e c r e t / w r o n g
+    const SECRET: [u16; 6] = [0x1F, 0x12, 0x2E, 0x13, 0x12, 0x14];
+    const ENTER: u16 = 0x1C;
+
+    #[tokio::test]
+    async fn without_a_password_the_client_gets_a_login_screen_when_there_is_one() {
+        let mut r = rig();
+        assert_eq!(
+            r.validator.validate(&creds("")).await.unwrap(),
+            CredentialDecision::Reject
+        );
+        with_greeter(&mut r);
+        assert_eq!(
+            r.validator.validate(&creds("")).await.unwrap(),
+            CredentialDecision::Accept
+        );
+        // The login screen is the session for now; no cookie, the user is not known yet.
+        assert!(r.validator.shared.ports.lock().unwrap().is_some());
+        assert!(r.validator.reconnect_cookie().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_login_typed_on_the_screen_is_given_a_reconnection_cookie() {
+        let mut r = rig();
+        with_greeter(&mut r);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *r.validator.shared.sender.lock().unwrap() = Some(tx);
+        r.validator.validate(&creds("")).await.unwrap();
+        type_on(&r, &SECRET);
+        type_on(&r, &[ENTER]);
+        let cookie = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an event")
+            .expect("open channel");
+        let ServerEvent::ReconnectCookie(cookie) = cookie else {
+            panic!("a cookie, got {cookie:?}");
+        };
+        // It resumes the session of the user who typed the password.
+        lost(&mut r);
+        let decision = r
+            .validator
+            .validate_reconnect(&client_cookie(&cookie))
+            .await;
+        assert_eq!(decision.unwrap(), CredentialDecision::Accept);
+        assert_eq!(*r.broker.attached.lock().unwrap(), ["alice"]);
+    }
+
+    #[tokio::test]
+    async fn the_password_typed_on_the_login_screen_opens_the_session() {
+        let mut r = rig();
+        with_greeter(&mut r);
+        let layout = Layout::side_by_side(2, 800, 600);
+        *r.validator.shared.client_initial.lock().unwrap() = Some(layout.clone());
+        *r.validator.shared.announced.lock().unwrap() = Some(layout.clone());
+        r.validator.validate(&creds("")).await.unwrap();
+        // The pump adopts the login screen and takes what the client announced.
+        assert!(r.validator.shared.ports.lock().unwrap().take().is_some());
+        r.validator.shared.client_initial.lock().unwrap().take();
+        r.validator.shared.announced.lock().unwrap().take();
+        type_on(&r, &SECRET);
+        type_on(&r, &[ENTER]);
+        assert!(wait_for_ports(&r), "the session replaced the login screen");
+        // The session finds the client's monitors and the negotiated size as the login screen found them.
+        assert_eq!(
+            *r.validator.shared.client_initial.lock().unwrap(),
+            Some(layout.clone())
+        );
+        assert_eq!(*r.validator.shared.announced.lock().unwrap(), Some(layout));
+        assert_eq!(*r.broker.attached.lock().unwrap(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_keeps_the_login_screen_and_counts_as_a_failure() {
+        let mut r = rig();
+        with_greeter(&mut r);
+        r.validator.validate(&creds("")).await.unwrap();
+        r.validator.shared.ports.lock().unwrap().take();
+        // w r o n g
+        type_on(&r, &[0x11, 0x13, 0x18, 0x31, 0x22, ENTER]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(r.validator.shared.ports.lock().unwrap().is_none());
+        // The form took the failure and is ready for another try.
+        type_on(&r, &SECRET);
+        type_on(&r, &[ENTER]);
+        assert!(wait_for_ports(&r));
+    }
+
+    #[tokio::test]
+    async fn the_login_screen_does_not_let_a_blocked_address_try_again() {
+        let mut r = rig();
+        with_greeter(&mut r);
+        r.validator.validate(&creds("")).await.unwrap();
+        r.validator.shared.ports.lock().unwrap().take();
+        // Two failures block the address (the rig allows two): even the right password is then refused.
+        for _ in 0..2 {
+            type_on(&r, &[0x11, ENTER]);
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        type_on(&r, &SECRET);
+        type_on(&r, &[ENTER]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(r.validator.shared.ports.lock().unwrap().is_none());
     }
 
     #[tokio::test]

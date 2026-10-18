@@ -16,6 +16,8 @@ EGFX, one KWin session per user.
 - **Input and clipboard**: keyboard, mouse, cursor shape; clipboard with text, images and files (both ways).
 - **Audio** output, **drive** redirection (FUSE) and **printer** redirection (CUPS, raw or XPS jobs).
 - **Login throttling** per client address and per account.
+- **Login screen**: a client that sends no password (`mstsc` without saved credentials) gets a login form, with the user name
+  it sent already filled in, as with xrdp (`--login` mode; the typed password goes through the same PAM check and throttling).
 - **Automatic reconnection**: after a network loss, `mstsc` and FreeRDP resume the session by themselves, without the
   password (Auto-Reconnect cookie, `reconnect-timeout`, default 10 s); the desktop and its applications are kept.
 

@@ -194,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
             adaptive_bitrate: adaptive_bitrate(&args)?,
             reconnect_timeout: reconnect_timeout(&args)?,
             dead_peer_timeout: dead_peer_timeout(&args),
+            greeter_encoder: Some(greeter_encoder(fps)),
         };
         return tokio::select! {
             r = oxydesk_rdp::run_with_broker(config, broker) => r,
@@ -345,6 +346,7 @@ async fn main() -> anyhow::Result<()> {
         adaptive_bitrate: adaptive_bitrate(&args)?,
         reconnect_timeout: reconnect_timeout(&args)?,
         dead_peer_timeout: dead_peer_timeout(&args),
+        greeter_encoder: None,
     };
     tokio::select! {
         r = oxydesk_rdp::run(config, ports) => r,
@@ -379,6 +381,17 @@ fn keep_virtual_outputs(args: &[String]) -> anyhow::Result<bool> {
         Some("remove") => Ok(false),
         Some(other) => anyhow::bail!("--virtual-outputs: '{other}' (remove|keep)"),
     }
+}
+
+/// Encoders of the login screen: a still picture, so the software encoder does (and no GPU is taken for it).
+fn greeter_encoder(fps: f32) -> oxydesk_rdp::GreeterEncoder {
+    std::sync::Arc::new(move |_| {
+        Box::new(AutoEncoder::new(
+            EncoderChoice::OpenH264,
+            fps,
+            DEFAULT_BITRATE_BPS,
+        )) as Box<dyn oxydesk_core::ports::FrameEncoder>
+    })
 }
 
 /// `--adaptive-bitrate on|off` (default on).
