@@ -12,18 +12,23 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use oxydesk_authd_proto::{recv_response, send_request, Request, Response};
+use oxydesk_authd_proto::{recv_response, send_request, Request, Response, SessionPolicy};
 use oxydesk_core::error::LoginError;
 use oxydesk_core::ports::{DesktopPorts, SessionBroker};
 
 pub use drives::AgentDrives;
 pub use link::AgentLink;
+pub use oxydesk_authd_proto::SessionPolicy as Policy;
 pub use printers::AgentPrinters;
 
 pub struct RemoteBroker {
     authd_socket: PathBuf,
     /// Number of outputs when the client does not announce its monitors (server configuration).
     outputs: u32,
+    /// Whether a login joins the user's existing Plasma session or starts one (server configuration).
+    policy: SessionPolicy,
+    /// Whether the extra monitors of a client that joined a session stay when it leaves (server configuration).
+    keep_virtual_outputs: bool,
 }
 
 impl RemoteBroker {
@@ -31,7 +36,19 @@ impl RemoteBroker {
         Self {
             authd_socket: authd_socket.into(),
             outputs,
+            policy: SessionPolicy::default(),
+            keep_virtual_outputs: true,
         }
+    }
+
+    pub fn with_virtual_outputs_kept(mut self, keep: bool) -> Self {
+        self.keep_virtual_outputs = keep;
+        self
+    }
+
+    pub fn with_policy(mut self, policy: SessionPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 }
 
@@ -81,6 +98,8 @@ impl SessionBroker for RemoteBroker {
                 username: username.into(),
                 password: password.into(),
                 outputs,
+                policy: self.policy,
+                keep_virtual_outputs: self.keep_virtual_outputs,
             },
             outputs,
         )
@@ -134,6 +153,39 @@ mod tests {
                 outputs: 3
             }
         );
+    }
+
+    #[test]
+    fn login_carries_the_session_policy_of_the_server() {
+        let (broker, authd) = broker_with_authd(Response::Denied);
+        let broker = broker
+            .with_policy(SessionPolicy::Auto)
+            .with_virtual_outputs_kept(true);
+        assert!(matches!(
+            broker.login("alice", "pw", Some(2)),
+            Err(LoginError::Denied)
+        ));
+        assert_eq!(
+            authd.join().unwrap(),
+            Request::Login {
+                username: "alice".into(),
+                password: "pw".into(),
+                outputs: 2,
+                policy: SessionPolicy::Auto,
+                keep_virtual_outputs: true,
+            }
+        );
+        // Without a setting, a login starts a session of its own, as before.
+        let (broker, authd) = broker_with_authd(Response::Denied);
+        let _ = broker.login("bob", "pw", None);
+        assert!(matches!(
+            authd.join().unwrap(),
+            Request::Login {
+                policy: SessionPolicy::New,
+                keep_virtual_outputs: true,
+                ..
+            }
+        ));
     }
 
     #[test]

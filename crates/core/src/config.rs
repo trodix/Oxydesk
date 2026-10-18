@@ -27,6 +27,8 @@ const KEYS: &[(&str, Kind)] = &[
     ("test-mode", Kind::Flag),
     ("login", Kind::Flag),
     ("session", Kind::Value),
+    ("session-policy", Kind::Value),
+    ("virtual-outputs", Kind::Value),
     ("listen", Kind::Value),
     ("state-dir", Kind::Value),
     ("width", Kind::Value),
@@ -187,6 +189,12 @@ mod tests {
             args,
             s(&["--dead-peer-timeout", "0", "--reconnect-timeout", "15"])
         );
+    }
+
+    #[test]
+    fn the_session_policy_is_a_plain_option_not_a_mode() {
+        let args = merge_args(&s(&["--login"]), &file("session-policy = auto")).unwrap();
+        assert_eq!(args, s(&["--login", "--session-policy", "auto"]));
     }
 
     #[test]

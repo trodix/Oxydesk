@@ -79,6 +79,22 @@ pub struct ScalingCapture {
     state: Shared,
 }
 
+impl ScalingCapture {
+    /// Tells the native size of an output whose first frame was read before the wrapping (a desktop that does
+    /// not change sends no other).
+    pub fn learn_native(&self, output: OutputId, size: (u32, u32)) {
+        let mut s = self.state.lock().expect("scaling mutex");
+        let index = output.0 as usize;
+        if s.natives.len() <= index {
+            s.natives.resize(index + 1, None);
+        }
+        s.natives[index] = Some(size);
+        if index == 0 {
+            s.native = Some(size);
+        }
+    }
+}
+
 impl CaptureSource for ScalingCapture {
     fn set_waker(&mut self, wake: Arc<oxydesk_core::wake::Wake>) {
         self.inner.set_waker(wake);
@@ -86,6 +102,10 @@ impl CaptureSource for ScalingCapture {
 
     fn take_cursor(&mut self) -> Option<oxydesk_core::cursor::CursorUpdate> {
         self.inner.take_cursor()
+    }
+
+    fn release(&mut self) {
+        self.inner.release();
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
@@ -136,8 +156,16 @@ impl CaptureSource for ScalingCapture {
         let mut origin = 0;
         let mut slots = Vec::new();
         for o in &layout.outputs {
-            let Some(native) = s.natives.get(o.id.0 as usize).copied().flatten() else {
-                return Err(refused);
+            // An output added with this layout has no frame yet: it was created at the requested size. Only a source
+            // that merely refused to resize can have created it; any other failure (a compositor that cannot make
+            // the output) means it does not exist.
+            let added = matches!(refused, CaptureError::ResizeUnsupported)
+                && !s.natives.is_empty()
+                && o.id.0 as usize >= s.natives.len();
+            let native = match s.natives.get(o.id.0 as usize).copied().flatten() {
+                Some(native) => native,
+                None if added => (o.width, o.height),
+                None => return Err(refused),
             };
             let map = if native == (o.width, o.height) {
                 None
@@ -356,5 +384,59 @@ mod tests {
         cap.apply_layout(&Layout::side_by_side(1, 8, 4)).unwrap();
         input.pointer_move(5, 2).unwrap();
         assert_eq!(spy.0.lock().unwrap().last(), Some(&(5, 2)));
+    }
+
+    #[test]
+    fn an_output_added_by_the_layout_is_taken_at_its_requested_size() {
+        let (mut cap, _) = wrap(Box::new(FixedPair), Box::new(Spy::default()));
+        cap.learn_native(OutputId(0), (8, 4));
+        let output = |id, x| oxydesk_core::layout::OutputInfo {
+            id: OutputId(id),
+            x,
+            y: 0,
+            width: 4,
+            height: 2,
+            primary: id == 0,
+        };
+        let layout = Layout {
+            outputs: vec![output(0, 0), output(1, 4)],
+            ..Default::default()
+        };
+        // The first output is known, the second was just created: no frame yet, and no failure.
+        cap.apply_layout(&layout).unwrap();
+        // An output that is neither known nor added by this layout still fails.
+        let (mut cold, _) = wrap(Box::new(FixedPair), Box::new(Spy::default()));
+        assert!(cold.apply_layout(&layout).is_err());
+    }
+
+    /// A source that could not create the output it was asked for.
+    struct CannotAdd;
+    impl CaptureSource for CannotAdd {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(None)
+        }
+        fn apply_layout(&mut self, _: &Layout) -> Result<(), CaptureError> {
+            Err(CaptureError::Unavailable("no virtual output".into()))
+        }
+    }
+
+    #[test]
+    fn an_output_the_source_could_not_create_is_not_scaled_into_existence() {
+        let (mut cap, _) = wrap(Box::new(CannotAdd), Box::new(Spy::default()));
+        cap.learn_native(OutputId(0), (8, 4));
+        let output = |id, x| oxydesk_core::layout::OutputInfo {
+            id: OutputId(id),
+            x,
+            y: 0,
+            width: 4,
+            height: 2,
+            primary: id == 0,
+        };
+        let layout = Layout {
+            outputs: vec![output(0, 0), output(1, 4)],
+            ..Default::default()
+        };
+        // The layout is refused as a whole: the client keeps the monitors the desktop has.
+        assert!(cap.apply_layout(&layout).is_err());
     }
 }

@@ -40,7 +40,7 @@ copyright = "2026 Sébastien Vallet, AGPL-3.0-only"
 extended-description = "Headless RDP server for KDE Plasma (Wayland)."
 section = "net"
 priority = "optional"
-depends = "$auto, libopenh264-8, libkscreen-bin, fuse3"
+depends = "$auto, libopenh264-8, libkf6screen-bin | libkscreen-bin, fuse3"
 recommends = "cups, cups-filters, ghostscript"
 assets = [
     ["target/release/oxydesk", "usr/bin/", "755"],

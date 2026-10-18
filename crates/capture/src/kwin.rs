@@ -159,6 +159,47 @@ pub fn source_factory(socket: String, base: usize, dmabuf: bool) -> crate::multi
     })
 }
 
+/// Source factory of a desktop that is the user's own: its real outputs (`physical`, left to right) are captured
+/// again by name and left as they are, beyond them the client's extra monitors are virtual outputs (KWin 6.7).
+pub fn existing_factory(
+    socket: String,
+    physical: Vec<String>,
+    dmabuf: bool,
+) -> crate::multi::SourceFactory {
+    Box::new(move |i, o| match physical.get(i) {
+        Some(name) => KwinCapture::start_named(Some(&socket), name, dmabuf)
+            .map(|c| Box::new(crate::ExistingOutput(c)) as Box<dyn CaptureSource>),
+        None => KwinCapture::start_virtual(
+            Some(&socket),
+            &format!("Virtual-{i}"),
+            o.width,
+            o.height,
+            dmabuf,
+        )
+        .map(|c| Box::new(c) as Box<dyn CaptureSource>),
+    })
+}
+
+/// Names of the enabled outputs of the session, in the order they are captured (left to right, then top to bottom).
+pub fn enabled_outputs(socket: Option<&str>) -> Result<Vec<String>, CaptureError> {
+    Ok(parse_enabled_outputs(&run_kscreen_doctor(socket, &["-o"])?))
+}
+
+fn parse_enabled_outputs(listing: &str) -> Vec<String> {
+    let mut found: Vec<((i32, i32), String)> = listing
+        .split("Output:")
+        .skip(1)
+        .filter(|block| block.lines().any(|l| l.trim() == "enabled"))
+        .filter_map(|block| {
+            let name = block.split_whitespace().nth(1)?;
+            let position = parse_output_position(&format!("Output:{block}"), name)?;
+            Some((position, name.to_owned()))
+        })
+        .collect();
+    found.sort_by_key(|(position, _)| *position);
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
 /// What a capture stream is bound to.
 #[derive(Debug, Clone)]
 enum Target {
@@ -497,6 +538,21 @@ fn output_names(listing: &str) -> Vec<&str> {
         .filter_map(|l| l.strip_prefix("Output:"))
         .filter_map(|l| l.split_whitespace().nth(1))
         .collect()
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+
+    const LISTING: &str = "Output: 1 HDMI-A-2 aaa\n\tenabled\n\tGeometry: 1920,0 1920x1080\n\
+        Output: 2 HDMI-A-1 bbb\n\tenabled\n\tGeometry: 0,0 1920x1080\n\
+        Output: 3 DP-1 ccc\n\tdisabled\n\tGeometry: 3840,0 1920x1080\n";
+
+    #[test]
+    fn enabled_outputs_come_left_to_right_and_skip_the_disabled_ones() {
+        assert_eq!(parse_enabled_outputs(LISTING), vec!["HDMI-A-1", "HDMI-A-2"]);
+        assert!(parse_enabled_outputs("").is_empty());
+    }
 }
 
 /// Size read from the `Geometry: X,Y WxH` line of output `name` in a `kscreen-doctor -o` listing.

@@ -1,6 +1,7 @@
 /target
 /artifacts
 /vm/state
+/vm/state-neon
 *.qcow2
 *.deb
 /iso

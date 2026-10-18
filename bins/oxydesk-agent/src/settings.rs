@@ -9,6 +9,8 @@ pub enum AudioMode {
     Off,
     Tone,
     Pulse,
+    /// What the user's default output plays, captured without diverting it (a session also used locally).
+    Monitor,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -27,6 +29,8 @@ pub struct Settings {
     pub poll_ms: Option<f32>,
     pub min_interval_ms: f32,
     pub kwin_socket: String,
+    /// `--virtual-outputs keep|remove` (default keep): the monitors a client added to a joined session stay when it leaves.
+    pub keep_virtual_outputs: bool,
     /// One program per `--session-app`, split on whitespace.
     pub programs: Vec<Vec<String>>,
 }
@@ -46,12 +50,19 @@ impl Settings {
             (1..=16).contains(&outputs),
             "--outputs must be between 1 and 16"
         );
-        let audio_mode: String = arg(args, "--audio")
-            .unwrap_or_else(|| if session == "kwin" { "pulse" } else { "tone" }.into());
+        let audio_mode: String = arg(args, "--audio").unwrap_or_else(|| {
+            match session.as_str() {
+                "kwin" => "pulse",
+                "attach" => "monitor",
+                _ => "tone",
+            }
+            .into()
+        });
         let audio = match audio_mode.as_str() {
             "off" => AudioMode::Off,
             "tone" => AudioMode::Tone,
             "pulse" => AudioMode::Pulse,
+            "monitor" => AudioMode::Monitor,
             other => anyhow::bail!("unknown --audio: {other}"),
         };
         let encoder: EncoderChoice = arg::<String>(args, "--encoder")
@@ -63,7 +74,13 @@ impl Settings {
             None | Some("auto") => None,
             Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
         };
+        let keep_virtual_outputs = match arg::<String>(args, "--virtual-outputs").as_deref() {
+            None | Some("keep") => true,
+            Some("remove") => false,
+            Some(other) => anyhow::bail!("unknown --virtual-outputs: {other} (remove|keep)"),
+        };
         Ok(Self {
+            keep_virtual_outputs,
             width: arg(args, "--width").unwrap_or(1920),
             height: arg(args, "--height").unwrap_or(1080),
             outputs,
@@ -120,6 +137,28 @@ mod tests {
         let c = Settings::parse(&s(&["--session", "synthetic"])).unwrap();
         assert_eq!(c.audio, AudioMode::Tone);
         let c = Settings::parse(&s(&["--session", "synthetic", "--audio", "off"])).unwrap();
+        assert_eq!(c.audio, AudioMode::Off);
+    }
+
+    #[test]
+    fn the_monitors_added_by_a_client_are_kept_unless_removed() {
+        assert!(Settings::parse(&s(&[])).unwrap().keep_virtual_outputs);
+        let keep = Settings::parse(&s(&["--virtual-outputs", "keep"])).unwrap();
+        assert!(keep.keep_virtual_outputs);
+        let remove = Settings::parse(&s(&["--virtual-outputs", "remove"])).unwrap();
+        assert!(!remove.keep_virtual_outputs);
+        let e = Settings::parse(&s(&["--virtual-outputs", "some"])).unwrap_err();
+        assert!(e.to_string().contains("some"));
+    }
+
+    #[test]
+    fn joining_an_existing_session_captures_the_audio_without_diverting_it() {
+        let c =
+            Settings::parse(&s(&["--session", "attach", "--kwin-socket", "wayland-0"])).unwrap();
+        assert_eq!(c.session, "attach");
+        assert_eq!(c.kwin_socket, "wayland-0");
+        assert_eq!(c.audio, AudioMode::Monitor);
+        let c = Settings::parse(&s(&["--session", "attach", "--audio", "off"])).unwrap();
         assert_eq!(c.audio, AudioMode::Off);
     }
 

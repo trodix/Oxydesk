@@ -8,11 +8,14 @@ User=%i
 PAMName=oxydesk-session
 SupplementaryGroups=video render
 Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+# How the session is made: a private virtual KWin, unless oxydesk-authd joins the Plasma session the user already
+# has (session-policy): it then writes `--session attach --kwin-socket NAME` here.
+Environment="OXYDESK_AGENT_SESSION=--session kwin"
 EnvironmentFile=-/etc/oxydesk/agent.conf
-# Written by oxydesk-authd when it creates the session: as many outputs as the client has monitors. First on the
-# command line, so it wins over a `--outputs` of agent.conf.
+# Written by oxydesk-authd when it creates the session: as many outputs as the client has monitors (or the way
+# to join an existing session). First on the command line, so it wins over a `--outputs` of agent.conf.
 EnvironmentFile=-/run/oxydesk/agent-%i.env
-ExecStart=/usr/bin/oxydesk-agent --session kwin $OXYDESK_AGENT_OUTPUTS $OXYDESK_AGENT_ARGS
+ExecStart=/usr/bin/oxydesk-agent $OXYDESK_AGENT_SESSION $OXYDESK_AGENT_OUTPUTS $OXYDESK_AGENT_ARGS
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15

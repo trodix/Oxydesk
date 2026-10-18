@@ -25,6 +25,10 @@ const USAGE: &str = "usage: oxydesk (--test-mode | --login [--authd-socket PATH]
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/oxydesk-printers; `off` disables)
   --adaptive-bitrate on|off  bitrate and frames in flight follow what the client's link carries (default: on)
   --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
+  --session-policy new|attach|auto  login mode: a login starts a session of its own (default), joins the Plasma session the user
+                          already has (refused when there is none) or joins it if there is one, else starts one
+  --virtual-outputs remove|keep  login mode, joined session: when the client leaves, the monitors it added are kept (default) as
+                          virtual displays of the Plasma session (their windows wait on a virtual desktop), or removed
   --reconnect-timeout SECS  login mode: a client that loses its network resumes its session by itself for this long, without
                           typing the password again (default: 10; 0 turns it off)
   --dead-peer-timeout SECS  a client that stops answering is dropped after this long, which frees the server for its
@@ -173,7 +177,11 @@ async fn main() -> anyhow::Result<()> {
         );
         let socket: PathBuf =
             arg(&args, "--authd-socket").unwrap_or_else(|| "/run/oxydesk/authd.sock".into());
-        let broker = std::sync::Arc::new(oxydesk_remote::RemoteBroker::new(socket, outputs));
+        let broker = std::sync::Arc::new(
+            oxydesk_remote::RemoteBroker::new(socket, outputs)
+                .with_policy(session_policy(&args)?)
+                .with_virtual_outputs_kept(keep_virtual_outputs(&args)?),
+        );
         let config = ServerConfig {
             addr,
             layout,
@@ -356,6 +364,23 @@ fn reconnect_timeout(args: &[String]) -> anyhow::Result<std::time::Duration> {
     ))
 }
 
+/// `--session-policy new|attach|auto` (default new).
+fn session_policy(args: &[String]) -> anyhow::Result<oxydesk_remote::Policy> {
+    match arg::<String>(args, "--session-policy") {
+        Some(v) => v.parse().map_err(|e: String| anyhow::anyhow!(e)),
+        None => Ok(Default::default()),
+    }
+}
+
+/// `--virtual-outputs remove|keep` (default keep): whether the monitors a client added to a joined session stay.
+fn keep_virtual_outputs(args: &[String]) -> anyhow::Result<bool> {
+    match arg::<String>(args, "--virtual-outputs").as_deref() {
+        None | Some("keep") => Ok(true),
+        Some("remove") => Ok(false),
+        Some(other) => anyhow::bail!("--virtual-outputs: '{other}' (remove|keep)"),
+    }
+}
+
 /// `--adaptive-bitrate on|off` (default on).
 fn adaptive_bitrate(args: &[String]) -> anyhow::Result<bool> {
     match arg::<String>(args, "--adaptive-bitrate").as_deref() {
@@ -448,6 +473,25 @@ mod tests {
         let a = args(&["--reconnect-timeout", "0", "--dead-peer-timeout", "30"]);
         assert_eq!(reconnect_timeout(&a).unwrap(), Duration::ZERO);
         assert_eq!(dead_peer_timeout(&a), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_virtual_outputs_are_kept_unless_removed() {
+        assert!(keep_virtual_outputs(&[]).unwrap());
+        assert!(keep_virtual_outputs(&args(&["--virtual-outputs", "keep"])).unwrap());
+        assert!(!keep_virtual_outputs(&args(&["--virtual-outputs", "remove"])).unwrap());
+        let e = keep_virtual_outputs(&args(&["--virtual-outputs", "some"])).unwrap_err();
+        assert!(e.to_string().contains("some"));
+    }
+
+    #[test]
+    fn the_session_policy_defaults_to_a_session_of_our_own_and_rejects_other_words() {
+        use oxydesk_remote::Policy as SessionPolicy;
+        assert_eq!(session_policy(&[]).unwrap(), SessionPolicy::New);
+        let a = args(&["--session-policy", "auto"]);
+        assert_eq!(session_policy(&a).unwrap(), SessionPolicy::Auto);
+        let e = session_policy(&args(&["--session-policy", "both"])).unwrap_err();
+        assert!(e.to_string().contains("both"));
     }
 
     #[test]

@@ -67,7 +67,7 @@ impl CaptureSource for MultiCapture {
             let factory = self
                 .factory
                 .as_mut()
-                .ok_or(CaptureError::ResizeUnsupported)?;
+                .ok_or_else(|| CaptureError::Unavailable("no way to add outputs".into()))?;
             let mut source = factory(i, o)?;
             if let Some(w) = &self.waker {
                 source.set_waker(w.clone());

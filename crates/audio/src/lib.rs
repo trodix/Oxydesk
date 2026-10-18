@@ -3,5 +3,5 @@
 mod pulse;
 mod tone;
 
-pub use pulse::PulseCapture;
+pub use pulse::{PulseCapture, PulseMonitor};
 pub use tone::{ToneProvider, TONE_HZ};

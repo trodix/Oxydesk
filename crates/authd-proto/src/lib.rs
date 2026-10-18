@@ -24,6 +24,48 @@ pub enum ProtoError {
     Invalid(String),
 }
 
+fn default_keep() -> bool {
+    true
+}
+
+/// What a successful login does about the desktop session of the user.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionPolicy {
+    /// Always a session of our own (a private virtual KWin).
+    #[default]
+    New,
+    /// Always the Plasma session the user already has; refused when there is none.
+    Attach,
+    /// The user's existing Plasma session if there is one, else a session of our own.
+    Auto,
+}
+
+impl SessionPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Attach => "attach",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl std::str::FromStr for SessionPolicy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "new" => Ok(Self::New),
+            "attach" => Ok(Self::Attach),
+            "auto" => Ok(Self::Auto),
+            other => Err(format!(
+                "unknown session-policy {other:?} (new|attach|auto)"
+            )),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum Request {
@@ -34,6 +76,12 @@ pub enum Request {
         password: String,
         #[serde(default)]
         outputs: u32,
+        /// Old clients do not send it: a session of our own, as before.
+        #[serde(default)]
+        policy: SessionPolicy,
+        /// Joining a session: keep the client's extra monitors when it leaves (old clients: kept too).
+        #[serde(default = "default_keep")]
+        keep_virtual_outputs: bool,
     },
     /// Rejoins the running session of a user authenticated earlier by this `authd` (automatic reconnection):
     /// no password, no session started.
@@ -49,12 +97,18 @@ impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Login {
-                username, outputs, ..
+                username,
+                outputs,
+                policy,
+                keep_virtual_outputs,
+                ..
             } => f
                 .debug_struct("Login")
                 .field("username", username)
                 .field("password", &"***")
                 .field("outputs", outputs)
+                .field("policy", policy)
+                .field("keep_virtual_outputs", keep_virtual_outputs)
                 .finish(),
             Self::Attach { username, outputs } => f
                 .debug_struct("Attach")
@@ -225,6 +279,8 @@ mod tests {
             username: "alice".into(),
             password: "s3cret!".into(),
             outputs: 2,
+            policy: SessionPolicy::Auto,
+            keep_virtual_outputs: true,
         };
         send_request(&mut a, &req).unwrap();
         let got = read_request(&mut b).unwrap();
@@ -241,8 +297,27 @@ mod tests {
         a.write_all(&frame).unwrap();
         assert!(matches!(
             read_request(&mut b).unwrap(),
-            Request::Login { outputs: 0, .. }
+            Request::Login {
+                outputs: 0,
+                policy: SessionPolicy::New,
+                keep_virtual_outputs: true,
+                ..
+            }
         ));
+    }
+
+    #[test]
+    fn the_policy_is_read_from_its_name_and_unknown_names_list_the_valid_ones() {
+        for p in [
+            SessionPolicy::New,
+            SessionPolicy::Attach,
+            SessionPolicy::Auto,
+        ] {
+            assert_eq!(p.as_str().parse(), Ok(p));
+        }
+        assert_eq!(SessionPolicy::default(), SessionPolicy::New);
+        let e = "both".parse::<SessionPolicy>().unwrap_err();
+        assert!(e.contains("both") && e.contains("new|attach|auto"));
     }
 
     #[test]
@@ -252,6 +327,8 @@ mod tests {
             username: "u".repeat(MAX_USERNAME + 1),
             password: "x".into(),
             outputs: 0,
+            policy: SessionPolicy::New,
+            keep_virtual_outputs: false,
         };
         send_request(&mut a, &req).unwrap();
         assert!(read_request(&mut b).is_err());

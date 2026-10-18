@@ -13,7 +13,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use oxydesk_authd_proto::{read_request, send_response, valid_username, Request, Response};
+use oxydesk_authd_proto::{
+    read_request, send_response, valid_username, Request, Response, SessionPolicy,
+};
 use pam::{Pam, PamOutcome};
 
 const DEFAULT_SOCKET: &str = "/run/oxydesk/authd.sock";
@@ -79,9 +81,78 @@ fn outputs_env(outputs: u32) -> Option<String> {
         .then(|| format!("OXYDESK_AGENT_OUTPUTS=--outputs {outputs}\n"))
 }
 
-/// Records the outputs of a session that is about to be created (an agent that already runs keeps its own:
-/// its compositor cannot always change the number of outputs). A stale wish is removed when there is none.
-fn want_outputs(unit: &str, username: &str, outputs: u32) {
+/// What a login does about the desktop session of the user.
+#[derive(Debug, PartialEq, Eq)]
+enum SessionPlan {
+    /// A session of our own (private virtual KWin).
+    Start,
+    /// Join the Plasma session whose Wayland socket is this (relative to the user's runtime directory).
+    Attach(String),
+    /// The policy wants an existing session and there is none.
+    Refuse,
+}
+
+/// The policy applied to what the user already has (`existing`: the socket of their Plasma session).
+fn plan(policy: SessionPolicy, existing: Option<String>) -> SessionPlan {
+    match (policy, existing) {
+        (SessionPolicy::New, _) | (SessionPolicy::Auto, None) => SessionPlan::Start,
+        (_, Some(socket)) => SessionPlan::Attach(socket),
+        (SessionPolicy::Attach, None) => SessionPlan::Refuse,
+    }
+}
+
+/// A Wayland socket name that is safe on the agent's command line.
+fn valid_socket_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+/// Socket of the Plasma session `uid` already has: the compositor `proc_root` shows for them that is a real
+/// session (a `kwin_wayland` that names its `--socket` and is not `--virtual`, like the ones we start) and
+/// whose socket exists in `run_dir`.
+fn existing_session(proc_root: &Path, run_dir: &Path, uid: u32) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
+        let dir = entry.path();
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+        {
+            continue;
+        }
+        if std::fs::metadata(&dir).map(|m| m.uid()).ok() != Some(uid) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(dir.join("cmdline")) else {
+            continue;
+        };
+        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+        let is_kwin = argv
+            .first()
+            .is_some_and(|a| a.rsplit(|b| *b == b'/').next() == Some(b"kwin_wayland".as_slice()));
+        if !is_kwin || argv.contains(&b"--virtual".as_slice()) {
+            continue;
+        }
+        let socket = argv
+            .windows(2)
+            .find(|w| w[0] == b"--socket")
+            .and_then(|w| std::str::from_utf8(w[1]).ok())
+            .filter(|s| valid_socket_name(s));
+        if let Some(socket) = socket.filter(|s| run_dir.join(s).exists()) {
+            return Some(socket.to_owned());
+        }
+    }
+    None
+}
+
+/// Records how the session that is about to be created is made (an agent that already runs keeps its own: its
+/// compositor cannot always change the number of outputs). A stale wish is removed when there is none.
+fn want_session(unit: &str, username: &str, outputs: u32, plan: &SessionPlan, keep_virtual: bool) {
     let running = Command::new("systemctl")
         .args(["is-active", "--quiet", unit])
         .status()
@@ -90,7 +161,7 @@ fn want_outputs(unit: &str, username: &str, outputs: u32) {
         return;
     }
     let file = outputs_file(Path::new(RUNTIME_DIR), username);
-    let result = match outputs_env(outputs) {
+    let result = match agent_env(outputs, plan, keep_virtual) {
         Some(content) => std::fs::write(&file, content),
         None => std::fs::remove_file(&file).or_else(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -105,10 +176,37 @@ fn want_outputs(unit: &str, username: &str, outputs: u32) {
     }
 }
 
+/// Content of the file the unit reads for this plan: how the session is made (`Attach`) or how many outputs it
+/// starts with (`Start`).
+fn agent_env(outputs: u32, plan: &SessionPlan, keep_virtual: bool) -> Option<String> {
+    match plan {
+        SessionPlan::Start => outputs_env(outputs),
+        SessionPlan::Attach(socket) => Some(format!(
+            "OXYDESK_AGENT_SESSION=--session attach --kwin-socket {socket} --virtual-outputs {}\n",
+            if keep_virtual { "keep" } else { "remove" }
+        )),
+        SessionPlan::Refuse => None,
+    }
+}
+
+/// Whether the agent of `unit` runs: a running one is joined, whatever the policy.
+fn unit_active(unit: &str) -> bool {
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", unit])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// Starts the agent (idempotent) and waits for its socket to accept connections.
-fn connect_agent(username: &str, uid: u32, outputs: u32) -> anyhow::Result<UnixStream> {
+fn connect_agent(
+    username: &str,
+    uid: u32,
+    outputs: u32,
+    plan: &SessionPlan,
+    keep_virtual: bool,
+) -> anyhow::Result<UnixStream> {
     let unit = format!("oxydesk-agent@{username}.service");
-    want_outputs(&unit, username, outputs);
+    want_session(&unit, username, outputs, plan, keep_virtual);
     let status = Command::new("systemctl")
         .args(["start", "--no-block", &unit])
         .status()?;
@@ -178,12 +276,14 @@ fn attach(mut stream: UnixStream, cfg: &Config, username: &str) -> anyhow::Resul
 
 fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let (username, password, outputs) = match read_request(&mut stream)? {
+    let (username, password, outputs, policy, keep_virtual) = match read_request(&mut stream)? {
         Request::Login {
             username,
             password,
             outputs,
-        } => (username, password, outputs),
+            policy,
+            keep_virtual_outputs,
+        } => (username, password, outputs, policy, keep_virtual_outputs),
         Request::Attach { username, .. } => {
             stream.set_read_timeout(None)?;
             tracing::info!(user = %username, "reconnection request");
@@ -214,7 +314,29 @@ fn handle(mut stream: UnixStream, cfg: &Config, pam: &Pam) -> anyhow::Result<()>
         .lock()
         .expect("authenticated mutex")
         .insert(username.clone());
-    match connect_agent(&username, uid, outputs) {
+    let unit = format!("oxydesk-agent@{username}.service");
+    let plan = if unit_active(&unit) {
+        // Already running (a session of ours, or one joined earlier): it is joined as it is.
+        SessionPlan::Start
+    } else {
+        let run_dir = PathBuf::from(format!("/run/user/{uid}"));
+        plan(policy, existing_session(Path::new("/proc"), &run_dir, uid))
+    };
+    if plan == SessionPlan::Refuse {
+        tracing::warn!(user = %username, "no Plasma session to join (session-policy attach)");
+        send_response(
+            &mut stream,
+            &Response::Error {
+                message: "no Plasma session to join".into(),
+            },
+            None,
+        )?;
+        return Ok(());
+    }
+    if let SessionPlan::Attach(socket) = &plan {
+        tracing::info!(user = %username, socket, "joining the Plasma session of the user");
+    }
+    match connect_agent(&username, uid, outputs, &plan, keep_virtual) {
         Ok(agent) => {
             send_response(
                 &mut stream,
@@ -332,6 +454,112 @@ mod outputs_tests {
         );
         assert_eq!(outputs_env(0), None);
         assert_eq!(outputs_env(17), None);
+    }
+
+    #[test]
+    fn the_policy_decides_between_our_own_session_and_the_existing_one() {
+        let some = || Some("wayland-0".to_owned());
+        assert_eq!(plan(SessionPolicy::New, some()), SessionPlan::Start);
+        assert_eq!(plan(SessionPolicy::New, None), SessionPlan::Start);
+        let attach = SessionPlan::Attach("wayland-0".into());
+        assert_eq!(plan(SessionPolicy::Attach, some()), attach);
+        assert_eq!(plan(SessionPolicy::Attach, None), SessionPlan::Refuse);
+        assert_eq!(plan(SessionPolicy::Auto, some()), attach);
+        assert_eq!(plan(SessionPolicy::Auto, None), SessionPlan::Start);
+    }
+
+    #[test]
+    fn the_unit_reads_how_the_session_is_made() {
+        assert_eq!(
+            agent_env(2, &SessionPlan::Start, false).as_deref(),
+            Some("OXYDESK_AGENT_OUTPUTS=--outputs 2\n")
+        );
+        assert_eq!(
+            agent_env(2, &SessionPlan::Attach("wayland-0".into()), false).as_deref(),
+            Some("OXYDESK_AGENT_SESSION=--session attach --kwin-socket wayland-0 --virtual-outputs remove\n")
+        );
+        // The client's extra monitors stay after it leaves, when the server is configured so.
+        assert_eq!(
+            agent_env(2, &SessionPlan::Attach("wayland-0".into()), true).as_deref(),
+            Some("OXYDESK_AGENT_SESSION=--session attach --kwin-socket wayland-0 --virtual-outputs keep\n")
+        );
+        assert_eq!(agent_env(2, &SessionPlan::Refuse, false), None);
+    }
+
+    #[test]
+    fn only_plain_socket_names_reach_the_command_line() {
+        assert!(valid_socket_name("wayland-0"));
+        assert!(!valid_socket_name(""));
+        assert!(!valid_socket_name("a b"));
+        assert!(!valid_socket_name("../x"));
+        assert!(!valid_socket_name("x;rm"));
+        assert!(!valid_socket_name(&"a".repeat(65)));
+    }
+
+    /// A fake `/proc` owned by the current user, and a runtime directory holding `sockets`.
+    fn fake_session(name: &str, procs: &[(u32, &[&str])], sockets: &[&str]) -> (PathBuf, PathBuf) {
+        let root = temp(name);
+        let (proc_root, run) = (root.join("proc"), root.join("run"));
+        std::fs::create_dir_all(&run).unwrap();
+        for (pid, argv) in procs {
+            let dir = proc_root.join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut raw = argv.join("\0").into_bytes();
+            raw.push(0);
+            std::fs::write(dir.join("cmdline"), raw).unwrap();
+        }
+        for s in sockets {
+            std::fs::write(run.join(s), b"").unwrap();
+        }
+        std::fs::create_dir_all(&proc_root).unwrap();
+        (proc_root, run)
+    }
+
+    fn me() -> u32 {
+        // SAFETY: no argument, cannot fail.
+        unsafe { libc::geteuid() }
+    }
+
+    #[test]
+    fn the_real_session_of_the_user_is_found_and_our_virtual_ones_are_not() {
+        let real = [
+            "/usr/bin/kwin_wayland",
+            "--wayland-fd",
+            "7",
+            "--socket",
+            "wayland-0",
+            "--xwayland",
+        ];
+        let virt = [
+            "/usr/bin/kwin_wayland",
+            "--virtual",
+            "--socket",
+            "oxydesk-0",
+            "--width",
+            "1920",
+        ];
+        let (p, r) = fake_session(
+            "real",
+            &[(10, &virt), (11, &real)],
+            &["wayland-0", "oxydesk-0"],
+        );
+        assert_eq!(existing_session(&p, &r, me()).as_deref(), Some("wayland-0"));
+        // Only a virtual one: nothing to join.
+        let (p, r) = fake_session("virtual", &[(10, &virt)], &["oxydesk-0"]);
+        assert_eq!(existing_session(&p, &r, me()), None);
+        // The process names a socket that does not exist (not started yet, or gone).
+        let (p, r) = fake_session("nosocket", &[(11, &real)], &[]);
+        assert_eq!(existing_session(&p, &r, me()), None);
+        // Another program, an unusable socket name, or another user.
+        let other = ["/usr/bin/plasmashell", "--socket", "wayland-0"];
+        let (p, r) = fake_session("other", &[(12, &other)], &["wayland-0"]);
+        assert_eq!(existing_session(&p, &r, me()), None);
+        let odd = ["/usr/bin/kwin_wayland", "--socket", "../evil"];
+        let (p, r) = fake_session("odd", &[(13, &odd)], &["../evil"]);
+        assert_eq!(existing_session(&p, &r, me()), None);
+        let (p, r) = fake_session("uid", &[(11, &real)], &["wayland-0"]);
+        assert_eq!(existing_session(&p, &r, me().wrapping_add(1)), None);
+        assert_eq!(existing_session(Path::new("/nonexistent"), &r, me()), None);
     }
 
     #[test]

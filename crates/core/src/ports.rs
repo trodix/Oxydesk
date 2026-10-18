@@ -5,8 +5,30 @@ use crate::files::FileList;
 use crate::frame::Frame;
 use crate::layout::{Layout, OutputId};
 
+/// Moves the windows of a desktop that is not ours, when some of its monitors stop being shown to the client.
+pub trait WindowMover: Send {
+    /// Brings every application window that is on another output onto the outputs named in `keep`.
+    fn gather(&mut self, keep: &[String]) -> Result<(), CaptureError>;
+    /// The client's extra monitors `extra` (virtual outputs of the session) have just appeared. Each has a virtual
+    /// desktop of its own (created if missing); the windows parked on it come to the monitor.
+    fn claim(&mut self, _extra: &[String]) -> Result<(), CaptureError> {
+        Ok(())
+    }
+    /// The client's extra monitors `extra` are going. Their windows go to the real monitor `home`. With `keep` they
+    /// are parked on the virtual desktop of their monitor, which stays; without it that desktop is removed.
+    fn park(&mut self, _extra: &[String], _home: &str, _keep: bool) -> Result<(), CaptureError> {
+        Ok(())
+    }
+    /// Puts back, where they were, the windows that `gather` moved (the ones the user has not moved since).
+    fn restore(&mut self) -> Result<(), CaptureError> {
+        Ok(())
+    }
+}
+
 /// Frame source. `recv_latest` only returns the most recent one (drop, no queue).
 pub trait CaptureSource: Send {
+    /// The client left: gives the desktop back as it was before the client changed it. Nothing by default.
+    fn release(&mut self) {}
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError>;
     /// The consumer may sleep on `wake` instead of polling: the source notifies it on every new
     /// frame. No effect by default (polled sources only).

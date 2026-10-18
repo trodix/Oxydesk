@@ -37,6 +37,9 @@ struct Desktop {
     audio: Option<Arc<dyn AudioProvider>>,
     /// Outputs captured now (changes with `SetLayout`).
     outputs: AtomicU32,
+    /// Outputs the desktop has when no client is connected, for a desktop that is given back as it was (a session
+    /// joined rather than started); `None` when a client's layout is kept for the next one.
+    resting_outputs: Option<u32>,
     width: u32,
     height: u32,
     fps: f32,
@@ -72,6 +75,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         AudioMode::Off => None,
         AudioMode::Tone => Some(Arc::new(oxydesk_audio::ToneProvider)),
         AudioMode::Pulse => Some(Arc::new(oxydesk_audio::PulseCapture)),
+        AudioMode::Monitor => Some(Arc::new(oxydesk_audio::PulseMonitor)),
     };
     #[cfg_attr(not(feature = "kwin"), allow(unused_variables))]
     let dmabuf = cfg.use_dmabuf();
@@ -84,6 +88,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         clipboard: Mutex::new(clipboard),
         audio: audio.clone(),
         outputs: AtomicU32::new(outputs),
+        resting_outputs: None,
         width,
         height,
         fps: cfg.fps,
@@ -151,8 +156,104 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
             #[cfg(not(feature = "kwin"))]
             anyhow::bail!("binary built without the `kwin` feature");
         }
+        "attach" => {
+            #[cfg(feature = "kwin")]
+            {
+                // The desktop of the user, already running: nothing is started, so nothing is stopped with the agent.
+                // Its monitors are theirs and are captured as they are (the client's sizes come from scaling), the
+                // client's extra monitors are virtual outputs, and when the client has fewer monitors the windows
+                // of the others are brought onto the ones it shows. The keyboard layout of the client is not
+                // written into their settings.
+                if std::env::var_os("OXYDESK_KEYBOARD_LAYOUT").is_none() {
+                    std::env::set_var("OXYDESK_KEYBOARD_LAYOUT", "off");
+                }
+                let socket = cfg.kwin_socket.clone();
+                // Fails at once rather than waiting on tools that would wait for a compositor to appear.
+                anyhow::ensure!(
+                    runtime_dir().join(&socket).exists(),
+                    "no Wayland socket {socket} in {}: the session to join is not running",
+                    runtime_dir().display()
+                );
+                let mut physical = oxydesk_capture::enabled_outputs(Some(&socket))?;
+                physical.truncate(oxydesk_core::layout::MAX_OUTPUTS);
+                anyhow::ensure!(
+                    !physical.is_empty(),
+                    "the session being joined has no monitor"
+                );
+                let sources = (0..physical.len())
+                    .map(|rank| {
+                        oxydesk_capture::KwinCapture::start_with(Some(&socket), rank, dmabuf).map(
+                            |c| {
+                                Box::new(oxydesk_capture::ExistingOutput(c))
+                                    as Box<dyn CaptureSource>
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let multi = oxydesk_capture::MultiCapture::new(sources).with_factory(
+                    oxydesk_capture::existing_factory(socket.clone(), physical.clone(), dmabuf),
+                );
+                let outputs = physical.len() as u32;
+                let mut source = oxydesk_capture::ExistingDesktop::new(
+                    multi,
+                    physical,
+                    Box::new(oxydesk_capture::KwinWindowMover::default()),
+                )
+                .keep_virtual_outputs(cfg.keep_virtual_outputs)
+                .with_settle({
+                    let socket = socket.clone();
+                    Box::new(move |count| {
+                        oxydesk_capture::enabled_outputs(Some(&socket))
+                            .is_ok_and(|names| names.len() == count)
+                    })
+                });
+                let sizes = first_frame_sizes(&mut source, outputs as usize)?;
+                let (width, height) = sizes[0];
+                let input = oxydesk_input::KwinFakeInput::connect(Some(&socket))?;
+                let clipboard = oxydesk_clipboard::WaylandClipboard::connect(Some(&socket))?;
+                let (capture, input) = oxydesk_scaling::wrap(Box::new(source), Box::new(input));
+                for (i, size) in sizes.iter().enumerate() {
+                    capture.learn_native(OutputId(i as u32), *size);
+                }
+                let mut desktop = make(
+                    Box::new(capture),
+                    Box::new(input),
+                    Box::new(clipboard),
+                    Box::new(()),
+                );
+                desktop.width = width;
+                desktop.height = height;
+                desktop.outputs = AtomicU32::new(outputs);
+                desktop.resting_outputs = (!cfg.keep_virtual_outputs).then_some(outputs);
+                Ok(desktop)
+            }
+            #[cfg(not(feature = "kwin"))]
+            anyhow::bail!("binary built without the `kwin` feature");
+        }
         other => anyhow::bail!("unknown --session: {other}"),
     }
+}
+
+/// Size of each of the `count` outputs of the desktop being joined, from their first frames (monitors of the
+/// user: they are not ours to choose). The first output must answer; the others are left unknown after the delay.
+#[cfg(feature = "kwin")]
+fn first_frame_sizes(
+    source: &mut dyn CaptureSource,
+    count: usize,
+) -> anyhow::Result<Vec<(u32, u32)>> {
+    let mut sizes: Vec<Option<(u32, u32)>> = vec![None; count];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && sizes.iter().any(Option::is_none) {
+        for (i, size) in sizes.iter_mut().enumerate().filter(|(_, s)| s.is_none()) {
+            if let Some(frame) = source.recv_latest(OutputId(i as u32))? {
+                *size = Some((frame.width, frame.height));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let first =
+        sizes[0].ok_or_else(|| anyhow::anyhow!("the session being joined sent no image"))?;
+    Ok(sizes.into_iter().map(|s| s.unwrap_or(first)).collect())
 }
 
 type Writer = Arc<Mutex<UnixStream>>;
@@ -349,6 +450,15 @@ fn audio_loop(
 }
 
 fn serve(d: Arc<Desktop>, stream: UnixStream) {
+    serve_connection(&d, stream);
+    // The client is gone: a desktop it had changed (windows brought onto its monitors) is given back.
+    d.capture.lock().expect("capture mutex").release();
+    if let Some(outputs) = d.resting_outputs {
+        d.outputs.store(outputs, Ordering::SeqCst);
+    }
+}
+
+fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
     let writer: Writer = match stream.try_clone() {
         Ok(s) => Arc::new(Mutex::new(s)),
         Err(e) => {

@@ -6,7 +6,10 @@ EGFX, one KWin session per user.
 
 ## Features
 
-- **Remote login**: PAM authentication, one real logind/KDE session per user (`login` mode, TLS). A fixed
+- **Remote login**: PAM authentication, one real logind/KDE session per user (`login` mode, TLS). With
+  `session-policy = attach|auto` a login joins the Plasma session the user already has (the physical desktop) instead of
+  starting a new one (more client monitors than the desktop has: extra virtual ones; fewer: the windows of the other
+  monitors are brought onto the ones shown, and put back on disconnect). A fixed
   virtual KWin session (`session = kwin`) and a synthetic test desktop (`test-mode`) are also available.
 - **Video**: H.264 (software openh264 or GPU VA-API), bitrate and frames in flight adapted to the client's link.
 - **Display**: dynamic resize (Display Control) and up to 16 monitors.

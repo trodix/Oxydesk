@@ -8,6 +8,9 @@ use oxydesk_core::ports::{AudioParams, AudioProvider, AudioSource};
 /// the "monitor" of that sink is captured.
 const SINK: &str = "oxydesk";
 
+/// The PulseAudio name for the monitor of whatever the default sink is.
+const DEFAULT_MONITOR: &str = "@DEFAULT_MONITOR@";
+
 /// Capture of the "monitor" of a PipeWire null sink, through the PulseAudio API of `pipewire-pulse`
 /// (`pactl` / `parec`, `pulseaudio-utils` package).
 pub struct PulseCapture;
@@ -55,28 +58,47 @@ impl PulseCapture {
     }
 }
 
+/// Arguments of `parec` capturing `device` as raw 16-bit little-endian PCM.
+fn parec_args(device: &str, params: AudioParams) -> Vec<String> {
+    vec![
+        "-d".into(),
+        device.into(),
+        "--format=s16le".into(),
+        "--raw".into(),
+        "--latency-msec=20".into(),
+        format!("--rate={}", params.sample_rate),
+        format!("--channels={}", params.channels),
+    ]
+}
+
+fn open_parec(device: &str, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
+    let mut child = Command::new("parec")
+        .args(parec_args(device, params))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            AudioError::Backend(format!("parec: {e} (pulseaudio-utils package required)"))
+        })?;
+    let stdout = child.stdout.take().ok_or(AudioError::Closed)?;
+    Ok(Box::new(PulseSource { child, stdout }))
+}
+
 impl AudioProvider for PulseCapture {
     fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
         Self::ensure_sink()?;
-        let mut child = Command::new("parec")
-            .args([
-                "-d",
-                &format!("{SINK}.monitor"),
-                "--format=s16le",
-                "--raw",
-                "--latency-msec=20",
-            ])
-            .arg(format!("--rate={}", params.sample_rate))
-            .arg(format!("--channels={}", params.channels))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                AudioError::Backend(format!("parec: {e} (pulseaudio-utils package required)"))
-            })?;
-        let stdout = child.stdout.take().ok_or(AudioError::Closed)?;
-        Ok(Box::new(PulseSource { child, stdout }))
+        open_parec(&format!("{SINK}.monitor"), params)
+    }
+}
+
+/// Capture of what the user's current default output plays (its "monitor"), for a session that is also in use
+/// locally: nothing is created and the default sink is left alone, so the local speakers keep playing.
+pub struct PulseMonitor;
+
+impl AudioProvider for PulseMonitor {
+    fn open(&self, params: AudioParams) -> Result<Box<dyn AudioSource>, AudioError> {
+        open_parec(DEFAULT_MONITOR, params)
     }
 }
 
@@ -95,5 +117,24 @@ impl Drop for PulseSource {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_capture_command_names_the_device_and_the_format() {
+        let params = AudioParams {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        let args = parec_args(DEFAULT_MONITOR, params);
+        assert_eq!(&args[..2], ["-d", "@DEFAULT_MONITOR@"]);
+        assert!(args.contains(&"--rate=48000".to_owned()));
+        assert!(args.contains(&"--channels=2".to_owned()));
+        // The private sink's monitor is a different device: the session's own capture is unchanged.
+        assert_eq!(parec_args("oxydesk.monitor", params)[1], "oxydesk.monitor");
     }
 }
