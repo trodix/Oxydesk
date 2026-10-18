@@ -251,6 +251,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // Current connection and one EGFX surface per output (empty until created).
             let mut current: Option<(GfxServerHandle, Vec<u16>)> = None;
             let (mut sent, mut dropped) = (0u64, 0u64);
+            // Frames sent and held back by backpressure, for each output (reported with the totals).
+            let mut per_output: Vec<(u64, u64)> = Vec::new();
             // Client without EGFX (or never ready): bitmap updates after `LEGACY_AFTER`, from the start of the connection.
             let (mut loops_seen, mut connected_at) = (0u64, Instant::now());
             let mut legacy_repeat = true;
@@ -582,6 +584,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 let mut lost = false;
                 // An output whose frame waited for a free slot of the window is sent again at the next tick.
                 let mut deferred = false;
+                let outputs_len = outputs.len();
                 for (i, out) in outputs.iter_mut().enumerate() {
                     match capture_src.recv_latest(OutputId(i as u32)) {
                         // Frame of another size: ignored (resize in progress, or the compositor did not
@@ -650,6 +653,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     // Once an output has sent its frame the window can be full for the next one: check before encoding.
                     if h264 && handle.lock().expect("gfx handle mutex").should_backpressure() {
                         dropped += 1;
+                        per_output.resize(outputs_len.max(per_output.len()), (0, 0));
+                        per_output[i].1 += 1;
                         if pre_encoded {
                             out.last = None;
                             out.encoder.request_keyframe();
@@ -713,6 +718,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         (g.drain_output(), g.channel_id())
                     };
                     sent += 1;
+                    per_output.resize(outputs_len.max(per_output.len()), (0, 0));
+                    per_output[i].0 += 1;
                     if let Some(channel) = channel {
                         match encode_dvc_messages(
                             channel,
@@ -749,6 +756,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         rtt_ms = q.as_ref().map_or(0.0, |q| q.avg_rtt_ms),
                         best_rtt_ms = q.as_ref().map_or(0.0, |q| q.min_rtt_ms),
                         bitrate_bps = rate.as_ref().map_or(0, |r| r.target().bitrate_bps),
+                        per_output = ?per_output,
                         "frame-pump"
                     );
                     report = Instant::now();
