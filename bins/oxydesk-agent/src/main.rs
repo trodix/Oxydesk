@@ -40,6 +40,10 @@ struct Desktop {
     /// Outputs the desktop has when no client is connected, for a desktop that is given back as it was (a session
     /// joined rather than started); `None` when a client's layout is kept for the next one.
     resting_outputs: Option<u32>,
+    /// Connections served so far, and how long the agent stays once the last client is gone: a desktop made of
+    /// virtual outputs only (the session has no monitor) ends with its last client, which removes them.
+    connections: std::sync::atomic::AtomicU64,
+    idle_exit: Option<Duration>,
     width: u32,
     height: u32,
     fps: f32,
@@ -89,6 +93,8 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         audio: audio.clone(),
         outputs: AtomicU32::new(outputs),
         resting_outputs: None,
+        connections: std::sync::atomic::AtomicU64::new(0),
+        idle_exit: None,
         width,
         height,
         fps: cfg.fps,
@@ -176,24 +182,32 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 );
                 let mut physical = oxydesk_capture::enabled_outputs(Some(&socket))?;
                 physical.truncate(oxydesk_core::layout::MAX_OUTPUTS);
-                anyhow::ensure!(
-                    !physical.is_empty(),
-                    "the session being joined has no monitor"
-                );
-                let sources = (0..physical.len())
-                    .map(|rank| {
-                        oxydesk_capture::KwinCapture::start_with(Some(&socket), rank, dmabuf).map(
-                            |c| {
-                                Box::new(oxydesk_capture::ExistingOutput(c))
-                                    as Box<dyn CaptureSource>
-                            },
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let sources = if physical.is_empty() {
+                    // No monitor (the screens are unplugged, the session may be locked): the client's monitors are
+                    // virtual outputs, the first one created now, and the lock screen or the desktop is drawn on them.
+                    vec![Box::new(oxydesk_capture::KwinCapture::start_virtual(
+                        Some(&socket),
+                        "Virtual-0",
+                        1920,
+                        1080,
+                        dmabuf,
+                    )?) as Box<dyn CaptureSource>]
+                } else {
+                    (0..physical.len())
+                        .map(|rank| {
+                            oxydesk_capture::KwinCapture::start_with(Some(&socket), rank, dmabuf)
+                                .map(|c| {
+                                    Box::new(oxydesk_capture::ExistingOutput(c))
+                                        as Box<dyn CaptureSource>
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                let headless = physical.is_empty();
+                let outputs = sources.len() as u32;
                 let multi = oxydesk_capture::MultiCapture::new(sources).with_factory(
                     oxydesk_capture::existing_factory(socket.clone(), physical.clone(), dmabuf),
                 );
-                let outputs = physical.len() as u32;
                 let mut source = oxydesk_capture::ExistingDesktop::new(
                     multi,
                     physical,
@@ -225,6 +239,10 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 desktop.height = height;
                 desktop.outputs = AtomicU32::new(outputs);
                 desktop.resting_outputs = (!cfg.keep_virtual_outputs).then_some(outputs);
+                desktop.idle_exit = headless.then_some(HEADLESS_GRACE);
+                if headless {
+                    watch_for_screens(socket.clone());
+                }
                 Ok(desktop)
             }
             #[cfg(not(feature = "kwin"))]
@@ -449,12 +467,49 @@ fn audio_loop(
     }
 }
 
+/// A desktop without a monitor lives on the agent's virtual outputs. When a real screen is plugged in, the agent ends: the
+/// outputs go with it, KWin moves their windows onto the screens, and the client reconnects to the desktop as it is.
+#[cfg(feature = "kwin")]
+fn watch_for_screens(socket: String) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let names = oxydesk_capture::enabled_outputs(Some(&socket)).unwrap_or_default();
+        if has_screen(&names) {
+            tracing::info!(?names, "a screen is back: the virtual outputs are removed");
+            std::process::exit(0);
+        }
+    });
+}
+
+/// Whether `outputs` holds a screen that is not one of the agent's virtual outputs.
+#[cfg(any(feature = "kwin", test))]
+fn has_screen(outputs: &[String]) -> bool {
+    outputs.iter().any(|n| !n.starts_with("Virtual-"))
+}
+
+/// How long a desktop without a monitor outlives its last client (long enough for a reconnection).
+#[cfg(feature = "kwin")]
+const HEADLESS_GRACE: Duration = Duration::from_secs(60);
+
 fn serve(d: Arc<Desktop>, stream: UnixStream) {
+    d.connections.fetch_add(1, Ordering::SeqCst);
     serve_connection(&d, stream);
     // The client is gone: a desktop it had changed (windows brought onto its monitors) is given back.
     d.capture.lock().expect("capture mutex").release();
     if let Some(outputs) = d.resting_outputs {
         d.outputs.store(outputs, Ordering::SeqCst);
+    }
+    if let Some(grace) = d.idle_exit {
+        let seen = d.connections.load(Ordering::SeqCst);
+        std::thread::spawn(move || {
+            std::thread::sleep(grace);
+            if d.connections.load(Ordering::SeqCst) == seen {
+                tracing::info!(
+                    "no client left on a desktop of virtual outputs: the agent ends and they go"
+                );
+                std::process::exit(0);
+            }
+        });
     }
 }
 
@@ -896,6 +951,14 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_screen_is_any_output_that_is_not_a_virtual_one() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!has_screen(&[]));
+        assert!(!has_screen(&names(&["Virtual-0", "Virtual-1"])));
+        assert!(has_screen(&names(&["Virtual-0", "DP-1"])));
+    }
+
     use super::*;
     use oxydesk_agent_proto::{FileInfo, Rect};
 

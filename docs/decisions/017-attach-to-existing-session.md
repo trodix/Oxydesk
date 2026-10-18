@@ -7,7 +7,7 @@ In `login` mode every login ends in a private virtual KWin owned by `oxydesk-age
 physical screen of the same user can therefore not be reached from an RDP client.
 
 ## Decision
-1. **A server option, `session-policy = new | attach | auto`** (default `new`, the previous behaviour). `attach` refuses a login
+1. **A server option, `session-policy = new | attach | auto`** (default `auto`; `new` is the previous behaviour). `attach` refuses a login
    when the user has no Plasma session; `auto` joins it if there is one and starts a session of our own otherwise. The password
    is still checked by PAM.
 2. **`oxydesk-authd` decides**, being root and the only component that can look at other processes. After PAM it looks for a
@@ -65,3 +65,11 @@ physical screen of the same user can therefore not be reached from an RDP client
 Unit tests (policy table, `/proc` lookup with a fake `/proc`, environment file, `ExistingOutput`, agent settings, `parec`
 command, request round-trip, `ExistingDesktop` with a fake `WindowMover`, the gather script, the list of enabled outputs, scaling of an added output) and, against a private KWin with two outputs on a private D-Bus session and a real `konsole`
 window, `bins/oxydesk-agent/tests/attach_kwin.rs` (skipped when KWin is not installed) and, by hand, mstsc against a physical session.
+
+## A desktop without a monitor
+With no real screen the client's monitors are virtual outputs of the agent (no `Oxydesk Virtual-N` desktop: they are the monitors,
+not extra ones). The agent ends 60 s after the last client, and at once when a real screen is plugged in (it polls the outputs
+every 2 s): the outputs go with it, KWin moves their windows onto the screens and the client reconnects to the desktop as it is.
+Virtual desktops left over from an earlier run whose monitor no longer exists are removed (`WindowMover::sweep`) when the client
+first sets its layout and when it leaves. With fewer physical screens than the client has (`virtual-outputs = keep`), the extra
+monitors and their desktops stay, with their windows, until the agent stops.

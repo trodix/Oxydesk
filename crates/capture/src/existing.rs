@@ -54,6 +54,8 @@ pub struct ExistingDesktop<C> {
     keep_virtual: bool,
     /// How many monitors beyond the real ones the client has now (each has a virtual desktop of its own).
     extras: usize,
+    /// The stale virtual desktops were removed when the client first set its layout.
+    swept: bool,
 }
 
 pub type Settled = Box<dyn FnMut(usize) -> bool + Send>;
@@ -66,6 +68,13 @@ impl<C> ExistingDesktop<C> {
             .collect()
     }
 
+    /// The desktops of monitors that no longer exist go, with their windows moved to a real desktop.
+    fn sweep_stale(&mut self) {
+        if let Err(e) = self.mover.sweep() {
+            eprintln!("cannot remove the stale virtual desktops: {e}");
+        }
+    }
+
     pub fn new(inner: C, physical: Vec<String>, mover: Box<dyn WindowMover>) -> Self {
         Self {
             inner,
@@ -74,6 +83,7 @@ impl<C> ExistingDesktop<C> {
             settled: None,
             keep_virtual: false,
             extras: 0,
+            swept: false,
         }
     }
 
@@ -128,6 +138,7 @@ impl<C: CaptureSource> CaptureSource for ExistingDesktop<C> {
         }
         if self.keep_virtual {
             self.inner.release();
+            self.sweep_stale();
             return;
         }
         if !self.physical.is_empty() {
@@ -150,17 +161,28 @@ impl<C: CaptureSource> CaptureSource for ExistingDesktop<C> {
             cannot("put the windows back", e);
         }
         self.inner.release();
+        self.sweep_stale();
     }
 
     fn apply_layout(&mut self, layout: &Layout) -> Result<(), CaptureError> {
         let shown = layout.outputs.len();
+        if !self.swept {
+            self.swept = true;
+            self.sweep_stale();
+        }
         if shown > 0 && shown < self.physical.len() {
             // Not fatal: the windows stay where they are, and the client sees only part of them.
             if let Err(e) = self.mover.gather(&self.physical[..shown]) {
                 eprintln!("cannot move the windows onto the shown monitors: {e}");
             }
         }
-        let extras = shown.saturating_sub(self.physical.len());
+        // A desktop without a monitor (the screens are unplugged) is shown entirely on virtual outputs: they are its
+        // monitors, not extra ones, so there is nothing to park or bring over.
+        let extras = if self.physical.is_empty() {
+            0
+        } else {
+            shown.saturating_sub(self.physical.len())
+        };
         if extras < self.extras {
             // Monitors going away mid-session: their windows are parked before the monitors are dropped.
             if let Some(home) = self.physical.first().cloned() {
@@ -404,6 +426,35 @@ mod tests {
         (d, log)
     }
 
+    struct Sweeper(Arc<Mutex<u32>>);
+
+    impl WindowMover for Sweeper {
+        fn gather(&mut self, _: &[String]) -> Result<(), CaptureError> {
+            Ok(())
+        }
+        fn sweep(&mut self) -> Result<(), CaptureError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_desktops_of_monitors_that_are_gone_are_swept_once_at_the_start_and_when_the_client_leaves(
+    ) {
+        let swept = Arc::new(Mutex::new(0));
+        let mut d = ExistingDesktop::new(
+            Accepting,
+            vec!["DP-1".into(), "DP-2".into()],
+            Box::new(Sweeper(swept.clone())),
+        );
+        let layout = Layout::side_by_side(2, 800, 600);
+        d.apply_layout(&layout).unwrap();
+        d.apply_layout(&layout).unwrap();
+        assert_eq!(*swept.lock().unwrap(), 1);
+        d.release();
+        assert_eq!(*swept.lock().unwrap(), 2);
+    }
+
     #[test]
     fn each_extra_monitor_takes_the_windows_of_its_desktop() {
         let (mut d, log) = with_desks(true);
@@ -414,6 +465,16 @@ mod tests {
         // Only what is new is claimed.
         d.apply_layout(&Layout::side_by_side(5, 8, 8)).unwrap();
         assert_eq!(log.lock().unwrap()[1], "claim Virtual-4");
+    }
+
+    #[test]
+    fn a_desktop_without_a_monitor_lives_on_virtual_outputs_and_moves_no_window() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut d = ExistingDesktop::new(Accepting, Vec::new(), Box::new(Desks(log.clone())));
+        d.apply_layout(&Layout::side_by_side(2, 8, 8)).unwrap();
+        d.apply_layout(&Layout::side_by_side(1, 8, 8)).unwrap();
+        d.release();
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -133,6 +133,23 @@ fn park_script(extra: &[String], home: &str, keep: bool) -> String {
     )
 }
 
+/// Script for `sweep`: a desktop `Oxydesk Virtual-N` whose monitor is gone is removed, its windows going to the first
+/// desktop that is not one of ours.
+fn sweep_script() -> String {
+    "const prefix = \"Oxydesk Virtual-\";\n\
+     const home = workspace.desktops.find(d => !d.name.startsWith(prefix));\n\
+     for (const desk of workspace.desktops.slice()) {\n\
+     \tif (!desk.name.startsWith(prefix)) continue;\n\
+     \tconst name = desk.name.slice(\"Oxydesk \".length);\n\
+     \tif (workspace.screens.some(o => o.name === name)) continue;\n\
+     \tif (home) for (const w of workspace.windowList()) {\n\
+     \t\tif (w.desktops.length === 1 && w.desktops[0] === desk) w.desktops = [home];\n\
+     \t}\n\
+     \tworkspace.removeDesktop(desk);\n\
+     }\n"
+    .to_owned()
+}
+
 /// Loads, runs and unloads a script that has nothing to keep.
 fn run_once(source: &str) -> Result<(), CaptureError> {
     static COUNT: AtomicU32 = AtomicU32::new(0);
@@ -252,6 +269,10 @@ impl WindowMover for KwinWindowMover {
         run_once(&park_script(extra, home, keep))
     }
 
+    fn sweep(&mut self) -> Result<(), CaptureError> {
+        run_once(&sweep_script())
+    }
+
     fn restore(&mut self) -> Result<(), CaptureError> {
         let mut failure = None;
         // Last move first: a window moved twice ends where it began.
@@ -324,6 +345,15 @@ mod tests {
         let removed = park_script(&["Virtual-2".into()], "HDMI-A-1", false);
         assert!(removed.contains("const keep = false;"));
         assert!(removed.contains("removeDesktop(desk)"));
+    }
+
+    #[test]
+    fn sweeping_removes_the_desktops_of_monitors_that_are_gone() {
+        let s = sweep_script();
+        assert!(s.contains(r#"startsWith(prefix)"#));
+        assert!(s.contains("workspace.screens.some(o => o.name === name)"));
+        assert!(s.contains("w.desktops = [home]"));
+        assert!(s.contains("removeDesktop(desk)"));
     }
 
     #[test]

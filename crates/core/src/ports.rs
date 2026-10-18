@@ -19,6 +19,11 @@ pub trait WindowMover: Send {
     fn park(&mut self, _extra: &[String], _home: &str, _keep: bool) -> Result<(), CaptureError> {
         Ok(())
     }
+    /// Removes the virtual desktops of the client's extra monitors whose monitor no longer exists (left over from an
+    /// earlier run, or from screens that were plugged back in), their windows going to the first desktop.
+    fn sweep(&mut self) -> Result<(), CaptureError> {
+        Ok(())
+    }
     /// Puts back, where they were, the windows that `gather` moved (the ones the user has not moved since).
     fn restore(&mut self) -> Result<(), CaptureError> {
         Ok(())
