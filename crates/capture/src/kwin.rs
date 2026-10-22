@@ -841,7 +841,12 @@ fn run(
             };
             let (size, stride, offset, chunk_flags) = {
                 let c = data.chunk();
-                (c.size() as usize, c.stride(), c.offset() as usize, c.flags().bits())
+                (
+                    c.size() as usize,
+                    c.stride(),
+                    c.offset() as usize,
+                    c.flags().bits(),
+                )
             };
             // Each distinct set of chunk flags is reported once (a buffer the producer marks empty or corrupted holds
             // no new picture, only an older content of the buffer ring).
