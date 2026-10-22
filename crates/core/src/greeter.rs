@@ -14,6 +14,13 @@ pub enum Field {
     Password,
 }
 
+/// What a click of the pointer can land on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Field(Field),
+    Button,
+}
+
 /// What a key did that the caller must act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -150,6 +157,38 @@ impl Greeter {
         }
     }
 
+    /// The login to try, if the form is complete.
+    fn submit(&self) -> Action {
+        if self.user.is_empty() || self.password.is_empty() {
+            return Action::None;
+        }
+        Action::Submit {
+            user: self.user.clone(),
+            password: self.password.clone(),
+        }
+    }
+
+    /// A left click of the pointer. A field takes the cursor; the button submits a complete form, otherwise it moves the
+    /// cursor to what is missing.
+    pub fn click(&mut self, target: Target) -> Action {
+        if self.busy {
+            return Action::None;
+        }
+        match target {
+            Target::Field(field) => self.move_focus(field),
+            Target::Button => {
+                if self.user.is_empty() {
+                    self.move_focus(Field::User);
+                } else if self.password.is_empty() {
+                    self.move_focus(Field::Password);
+                } else {
+                    return self.submit();
+                }
+            }
+        }
+        Action::None
+    }
+
     /// A key of the client. Releases only matter for the modifiers.
     pub fn key(&mut self, scancode: u16, pressed: bool) -> Action {
         if SHIFTS.contains(&scancode) {
@@ -199,11 +238,8 @@ impl Greeter {
                     self.move_focus(Field::User);
                 } else if self.focus == Field::User {
                     self.move_focus(Field::Password);
-                } else if !self.password.is_empty() {
-                    return Action::Submit {
-                        user: self.user.clone(),
-                        password: self.password.clone(),
-                    };
+                } else {
+                    return self.submit();
                 }
             }
             _ => {
@@ -280,6 +316,49 @@ mod tests {
                 password: "ba".into()
             }
         );
+    }
+
+    #[test]
+    fn clicking_a_field_moves_the_cursor_there() {
+        let mut g = Greeter::new("alice");
+        assert_eq!(g.focus(), Field::Password);
+        let before = g.revision();
+        assert_eq!(g.click(Target::Field(Field::User)), Action::None);
+        assert_eq!(g.focus(), Field::User);
+        assert!(g.revision() > before);
+        let same = g.revision();
+        g.click(Target::Field(Field::User));
+        assert_eq!(g.revision(), same);
+    }
+
+    #[test]
+    fn the_button_submits_a_complete_form_and_points_at_what_is_missing() {
+        let mut g = Greeter::new("");
+        g.click(Target::Field(Field::Password));
+        assert_eq!(g.click(Target::Button), Action::None);
+        assert_eq!(g.focus(), Field::User);
+        let mut g = Greeter::new("alice");
+        g.click(Target::Field(Field::User));
+        assert_eq!(g.click(Target::Button), Action::None);
+        assert_eq!(g.focus(), Field::Password);
+        type_keys(&mut g, &[0x1E]);
+        assert_eq!(
+            g.click(Target::Button),
+            Action::Submit {
+                user: "alice".into(),
+                password: "a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn clicks_do_nothing_while_signing_in() {
+        let mut g = Greeter::new("alice");
+        type_keys(&mut g, &[0x1E]);
+        g.start_login("Signing in...");
+        assert_eq!(g.click(Target::Button), Action::None);
+        g.click(Target::Field(Field::User));
+        assert_eq!(g.focus(), Field::Password);
     }
 
     #[test]

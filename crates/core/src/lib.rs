@@ -28,7 +28,9 @@ pub use error::{
 };
 pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
-pub use greeter::{Action as GreeterAction, Field as GreeterField, Greeter};
+pub use greeter::{
+    Action as GreeterAction, Field as GreeterField, Greeter, Target as GreeterTarget,
+};
 pub use keyboard::{klid_to_xkb, XkbLayout};
 pub use keymap::char_for;
 pub use layout::{CoordinateMapper, Layout, OutputId, OutputInfo};

@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use ab_glyph::{point, Font, FontRef, Glyph, PxScale, ScaleFont};
 
 use oxydesk_core::error::{CaptureError, ClipboardError, InputError};
-use oxydesk_core::greeter::{Action, Field, Greeter};
+use oxydesk_core::greeter::{Action, Field, Greeter, Target};
 use oxydesk_core::layout::{Layout, OutputId};
 use oxydesk_core::ports::{
     CaptureSource, ClipboardBackend, DesktopPorts, EncoderFactory, FrameEncoder, InputSink,
+    PointerButton,
 };
 use oxydesk_core::wake::Wake;
 use oxydesk_core::{CursorShape, CursorUpdate};
@@ -22,22 +23,27 @@ pub type GreeterEncoder = Arc<dyn Fn(OutputId) -> Box<dyn FrameEncoder> + Send +
 
 pub type SharedGreeter = Arc<Mutex<Greeter>>;
 
+/// Position and size of the first screen in the desktop, shared by the capture (which learns the layout) and the input
+/// (which turns pointer positions into places on the form).
+type Screen = Arc<Mutex<(i32, i32, u32, u32)>>;
+
 /// Called with the user name, the password and the layout of the client when the form is submitted.
 pub type Submit = Box<dyn Fn(String, String, Option<XkbLayout>) + Send>;
 
 type Rgb = [u8; 3];
 
-const BACKGROUND_TOP: Rgb = [29, 40, 58];
-const BACKGROUND_BOTTOM: Rgb = [9, 12, 19];
-const CARD: Rgb = [31, 39, 54];
-const CARD_BORDER: Rgb = [52, 64, 86];
-const FIELD: Rgb = [20, 26, 38];
-const FIELD_IDLE: Rgb = [55, 68, 92];
-const ACCENT: Rgb = [76, 154, 255];
-const ACCENT_DEEP: Rgb = [48, 112, 224];
-const TEXT: Rgb = [235, 240, 247];
-const MUTED: Rgb = [140, 154, 176];
-const ERROR: Rgb = [255, 123, 114];
+// Colours of the site (site/style.css, dark scheme): warm greys, an orange accent and a violet glow.
+const BACKGROUND_TOP: Rgb = [44, 37, 55];
+const BACKGROUND_BOTTOM: Rgb = [12, 11, 10];
+const CARD: Rgb = [29, 26, 24];
+const CARD_BORDER: Rgb = [44, 40, 37];
+const FIELD: Rgb = [20, 18, 17];
+const FIELD_IDLE: Rgb = [62, 57, 52];
+const ACCENT: Rgb = [255, 138, 76];
+const ACCENT_DEEP: Rgb = [217, 72, 15];
+const TEXT: Rgb = [241, 236, 230];
+const MUTED: Rgb = [163, 155, 147];
+const ERROR: Rgb = [255, 92, 96];
 
 /// Noto Sans (SIL Open Font License, see `assets/NotoSans-OFL.txt`), reduced to the Latin letters, digits and punctuation.
 const REGULAR: &[u8] = include_bytes!("../assets/NotoSans-Regular.subset.ttf");
@@ -124,7 +130,7 @@ impl Canvas {
                 let dx = (x as f32 - w as f32 / 2.0) / w.max(1) as f32;
                 let dy = (y as f32 - h as f32 * 0.35) / h.max(1) as f32;
                 let glow = (1.0 - (dx * dx * 2.5 + dy * dy * 4.0).sqrt() * 1.6).clamp(0.0, 1.0);
-                let c = mix(base, [58, 92, 150], glow * 0.28);
+                let c = mix(base, [169, 139, 255], glow * 0.16);
                 px[(y * w + x) * 4..][..3].copy_from_slice(&c);
             }
         }
@@ -239,12 +245,16 @@ impl Canvas {
 }
 
 /// The login screen as RGBA pixels. `primary`: the screen carries the form; the others only the background.
-pub fn render(greeter: &Greeter, width: u32, height: u32, primary: bool) -> Vec<u8> {
-    let mut c = Canvas::new(width, height);
-    if !primary || width < 8 || height < 8 {
-        return c.px;
-    }
-    // Everything below is drawn for a card of 400 x 440 units and scaled to the screen.
+/// Where the pieces of the form are on a screen of `width` x `height`, as (x, y, w, h) in pixels.
+struct Form {
+    s: f32,
+    card: (f32, f32, f32, f32),
+    fields: [(f32, f32, f32, f32); 2],
+    button: (f32, f32, f32, f32),
+}
+
+fn form(width: u32, height: u32) -> Form {
+    // Everything is drawn for a card of 400 x 440 units and scaled to the screen.
     let s = (height as f32 / 900.0)
         .clamp(0.6, 1.8)
         .min((width as f32 - 16.0) / 400.0)
@@ -253,8 +263,53 @@ pub fn render(greeter: &Greeter, width: u32, height: u32, primary: bool) -> Vec<
     let (card_w, card_h) = (400.0 * s, 440.0 * s);
     let left = (width as f32 - card_w) / 2.0;
     let top = (height as f32 - card_h) / 2.0;
+    let pad = 32.0 * s;
+    let inner = card_w - 2.0 * pad;
+    let box_h = 44.0 * s;
+    let mut y = top + 196.0 * s;
+    let mut fields = [(0.0, 0.0, 0.0, 0.0); 2];
+    for field in &mut fields {
+        y += 20.0 * s;
+        *field = (left + pad, y, inner, box_h);
+        y += box_h + 14.0 * s;
+    }
+    Form {
+        s,
+        card: (left, top, card_w, card_h),
+        fields,
+        button: (left + pad, y + 2.0 * s, inner, 46.0 * s),
+    }
+}
+
+/// What is under the pointer at (`x`, `y`) on the first screen, if anything the form reacts to.
+fn hit(width: u32, height: u32, x: i32, y: i32) -> Option<Target> {
+    if width < 8 || height < 8 {
+        return None;
+    }
+    let f = form(width, height);
+    let inside = |r: (f32, f32, f32, f32)| {
+        let (x, y) = (x as f32, y as f32);
+        x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3
+    };
+    if inside(f.button) {
+        Some(Target::Button)
+    } else if inside(f.fields[0]) {
+        Some(Target::Field(Field::User))
+    } else if inside(f.fields[1]) {
+        Some(Target::Field(Field::Password))
+    } else {
+        None
+    }
+}
+
+pub fn render(greeter: &Greeter, width: u32, height: u32, primary: bool) -> Vec<u8> {
+    let mut c = Canvas::new(width, height);
+    if !primary || width < 8 || height < 8 {
+        return c.px;
+    }
+    let Form { s, card, .. } = form(width, height);
+    let (left, top, card_w, _) = card;
     let centre = left + card_w / 2.0;
-    let card = (left, top, card_w, card_h);
     c.shadow(card, 18.0 * s, 40.0 * s);
     c.bordered(card, 18.0 * s, 1.0_f32.max(s), CARD_BORDER, CARD);
 
@@ -297,20 +352,22 @@ pub fn render(greeter: &Greeter, width: u32, height: u32, primary: bool) -> Vec<
     let pad = 32.0 * s;
     let inner = card_w - 2.0 * pad;
     let text_size = 17.0 * s;
-    let mut y = top + 196.0 * s;
-    for (label, field) in [("User name", Field::User), ("Password", Field::Password)] {
+    let form = form(width, height);
+    for ((label, field), rect) in [("User name", Field::User), ("Password", Field::Password)]
+        .into_iter()
+        .zip(form.fields)
+    {
+        let y = rect.1;
+        let box_h = rect.3;
         c.text(
             left + pad,
-            y + 12.0 * s,
+            y - 8.0 * s,
             label,
             12.5 * s,
             Weight::Regular,
             MUTED,
         );
-        y += 20.0 * s;
         let focus = greeter.focus() == field && !greeter.busy();
-        let box_h = 44.0 * s;
-        let rect = (left + pad, y, inner, box_h);
         if focus {
             // A halo around the focused field.
             c.round_rect(
@@ -371,11 +428,10 @@ pub fn render(greeter: &Greeter, width: u32, height: u32, primary: bool) -> Vec<
                 ACCENT,
             );
         }
-        y += box_h + 14.0 * s;
     }
 
     // The button.
-    let button = (left + pad, y + 2.0 * s, inner, 46.0 * s);
+    let button = form.button;
     let busy = greeter.busy();
     let top_colour = if busy {
         mix(ACCENT, CARD, 0.45)
@@ -469,11 +525,13 @@ pub struct GreeterCapture {
     drawn: Vec<Option<u64>>,
     /// The pointer was handed to the pump.
     cursor_sent: bool,
+    screen: Screen,
 }
 
 impl GreeterCapture {
-    pub fn new(state: SharedGreeter, width: u32, height: u32) -> Self {
+    pub fn new(state: SharedGreeter, width: u32, height: u32, screen: Screen) -> Self {
         Self {
+            screen,
             state,
             sizes: vec![(width, height)],
             drawn: vec![None],
@@ -514,6 +572,8 @@ impl CaptureSource for GreeterCapture {
             return Err(CaptureError::ResizeUnsupported);
         }
         self.sizes = layout.outputs.iter().map(|o| (o.width, o.height)).collect();
+        let first = &layout.outputs[0];
+        *self.screen.lock().expect("screen mutex") = (first.x, first.y, first.width, first.height);
         self.drawn = vec![None; self.sizes.len()];
         Ok(())
     }
@@ -524,24 +584,28 @@ pub struct GreeterInput {
     state: SharedGreeter,
     wake: Arc<Wake>,
     submit: Submit,
+    screen: Screen,
+    /// Last position of the pointer in the desktop.
+    pointer: (i32, i32),
 }
 
 impl GreeterInput {
-    pub fn new(state: SharedGreeter, wake: Arc<Wake>, submit: Submit) -> Self {
+    pub fn new(state: SharedGreeter, wake: Arc<Wake>, submit: Submit, screen: Screen) -> Self {
         Self {
             state,
             wake,
             submit,
+            screen,
+            pointer: (0, 0),
         }
     }
-}
 
-impl InputSink for GreeterInput {
-    fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+    /// Applies what the form did for a key or a click: redraw, and the login to try.
+    fn finish(&mut self, act: impl FnOnce(&mut Greeter) -> Action) {
         let (action, layout) = {
             let mut g = self.state.lock().expect("greeter mutex");
             let before = g.revision();
-            let action = g.key(scancode, pressed);
+            let action = act(&mut g);
             if let Action::Submit { .. } = action {
                 g.start_login("Signing in...");
             }
@@ -553,6 +617,12 @@ impl InputSink for GreeterInput {
         if let Action::Submit { user, password } = action {
             (self.submit)(user, password, Some(layout));
         }
+    }
+}
+
+impl InputSink for GreeterInput {
+    fn key(&mut self, scancode: u16, pressed: bool) -> Result<(), InputError> {
+        self.finish(|g| g.key(scancode, pressed));
         Ok(())
     }
 
@@ -561,7 +631,19 @@ impl InputSink for GreeterInput {
         Ok(())
     }
 
-    fn pointer_move(&mut self, _: i32, _: i32) -> Result<(), InputError> {
+    fn pointer_move(&mut self, x: i32, y: i32) -> Result<(), InputError> {
+        self.pointer = (x, y);
+        Ok(())
+    }
+
+    fn pointer_button(&mut self, button: PointerButton, pressed: bool) -> Result<(), InputError> {
+        if button != PointerButton::Left || !pressed {
+            return Ok(());
+        }
+        let (sx, sy, w, h) = *self.screen.lock().expect("screen mutex");
+        if let Some(target) = hit(w, h, self.pointer.0 - sx, self.pointer.1 - sy) {
+            self.finish(|g| g.click(target));
+        }
         Ok(())
     }
 }
@@ -586,13 +668,19 @@ pub fn ports(
     encoder: GreeterEncoder,
     submit: Submit,
 ) -> DesktopPorts {
+    let screen: Screen = Arc::new(Mutex::new((0, 0, width, height)));
     let first = encoder(OutputId(0));
     let make: EncoderFactory = Box::new(move |id| encoder(id));
     DesktopPorts {
-        capture: Box::new(GreeterCapture::new(state.clone(), width, height)),
+        capture: Box::new(GreeterCapture::new(
+            state.clone(),
+            width,
+            height,
+            screen.clone(),
+        )),
         encoders: vec![first],
         make_encoder: Some(make),
-        input: Box::new(GreeterInput::new(state, wake, submit)),
+        input: Box::new(GreeterInput::new(state, wake, submit, screen)),
         clipboard: Box::new(NoClipboard),
         audio: None,
         drives: None,
@@ -607,6 +695,20 @@ mod tests {
 
     fn state(user: &str) -> SharedGreeter {
         Arc::new(Mutex::new(Greeter::new(user)))
+    }
+
+    fn screen(w: u32, h: u32) -> Screen {
+        Arc::new(Mutex::new((0, 0, w, h)))
+    }
+
+    fn centre(r: (f32, f32, f32, f32)) -> (i32, i32) {
+        ((r.0 + r.2 / 2.0) as i32, (r.1 + r.3 / 2.0) as i32)
+    }
+
+    fn click_at(input: &mut GreeterInput, (x, y): (i32, i32)) {
+        input.pointer_move(x, y).unwrap();
+        input.pointer_button(PointerButton::Left, true).unwrap();
+        input.pointer_button(PointerButton::Left, false).unwrap();
     }
 
     fn pixel(px: &[u8], w: u32, x: u32, y: u32) -> [u8; 3] {
@@ -646,7 +748,11 @@ mod tests {
     fn an_error_is_drawn_in_its_colour() {
         let mut g = Greeter::new("alice");
         g.login_failed("Wrong user name or password");
-        let reddish = |p: &[u8]| p[0] > 200 && p[1] < 170 && p[2] < 160;
+        // Red, not the orange of the accent (whose blue is lower than its green).
+        let reddish = |p: &[u8]| {
+            let (r, g, b) = (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]));
+            r > 150 && r > g + 50 && b + 10 >= g
+        };
         let px = render(&g, 1280, 800, true);
         let n = px.chunks(4).filter(|p| reddish(p)).count();
         assert!(n > 20, "{n} error pixels");
@@ -707,9 +813,123 @@ mod tests {
     }
 
     #[test]
+    fn the_clickable_areas_are_where_the_form_is_drawn() {
+        let g = Greeter::new("");
+        for (w, h) in [(1280, 800), (1920, 1080), (640, 480)] {
+            let f = form(w, h);
+            let px = render(&g, w, h, true);
+            let (bx, by) = centre(f.button);
+            assert_eq!(hit(w, h, bx, by), Some(Target::Button));
+            // The button is the orange one, the fields are dark.
+            let p = pixel(&px, w, bx as u32 + (f.button.2 / 2.0) as u32 - 6, by as u32);
+            assert!(p[0] > 200 && p[2] < 120, "{w}x{h}: {p:?}");
+            for (i, field) in [Field::User, Field::Password].into_iter().enumerate() {
+                let (x, y) = centre(f.fields[i]);
+                assert_eq!(hit(w, h, x, y), Some(Target::Field(field)));
+                let p = pixel(
+                    &px,
+                    w,
+                    x as u32 + (f.fields[i].2 / 2.0) as u32 - 6,
+                    y as u32,
+                );
+                assert_eq!(p, FIELD, "{w}x{h}");
+            }
+            assert_eq!(hit(w, h, 1, 1), None);
+        }
+        assert_eq!(hit(4, 4, 2, 2), None);
+    }
+
+    #[test]
+    fn a_click_on_a_field_gives_it_the_cursor_and_redraws() {
+        let s = state("alice");
+        let wake = Arc::new(Wake::default());
+        let mut input = GreeterInput::new(
+            s.clone(),
+            wake.clone(),
+            Box::new(|_, _, _| {}),
+            screen(1280, 800),
+        );
+        let f = form(1280, 800);
+        let seen = wake.generation();
+        click_at(&mut input, centre(f.fields[0]));
+        assert_eq!(s.lock().unwrap().focus(), Field::User);
+        assert_ne!(wake.generation(), seen);
+        click_at(&mut input, centre(f.fields[1]));
+        assert_eq!(s.lock().unwrap().focus(), Field::Password);
+    }
+
+    #[test]
+    fn a_click_outside_or_with_another_button_does_nothing() {
+        let s = state("alice");
+        let wake = Arc::new(Wake::default());
+        let mut input = GreeterInput::new(
+            s.clone(),
+            wake.clone(),
+            Box::new(|_, _, _| {}),
+            screen(1280, 800),
+        );
+        let f = form(1280, 800);
+        let seen = wake.generation();
+        click_at(&mut input, (2, 2));
+        let (x, y) = centre(f.fields[0]);
+        input.pointer_move(x, y).unwrap();
+        input.pointer_button(PointerButton::Right, true).unwrap();
+        input.pointer_button(PointerButton::Left, false).unwrap();
+        assert_eq!(s.lock().unwrap().focus(), Field::Password);
+        assert_eq!(wake.generation(), seen);
+    }
+
+    #[test]
+    fn the_button_signs_in_with_what_was_typed() {
+        let s = state("alice");
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let mut input = GreeterInput::new(
+            s.clone(),
+            Arc::new(Wake::default()),
+            Box::new(move |u, p, _| log.lock().unwrap().push((u, p))),
+            screen(1280, 800),
+        );
+        let button = centre(form(1280, 800).button);
+        // Nothing typed yet: no login, the cursor stays on the password.
+        click_at(&mut input, button);
+        assert!(sent.lock().unwrap().is_empty());
+        input.key(0x1E, true).unwrap();
+        click_at(&mut input, button);
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            [("alice".to_owned(), "a".to_owned())]
+        );
+        assert!(s.lock().unwrap().busy());
+        // A second click while signing in sends nothing more.
+        click_at(&mut input, button);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_form_follows_the_position_of_the_first_screen() {
+        let s = state("alice");
+        let shared = screen(1280, 800);
+        let mut cap = GreeterCapture::new(s.clone(), 1280, 800, shared.clone());
+        let mut input = GreeterInput::new(
+            s.clone(),
+            Arc::new(Wake::default()),
+            Box::new(|_, _, _| {}),
+            shared,
+        );
+        let mut layout = Layout::side_by_side(1, 1920, 1080);
+        layout.outputs[0].x = 500;
+        layout.outputs[0].y = 40;
+        cap.apply_layout(&layout).unwrap();
+        let (x, y) = centre(form(1920, 1080).fields[0]);
+        click_at(&mut input, (x + 500, y + 40));
+        assert_eq!(s.lock().unwrap().focus(), Field::User);
+    }
+
+    #[test]
     fn the_capture_gives_a_frame_only_when_something_changed() {
         let s = state("alice");
-        let mut cap = GreeterCapture::new(s.clone(), 640, 480);
+        let mut cap = GreeterCapture::new(s.clone(), 640, 480, screen(640, 480));
         let first = cap.recv_latest(OutputId(0)).unwrap().expect("first frame");
         assert_eq!((first.width, first.height, first.stride), (640, 480, 2560));
         assert!(cap.recv_latest(OutputId(0)).unwrap().is_none());
@@ -720,7 +940,7 @@ mod tests {
 
     #[test]
     fn the_login_screen_has_a_pointer_given_once() {
-        let mut cap = GreeterCapture::new(state(""), 640, 480);
+        let mut cap = GreeterCapture::new(state(""), 640, 480, screen(640, 480));
         let Some(CursorUpdate::Shape(s)) = cap.take_cursor() else {
             panic!("a pointer shape");
         };
@@ -735,7 +955,7 @@ mod tests {
     #[test]
     fn a_new_layout_resizes_the_screens_and_draws_them_again() {
         let s = state("");
-        let mut cap = GreeterCapture::new(s, 640, 480);
+        let mut cap = GreeterCapture::new(s, 640, 480, screen(640, 480));
         cap.recv_latest(OutputId(0)).unwrap();
         cap.apply_layout(&Layout::side_by_side(2, 800, 600))
             .unwrap();
@@ -756,6 +976,7 @@ mod tests {
             s.clone(),
             wake.clone(),
             Box::new(move |u, p, l| log.lock().unwrap().push((u, p, l))),
+            screen(1280, 800),
         );
         input
             .set_keyboard_layout(&XkbLayout::new("fr", ""))
