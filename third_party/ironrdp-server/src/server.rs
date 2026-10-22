@@ -34,7 +34,7 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
@@ -112,6 +112,13 @@ pub trait ConnectionHandler: Send {
     ) -> PostConnectionAction {
         let _ = (peer, duration, error);
         PostConnectionAction::Continue
+    }
+
+    /// oxydesk patch: flag read while a connection is served. A connection that arrives while it is `true` replaces
+    /// the one being served (nobody is signed in on it: a client stuck at the handshake or at a login screen must not
+    /// keep the others out); while it is `false`, the new connection waits its turn.
+    fn replaceable(&self) -> Option<Arc<AtomicBool>> {
+        None
     }
 }
 
@@ -1057,14 +1064,19 @@ impl RdpServer {
                     debug!(?peer, "Received connection");
                     drop(ev_receiver);
 
-                    let accepted = self.connection_handler
-                        .as_mut()
-                        .is_none_or(|h| h.on_accept(peer));
+                    // oxydesk patch: a connection that replaced the previous one (or that waited behind a signed-in
+                    // client) is served right after it, in this same turn.
+                    let mut next = Some((stream, peer));
+                    while let Some((stream, peer)) = next.take() {
+                        let accepted = self.connection_handler
+                            .as_mut()
+                            .is_none_or(|h| h.on_accept(peer));
 
-                    if !accepted {
-                        debug!(?peer, "Connection rejected by handler");
-                        drop(stream);
-                    } else {
+                        if !accepted {
+                            debug!(?peer, "Connection rejected by handler");
+                            drop(stream);
+                            continue;
+                        }
                         // Frames and input are small, latency-bound writes: without this, Nagle waits for the client's
                         // delayed ACK (about 200 ms on Windows) between bursts of frames.
                         if let Err(error) = stream.set_nodelay(true) {
@@ -1076,11 +1088,31 @@ impl RdpServer {
                         // oxydesk patch: audio produced for the previous connection while it was hanging (up to the
                         // dead-peer timeout) must not be played to the next one.
                         self.drop_stale_waves().await;
+                        let replaceable = self.connection_handler.as_ref().and_then(|h| h.replaceable());
                         let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
+                        let mut replaced = false;
+                        let result = {
+                            let connection = self.run_connection(stream);
+                            tokio::pin!(connection);
+                            loop {
+                                tokio::select! {
+                                    result = &mut connection => break result,
+                                    Ok((waiting, waiting_peer)) = listener.accept(), if next.is_none() => {
+                                        debug!(peer = ?waiting_peer, "Received connection while serving another");
+                                        replaced = replaceable.as_ref().is_some_and(|f| f.load(Ordering::SeqCst));
+                                        next = Some((waiting, waiting_peer));
+                                        if replaced {
+                                            break Err(anyhow::anyhow!("replaced by a new connection"));
+                                        }
+                                    }
+                                }
+                            }
+                        };
                         let duration = started.elapsed();
 
-                        if let Err(ref error) = result {
+                        if replaced {
+                            info!(?peer, "Connection replaced by a new one: nobody was signed in");
+                        } else if let Err(ref error) = result {
                             error!(?error, "Connection error");
                         }
 
@@ -1094,7 +1126,7 @@ impl RdpServer {
                             );
                             if action == PostConnectionAction::Stop {
                                 debug!(?peer, "Handler requested stop after disconnect");
-                                break;
+                                return Ok(());
                             }
                         }
                     }

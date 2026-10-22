@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::ops::Not;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -120,6 +120,9 @@ impl AudioProvider for SlotAudio {
 struct LoginGuard {
     throttle: Arc<Mutex<oxydesk_core::LoginThrottle>>,
     peer: Arc<Mutex<Option<std::net::IpAddr>>>,
+    /// Nobody is signed in on the connection being served and no login is being checked: a new connection replaces it,
+    /// so that a client stuck at the handshake or at the login screen cannot keep the others out.
+    open: Arc<AtomicBool>,
 }
 
 impl LoginGuard {
@@ -127,7 +130,12 @@ impl LoginGuard {
         Self {
             throttle: Arc::new(Mutex::new(oxydesk_core::LoginThrottle::new(cfg))),
             peer: Arc::default(),
+            open: Arc::default(),
         }
+    }
+
+    fn set_open(&self, open: bool) {
+        self.open.store(open, Ordering::SeqCst);
     }
 
     fn peer(&self) -> Option<std::net::IpAddr> {
@@ -143,6 +151,7 @@ impl ironrdp_server::ConnectionHandler for GuardHandler {
     fn on_accept(&mut self, peer: std::net::SocketAddr) -> bool {
         let ip = peer.ip();
         *self.0.peer.lock().expect("peer mutex") = Some(ip);
+        self.0.set_open(true);
         let now = std::time::Instant::now();
         match self
             .0
@@ -157,6 +166,10 @@ impl ironrdp_server::ConnectionHandler for GuardHandler {
             }
             None => true,
         }
+    }
+
+    fn replaceable(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.0.open.clone())
     }
 
     fn on_disconnected(
@@ -196,6 +209,7 @@ impl BrokerValidator {
     }
 
     fn accept(&self, user: &str, ports: DesktopPorts) {
+        self.guard.set_open(false);
         self.slot.install(ports);
         *self.accepted.lock().expect("accepted mutex") = Some(user.to_owned());
     }
@@ -222,9 +236,13 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
         let broker = self.core.broker.clone();
         let outputs = self.client_outputs();
         let name = user.clone();
+        self.guard.set_open(false);
         let outcome = tokio::task::spawn_blocking(move || broker.attach(&name, outputs))
             .await
             .map_err(ironrdp_server::CredentialValidationError::new)?;
+        if outcome.is_err() {
+            self.guard.set_open(true);
+        }
         match outcome {
             Ok(ports) => {
                 tracing::info!(?ip, user = ?user, "automatic reconnection accepted");
@@ -275,9 +293,13 @@ impl ironrdp_server::CredentialValidator for BrokerValidator {
         let core = self.core.clone();
         let outputs = self.client_outputs();
         let name = user.clone();
+        self.guard.set_open(false);
         let outcome = tokio::task::spawn_blocking(move || core.attempt(ip, &name, &pass, outputs))
             .await
             .map_err(ironrdp_server::CredentialValidationError::new)?;
+        if !matches!(outcome, Attempt::Accepted(_)) {
+            self.guard.set_open(true);
+        }
         match outcome {
             Attempt::Accepted(ports) => {
                 self.accept(&user, ports);
@@ -388,18 +410,23 @@ impl BrokerValidator {
         let (core, slot, shared) = (self.core.clone(), self.slot.clone(), self.shared.clone());
         let reconnect = self.reconnect.clone();
         let screen = state.clone();
+        let guard = self.guard.clone();
         let submit: crate::greeter::Submit = Box::new(move |user, password, keyboard| {
-            let (core, slot, shared, screen, reconnect) = (
+            let (core, slot, shared, screen, reconnect, guard) = (
                 core.clone(),
                 slot.clone(),
                 shared.clone(),
                 screen.clone(),
                 reconnect.clone(),
+                guard.clone(),
             );
+            // The login is being checked: a new connection must not cut it short.
+            guard.set_open(false);
             let client_initial = client_initial.clone();
             let announced = announced.clone();
             std::thread::spawn(move || {
                 let failed = |message: &str| {
+                    guard.set_open(true);
                     screen.lock().expect("greeter mutex").login_failed(message);
                     shared.wake.notify();
                 };
@@ -1387,6 +1414,44 @@ mod reconnect_tests {
         // The login screen is the session for now; no cookie, the user is not known yet.
         assert!(r.validator.shared.ports.lock().unwrap().is_some());
         assert!(r.validator.reconnect_cookie().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_connection_can_be_replaced_until_somebody_is_signed_in() {
+        use ironrdp_server::{ConnectionHandler as _, CredentialValidator as _};
+        let mut r = rig();
+        let flag = r.handler.replaceable().expect("a flag");
+        let peer = std::net::SocketAddr::from(([10, 0, 0, 1], 5000));
+        assert!(r.handler.on_accept(peer));
+        // Handshake or login screen: a stuck client must not keep the others out.
+        assert!(flag.load(Ordering::SeqCst));
+        // A wrong password leaves it replaceable.
+        r.validator.validate(&creds("nope")).await.unwrap();
+        assert!(flag.load(Ordering::SeqCst));
+        // A good one does not: the session belongs to this client.
+        r.validator.validate(&creds("secret")).await.unwrap();
+        assert!(!flag.load(Ordering::SeqCst));
+        // The next connection starts open again.
+        assert!(r.handler.on_accept(peer));
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_session_resumed_by_cookie_is_not_replaceable() {
+        use ironrdp_server::{ConnectionHandler as _, CredentialValidator as _};
+        let r = rig();
+        let flag = r.handler.replaceable().expect("a flag");
+        r.validator.validate(&creds("secret")).await.unwrap();
+        let cookie = r.validator.reconnect_cookie().expect("a cookie");
+        let mut r = r;
+        let peer = std::net::SocketAddr::from(([10, 0, 0, 1], 5000));
+        assert!(r.handler.on_accept(peer));
+        assert!(flag.load(Ordering::SeqCst));
+        r.validator
+            .validate_reconnect(&client_cookie(&cookie))
+            .await
+            .unwrap();
+        assert!(!flag.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
