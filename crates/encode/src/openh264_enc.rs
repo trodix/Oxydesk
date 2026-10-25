@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::color;
 use openh264::encoder::{
     BitRate, Complexity, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
-    UsageType,
+    UsageType, VuiConfig,
 };
 use openh264::formats::YUVBuffer;
 use openh264::OpenH264API;
@@ -83,7 +83,10 @@ impl OpenH264Encoder {
             .max_frame_rate(FrameRate::from_hz(cfg.fps))
             .complexity(Complexity::Low)
             .skip_frames(true) // without it the codec cannot hold a bitrate; a skipped frame comes out empty
-            .intra_frame_period(period);
+            .intra_frame_period(period)
+            // The pictures are sRGB, BT.709 matrix, full range (see `color`): say so, clients with a hardware decoder
+            // otherwise guess limited range or BT.601.
+            .vui(VuiConfig::srgb());
         let inner = Encoder::with_api_config(api, config)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
         Ok(Self {

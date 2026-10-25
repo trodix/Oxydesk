@@ -143,7 +143,22 @@ pub(crate) fn sps_pps(p: &StreamParams) -> Vec<u8> {
         w.ue(0);
         w.ue(p.crop_bottom / 2);
     }
-    w.bit(false); // vui_parameters_present_flag
+    w.bit(true); // vui_parameters_present_flag
+    w.bit(false); // aspect_ratio_info_present_flag
+    w.bit(false); // overscan_info_present_flag
+    w.bit(true); // video_signal_type_present_flag
+    w.bits(5, 3); // video_format: unspecified
+    w.bit(true); // video_full_range_flag
+    w.bit(true); // colour_description_present_flag
+    w.bits(1, 8); // colour_primaries: BT.709
+    w.bits(13, 8); // transfer_characteristics: sRGB
+    w.bits(1, 8); // matrix_coefficients: BT.709
+    w.bit(false); // chroma_loc_info_present_flag
+    w.bit(false); // timing_info_present_flag
+    w.bit(false); // nal_hrd_parameters_present_flag
+    w.bit(false); // vcl_hrd_parameters_present_flag
+    w.bit(false); // pic_struct_present_flag
+    w.bit(false); // bitstream_restriction_flag
     w.trailing();
     let mut out = nal(3, 7, &w.into_bytes());
 
