@@ -429,6 +429,23 @@ try {
     Finish
   }
 
+  if ($p.local_files -eq '1') {
+    # Windows to Linux: a file put on the Windows clipboard is announced to the server; the host reads it on the
+    # Linux side meanwhile (the SHA-256 is on the serial port) and the connection stays open for 90 s.
+    $dir = 'C:\oxydesk\copy-local'
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $dir | Out-Null
+    $f = Join-Path $dir ('Windows ' + [char]0xE9 + 't' + [char]0xE9 + '.bin')
+    $bytes = New-Object byte[] 20000; (New-Object Random 42).NextBytes($bytes); [IO.File]::WriteAllBytes($f, $bytes)
+    $sc = New-Object System.Collections.Specialized.StringCollection; [void]$sc.Add($f)
+    [System.Windows.Forms.Clipboard]::SetFileDropList($sc)
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower()
+    Emit "STEP local-copy-set sha=$sha size=20000"
+    $null = Pump { $false } 90000
+    $ocx.Disconnect()
+    $null = Pump { $state.disconnected } 10000
+    Finish
+  }
+
   # Frames: the synthetic desktop draws a heartbeat block at (32,0) that toggles white/dark.
   $seen = @{}
   $null = Pump { $c = PixelAt 48 16; $seen[[string]($c.R -gt 150)] = $true; $seen.Count -ge 2 } 10000
