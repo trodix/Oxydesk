@@ -2,7 +2,7 @@
 # Builds the release binaries and one package: deb (Debian 13), rpm (Fedora / RHEL / Rocky) or tar (generic tar.gz).
 # Meant to run as root inside a clean container of the matching family (see .github/workflows/package.yml and ci/package-test.sh):
 #   deb: debian:trixie     rpm and tar: rockylinux:9 (oldest glibc supported: the result runs on Rocky 9/10 and recent Fedora)
-# usage: ci/package-build.sh deb|rpm|tar [out-dir]       env: SKIP_DEPS=1 (toolchain and libraries already installed)
+# usage: ci/package-build.sh deb|rpm|tar [out-dir]       env: SKIP_DEPS=1 (toolchain and libraries already installed), RPM_RELEASE=1.dev<sha> (rpm release, for a development build)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 FORMAT="${1:?usage: package-build.sh deb|rpm|tar [out-dir]}"
@@ -37,7 +37,7 @@ case "$FORMAT" in
     ;;
   rpm)
     command -v cargo-generate-rpm >/dev/null || cargo install cargo-generate-rpm --locked >/dev/null 2>&1
-    cargo generate-rpm -p bins/oxydesk -o "$OUT/"
+    cargo generate-rpm -p bins/oxydesk -o "$OUT/" ${RPM_RELEASE:+--set-metadata "release=\"$RPM_RELEASE\""}
     ;;
   tar)
     NAME="oxydesk-$VERSION-linux-$ARCH"
