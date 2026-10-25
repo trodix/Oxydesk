@@ -448,7 +448,14 @@ try {
 
   # Frames: the synthetic desktop draws a heartbeat block at (32,0) that toggles white/dark.
   $seen = @{}
-  $null = Pump { $c = PixelAt 48 16; $seen[[string]($c.R -gt 150)] = $true; $seen.Count -ge 2 } 10000
+  $lv = @{}
+  $null = Pump { $c = PixelAt 48 16; $seen[[string]($c.R -gt 150)] = $true; if ($c.R -gt 150) { $lv.on = $c } elseif ($lv.on) { $lv.off = $c }; $seen.Count -ge 2 -and $lv.off } 10000
+  # Colour fidelity: the block colours are exact in the source (white 255, dark 48, orange layout marker 255,128,0). A wrong YCbCr
+  # matrix or range (limited range read as full, BT.601 read as BT.709) shifts them well beyond the H.264 quantisation noise.
+  function Within($c, $r, $g, $b, $tol) { $c -and [math]::Abs($c.R - $r) -le $tol -and [math]::Abs($c.G - $g) -le $tol -and [math]::Abs($c.B - $b) -le $tol }
+  $on = $lv.on; $off = $lv.off
+  $okc = (Within $on 255 255 255 10) -and (Within $off 48 48 48 10)
+  Check 'color_fidelity' ([bool]$okc) "heartbeat on $($on.R),$($on.G),$($on.B) (expected 255,255,255), off $($off.R),$($off.G),$($off.B) (48,48,48)"
   $c = PixelAt 16 16
   $shot = 'C:\oxydesk\screen.png'
   $bmp = New-Object System.Drawing.Bitmap $w, $h
@@ -460,6 +467,7 @@ try {
     function Orange($c) { [math]::Abs($c.R - 255) -lt 70 -and [math]::Abs($c.G - 128) -lt 70 -and $c.B -lt 70 }  # H.264 shifts colours
     $null = Pump { Orange (PixelAt 8 8) } 10000
     $m = PixelAt 8 8
+    Check 'color_fidelity_chroma' (Within $m 255 128 0 24) "marker pixel $($m.R),$($m.G),$($m.B), expected 255,128,0 within 24"
     Check 'keyboard_layout' (Orange $m) "klid $($p.klid): marker pixel $($m.R),$($m.G),$($m.B), expected 255,128,0"
   }
   if ($p.reconnect -ne '1') { Check 'heartbeat' ($seen.Count -ge 2) "states seen: $($seen.Keys -join ',')" }

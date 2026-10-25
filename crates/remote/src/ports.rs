@@ -122,6 +122,13 @@ impl FrameEncoder for PassthroughEncoder {
         self.link.request_keyframe(self.output);
     }
 
+    fn set_color_depth(&mut self, depth: oxydesk_core::ColorDepth) {
+        // One message for all outputs, like the bitrate.
+        if self.output.0 == 0 {
+            self.link.set_color_depth(depth.bits());
+        }
+    }
+
     fn set_bitrate(&mut self, bitrate_bps: u32) {
         // One message for all outputs: the agent applies it to each of its encoders.
         if self.output.0 == 0 {
@@ -363,6 +370,34 @@ mod tests {
             enc.encode(&frame(FrameData::Shm(vec![0; 64 * 256]))),
             Err(EncodeError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn the_colour_depth_is_sent_once_for_all_outputs_and_only_when_it_changes() {
+        let (link, mut agent) = pair();
+        let mut first = PassthroughEncoder {
+            link: link.clone(),
+            output: OutputId(0),
+        };
+        let mut second = PassthroughEncoder {
+            link,
+            output: OutputId(1),
+        };
+        first.set_color_depth(oxydesk_core::ColorDepth::TrueColor); // what the agent starts with: nothing to say
+        second.set_color_depth(oxydesk_core::ColorDepth::Rgb565); // only the first output speaks for all
+        first.set_color_depth(oxydesk_core::ColorDepth::Rgb565);
+        first.set_color_depth(oxydesk_core::ColorDepth::Rgb565); // unchanged: not sent again
+        first.request_keyframe();
+        let a = received(&mut agent);
+        let b = received(&mut agent);
+        assert!(
+            format!("{a:?}").contains("SetColorDepth") && format!("{a:?}").contains("16"),
+            "got {a:?}"
+        );
+        assert!(
+            format!("{b:?}").to_lowercase().contains("keyframe"),
+            "got {b:?}"
+        );
     }
 
     #[test]

@@ -691,6 +691,11 @@ impl RdpServerInputHandler for Input {
             tracing::warn!("keyboard layout: {e}");
         }
     }
+    fn color_depth(&mut self, bits: u8) {
+        tracing::info!("colour depth chosen by the client: {bits} bits");
+        self.shared.color_depth.store(bits, Ordering::SeqCst);
+        self.shared.wake.notify();
+    }
     fn mouse(&mut self, event: MouseEvent) {
         use oxydesk_core::ports::PointerButton as B;
         match event {
@@ -1855,6 +1860,17 @@ mod forwarding_tests {
             format!("move {},{}", expected[1].0, expected[1].1)
         );
         assert_ne!(events[1], events[2]);
+    }
+
+    #[test]
+    fn the_colour_depth_of_the_client_is_kept_for_the_pump() {
+        let shared = Arc::new(Shared::default());
+        let (mut input, _rec) = input(shared.clone());
+        assert_eq!(shared.color_depth.load(Ordering::SeqCst), 0);
+        input.color_depth(16);
+        assert_eq!(shared.color_depth.load(Ordering::SeqCst), 16);
+        input.color_depth(32);
+        assert_eq!(shared.color_depth.load(Ordering::SeqCst), 32);
     }
 
     #[test]

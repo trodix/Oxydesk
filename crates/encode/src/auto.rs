@@ -8,6 +8,7 @@ use std::str::FromStr;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::Frame;
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
+use oxydesk_core::ColorDepth;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EncoderChoice {
@@ -52,6 +53,7 @@ pub struct AutoEncoder {
     name: &'static str,
     keyframe_pending: bool,
     size: (u32, u32),
+    depth: ColorDepth,
 }
 
 impl AutoEncoder {
@@ -64,6 +66,7 @@ impl AutoEncoder {
             name: "none",
             keyframe_pending: false,
             size: (0, 0),
+            depth: ColorDepth::default(),
         }
     }
 
@@ -119,6 +122,8 @@ impl AutoEncoder {
                 Err(_) => (self.software()?, "openh264"),
             },
         };
+        let mut enc = enc;
+        enc.set_color_depth(self.depth);
         self.inner = Some(enc);
         self.name = name;
         self.size = (frame.width, frame.height);
@@ -143,6 +148,14 @@ impl FrameEncoder for AutoEncoder {
         match self.inner.as_mut() {
             Some(e) => e.request_keyframe(),
             None => self.keyframe_pending = true,
+        }
+    }
+
+    fn set_color_depth(&mut self, depth: ColorDepth) {
+        // Remembered for an encoder created later (resize).
+        self.depth = depth;
+        if let Some(e) = self.inner.as_mut() {
+            e.set_color_depth(depth);
         }
     }
 

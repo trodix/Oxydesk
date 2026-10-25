@@ -96,6 +96,8 @@ pub trait FrameEncoder: Send {
     fn request_keyframe(&mut self) {}
     /// New target bitrate of the stream (the link carries less or more than before). Ignored by default.
     fn set_bitrate(&mut self, _bitrate_bps: u32) {}
+    /// Colour depth chosen by the client: the pictures are reduced to it before encoding. Ignored by default.
+    fn set_color_depth(&mut self, _depth: crate::ColorDepth) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

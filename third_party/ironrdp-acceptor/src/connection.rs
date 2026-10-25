@@ -32,6 +32,7 @@ pub struct Acceptor {
     message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
     keyboard_layout: u32,
+    color_depth: u8,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -106,6 +107,9 @@ pub struct AcceptorResult {
     /// announce one. Servers can use it to pick a server-side keyboard layout
     /// matching the client without changing any local input state.
     pub keyboard_layout: u32,
+    /// oxydesk patch: colour depth chosen by the client in its Client Core Data, in bits per pixel (4, 8, 15, 16, 24 or
+    /// 32; `32` until the client announced one).
+    pub color_depth: u8,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -135,6 +139,7 @@ impl Acceptor {
             message_channel_id: None,
             desktop_size,
             keyboard_layout: 0,
+            color_depth: 32,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -222,6 +227,7 @@ impl Acceptor {
             message_channel_id: consumed.message_channel_id,
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
+            color_depth: consumed.color_depth,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -286,6 +292,7 @@ impl Acceptor {
                 io_channel_id: self.io_channel_id,
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
+                color_depth: self.color_depth,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
                 reconnect_cookie: self.received_reconnect_cookie.take(),
@@ -545,6 +552,7 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
+                self.color_depth = client_color_depth_bits(&gcc_blocks.core);
                 if let Some(policy) = &self.monitor_policy {
                     // oxydesk patch: the server may adopt the client's monitors (empty slice when it sent none).
                     let client: &[gcc::Monitor] = gcc_blocks.monitor.as_ref().map_or(&[], |m| m.monitors.as_slice());
@@ -979,5 +987,18 @@ fn create_gcc_blocks(
             mcs_message_channel_id: id,
         }),
         multi_transport_channel: None,
+    }
+}
+
+/// oxydesk patch: the colour depth the user chose in the client (mstsc "Colors"), in bits per pixel.
+fn client_color_depth_bits(core: &gcc::ClientCoreData) -> u8 {
+    use gcc::ClientColorDepth as D;
+    match core.client_color_depth() {
+        D::Bpp4 => 4,
+        D::Bpp8 => 8,
+        D::Rgb555Bpp16 => 15,
+        D::Rgb565Bpp16 => 16,
+        D::Bpp24 => 24,
+        D::Bpp32 => 32,
     }
 }

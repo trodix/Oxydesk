@@ -41,6 +41,8 @@ pub struct Shared {
     /// Number of client loops started (`RdpServerDisplay::updates` calls): a resize is complete,
     /// client side, when this counter moves past the value observed when it was requested.
     pub client_loops: std::sync::atomic::AtomicU64,
+    /// Colour depth chosen by the client, in bits per pixel (`0`: none announced yet, true colour).
+    pub color_depth: std::sync::atomic::AtomicU8,
 }
 
 pub struct PumpPorts {
@@ -114,6 +116,7 @@ fn send_bitmaps(
     layout: &Layout,
     repeat: &mut bool,
     warned_encoded: &mut bool,
+    depth: oxydesk_core::ColorDepth,
 ) -> bool {
     use std::num::{NonZeroU16, NonZeroUsize};
     for (i, out) in outputs.iter_mut().enumerate() {
@@ -132,7 +135,10 @@ fn send_bitmaps(
             continue;
         };
         let pixels = match crate::raw::to_bgra(frame) {
-            Ok(Some(p)) => p,
+            Ok(Some(mut p)) => {
+                depth.reduce_bgra(&mut p);
+                p
+            }
             Ok(None) => {
                 if !std::mem::replace(warned_encoded, true) {
                     tracing::warn!(
@@ -451,6 +457,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     (loops_seen, connected_at) = (loops, Instant::now());
                     legacy_repeat = true;
                 }
+                // The depth the user chose in the client: the encoders (the agent's too) and the bitmap path reduce to it.
+                let depth = oxydesk_core::ColorDepth::from_bits(shared.color_depth.load(Ordering::SeqCst));
+                for o in &mut outputs {
+                    o.encoder.set_color_depth(depth);
+                }
                 let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
                     continue;
                 };
@@ -470,6 +481,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                 &layout,
                                 &mut legacy_repeat,
                                 &mut warned_encoded,
+                                depth,
                             ) {
                                 capture = None;
                                 outputs.clear();
@@ -1040,6 +1052,22 @@ mod tests {
         state: &mut [OutputState],
         repeat: bool,
     ) -> Run {
+        send_at(
+            oxydesk_core::ColorDepth::TrueColor,
+            script,
+            layout,
+            state,
+            repeat,
+        )
+    }
+
+    fn send_at(
+        depth: oxydesk_core::ColorDepth,
+        script: Vec<Result<Option<Frame>, CaptureError>>,
+        layout: &Layout,
+        state: &mut [OutputState],
+        repeat: bool,
+    ) -> Run {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut repeat, mut warned) = (repeat, false);
         let alive = send_bitmaps(
@@ -1049,6 +1077,7 @@ mod tests {
             layout,
             &mut repeat,
             &mut warned,
+            depth,
         );
         let mut sent = Vec::new();
         while let Ok(u) = rx.try_recv() {
@@ -1090,6 +1119,24 @@ mod tests {
             })
             .collect();
         assert_eq!(positions, vec![(0, 0, 4, 2), (4, 0, 4, 2)]);
+    }
+
+    #[test]
+    fn the_bitmaps_are_reduced_to_the_depth_chosen_by_the_client() {
+        let layout = Layout::side_by_side(1, 1, 1);
+        let mut state = outputs(1);
+        let f = frame(1, 1, FrameData::Shm(vec![100, 100, 100, 40]));
+        let run = send_at(
+            oxydesk_core::ColorDepth::Rgb555,
+            vec![Ok(Some(f))],
+            &layout,
+            &mut state,
+            false,
+        );
+        match &run.sent[0] {
+            ironrdp_server::DisplayUpdate::Bitmap(b) => assert_eq!(&b.data[..], &[99, 99, 99, 40]),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

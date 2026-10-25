@@ -1,6 +1,7 @@
 //! Server domain and ports. No heavy technical dependency here:
 //! adapters (capture, encoding, RDP, ...) implement these traits.
 
+pub mod color_depth;
 pub mod config;
 pub mod cursor;
 pub mod dmabuf;
@@ -20,6 +21,7 @@ pub mod scale;
 pub mod throttle;
 pub mod wake;
 
+pub use color_depth::ColorDepth;
 pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
 pub use drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive};
 pub use error::{

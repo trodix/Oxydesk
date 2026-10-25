@@ -77,6 +77,10 @@ pub trait RdpServerInputHandler: Send {
     /// oxydesk patch: Windows keyboard layout identifier announced by the client (KLID, `0` when none),
     /// called at each (re)connection so that the server can adopt a matching layout.
     fn keyboard_layout(&mut self, _klid: u32) {}
+
+    /// oxydesk patch: colour depth chosen by the client, in bits per pixel (4, 8, 15, 16, 24 or 32), called at each
+    /// (re)connection.
+    fn color_depth(&mut self, _bits: u8) {}
 }
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {

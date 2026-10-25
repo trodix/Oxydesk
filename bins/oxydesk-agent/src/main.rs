@@ -12,7 +12,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,7 @@ use oxydesk_core::layout::OutputId;
 use oxydesk_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
 };
-use oxydesk_core::{FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
+use oxydesk_core::{ColorDepth, FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
 use oxydesk_encode::{AutoEncoder, EncoderChoice};
 use settings::{arg, AudioMode, Settings};
 
@@ -60,6 +60,8 @@ struct Desktop {
     raw: AtomicBool,
     /// Target bitrate of each encoder, set by the server from what the client's link carries.
     bitrate: AtomicU32,
+    /// Colour depth chosen by the client, in bits per pixel (`32`: true colour).
+    color_depth: AtomicU8,
     /// Held by the video loop during a round and by a layout change: after the answer, no frame of the old
     /// layout is sent any more.
     round: Mutex<()>,
@@ -106,6 +108,7 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         resized: AtomicBool::new(false),
         raw: AtomicBool::new(false),
         bitrate: AtomicU32::new(DEFAULT_BITRATE_BPS),
+        color_depth: AtomicU8::new(32),
         round: Mutex::new(()),
     };
     match cfg.session.as_str() {
@@ -305,6 +308,8 @@ fn video_loop(
     let mut next = Instant::now();
     let mut first = true;
     let mut applied_bitrate = d.bitrate.load(Ordering::Relaxed);
+    let mut applied_depth = ColorDepth::default();
+    let mut applied_outputs = 0;
     let mut seen = 0u64;
     while !stop.load(Ordering::Relaxed) {
         if d.event {
@@ -349,6 +354,12 @@ fn video_loop(
             keyframes[encoders.len() - 1].store(true, Ordering::Relaxed);
         }
         encoders.truncate(outputs);
+        let depth = ColorDepth::from_bits(d.color_depth.load(Ordering::Relaxed));
+        if depth != applied_depth || encoders.len() > applied_outputs {
+            applied_depth = depth;
+            encoders.iter_mut().for_each(|e| e.set_color_depth(depth));
+        }
+        applied_outputs = encoders.len();
         let bitrate = d.bitrate.load(Ordering::Relaxed);
         if bitrate != applied_bitrate {
             applied_bitrate = bitrate;
@@ -524,6 +535,7 @@ fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
     // The agent outlives the connections: every server (before the Hello, which a server may answer at once) starts with the H.264 stream.
     d.raw.store(false, Ordering::SeqCst);
     d.bitrate.store(DEFAULT_BITRATE_BPS, Ordering::SeqCst);
+    d.color_depth.store(32, Ordering::SeqCst);
     if !send(
         &writer,
         &FromAgent::Hello {
@@ -719,6 +731,9 @@ fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
             }
             ToAgent::SetBitrate { bitrate_bps } => {
                 d.bitrate.store(bitrate_bps, Ordering::Relaxed);
+            }
+            ToAgent::SetColorDepth { bits } => {
+                d.color_depth.store(bits, Ordering::Relaxed);
             }
             ToAgent::Hold { output, held } => {
                 if let Some(h) = holds.get(output as usize) {

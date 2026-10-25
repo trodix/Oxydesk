@@ -6,6 +6,7 @@ mod openh264_enc;
 #[cfg(feature = "openh264")]
 pub use openh264_enc::{OpenH264Config, OpenH264Encoder};
 
+mod color;
 mod h264_headers;
 
 #[cfg(any(feature = "vaapi", feature = "openh264"))]

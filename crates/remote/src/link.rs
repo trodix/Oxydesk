@@ -58,6 +58,8 @@ pub struct AgentLink {
     pub(crate) printers: crate::printers::Printers,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<oxydesk_core::CursorUpdate>>,
+    /// Colour depth last sent to the agent, in bits per pixel (`32`: true colour, what an agent starts with).
+    color_depth: std::sync::atomic::AtomicU8,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
     /// Answer of the agent to the last `Resize` (None while pending).
@@ -127,6 +129,7 @@ impl AgentLink {
             drives: Default::default(),
             printers: Default::default(),
             cursor: Mutex::new(None),
+            color_depth: std::sync::atomic::AtomicU8::new(32),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
             resize_reply: Mutex::new(None),
@@ -429,6 +432,14 @@ impl AgentLink {
             let mut mb = slot.lock().expect("mailbox mutex");
             mb.queue.clear();
             mb.wait_key = !raw;
+        }
+    }
+
+    /// Tells the agent the colour depth chosen by the client (only a change is sent).
+    pub fn set_color_depth(&self, bits: u8) {
+        use std::sync::atomic::Ordering;
+        if self.color_depth.swap(bits, Ordering::SeqCst) != bits {
+            self.send(&ToAgent::SetColorDepth { bits });
         }
     }
 

@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
+use crate::color;
 use openh264::encoder::{
     BitRate, Complexity, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
     UsageType,
 };
-use openh264::formats::{RgbaSliceU8, YUVBuffer};
+use openh264::formats::YUVBuffer;
 use openh264::OpenH264API;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
+use oxydesk_core::ColorDepth;
 
 #[derive(Debug, Clone)]
 pub struct OpenH264Config {
@@ -58,7 +60,8 @@ fn locate(cfg: &OpenH264Config) -> Result<PathBuf, EncodeError> {
 /// Software H.264 encoder, Annex-B stream, no B-frames, low latency.
 pub struct OpenH264Encoder {
     inner: Encoder,
-    scratch: Vec<u8>,
+    yuv: Vec<u8>,
+    depth: ColorDepth,
 }
 
 impl OpenH264Encoder {
@@ -85,7 +88,8 @@ impl OpenH264Encoder {
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
         Ok(Self {
             inner,
-            scratch: Vec::new(),
+            yuv: Vec::new(),
+            depth: ColorDepth::default(),
         })
     }
 
@@ -97,6 +101,10 @@ impl OpenH264Encoder {
 impl FrameEncoder for OpenH264Encoder {
     fn request_keyframe(&mut self) {
         self.force_keyframe();
+    }
+
+    fn set_color_depth(&mut self, depth: ColorDepth) {
+        self.depth = depth;
     }
 
     fn set_bitrate(&mut self, bitrate_bps: u32) {
@@ -137,33 +145,30 @@ impl FrameEncoder for OpenH264Encoder {
             }
         };
         let (w, h) = (frame.width as usize, frame.height as usize);
-        let compact = frame.format == PixelFormat::Rgba8 && frame.stride as usize == w * 4;
-        let rgba = if compact {
-            RgbaSliceU8::new(data, (w, h))
-        } else {
-            // BGRA and/or non-compact stride (PipeWire): normalization to compact RGBA.
-            let stride = frame.stride as usize;
-            if data.len() < stride * h || stride < w * 4 {
-                return Err(EncodeError::Unsupported(
-                    "buffer too short for stride/height".into(),
-                ));
-            }
-            self.scratch.clear();
-            self.scratch.reserve(w * h * 4);
-            for row in data.chunks_exact(stride).take(h) {
-                #[allow(clippy::chunks_exact_to_as_chunks)] // `as_chunks` needs a newer MSRV
-                for px in row[..w * 4].chunks_exact(4) {
-                    match frame.format {
-                        PixelFormat::Bgra8 => {
-                            self.scratch.extend_from_slice(&[px[2], px[1], px[0], 255])
-                        }
-                        PixelFormat::Rgba8 => self.scratch.extend_from_slice(px),
-                    }
-                }
-            }
-            RgbaSliceU8::new(&self.scratch, (w, h))
-        };
-        let yuv = YUVBuffer::from_rgba8_source(rgba);
+        let stride = frame.stride as usize;
+        if data.len() < stride * h || stride < w * 4 {
+            return Err(EncodeError::Unsupported(
+                "buffer too short for stride/height".into(),
+            ));
+        }
+        let bgra = frame.format == PixelFormat::Bgra8;
+        let depth = self.depth;
+        self.yuv.resize(w * h * 3 / 2, 0);
+        color::fill_i420(
+            |x, y| {
+                let p = &data[y * stride + x * 4..][..3];
+                let (r, g, b) = if bgra {
+                    (i32::from(p[2]), i32::from(p[1]), i32::from(p[0]))
+                } else {
+                    (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]))
+                };
+                depth.quantize(r, g, b)
+            },
+            w,
+            h,
+            &mut self.yuv,
+        );
+        let yuv = YUVBuffer::from_vec(std::mem::take(&mut self.yuv), w, h);
         let stream = self
             .inner
             .encode(&yuv)

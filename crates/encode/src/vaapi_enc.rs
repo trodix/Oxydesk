@@ -2,16 +2,17 @@
 //!
 //! One slice per frame, one reference frame (the previous reconstruction), CBR rate control.
 //! SPS/PPS and slice headers are written by `h264_headers` and passed as packed headers (required by radeonsi). The BGRA/RGBA -> NV12 conversion runs on
-//! the CPU (BT.601 limited range, same matrix as the software backend) and the NV12 image is
+//! the CPU (BT.709 full range, same matrix as the software backend, see `color`) and the NV12 image is
 //! uploaded to a VA surface.
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::h264_headers;
+use crate::{color, h264_headers};
 use cros_libva as va;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
+use oxydesk_core::ColorDepth;
 use va::{
     BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter,
     EncMiscParameterFrameRate, EncMiscParameterHRD, EncMiscParameterRateControl,
@@ -70,6 +71,8 @@ pub struct VaapiEncoder {
     rc_dirty: bool,
     fps: u32,
     force_idr: bool,
+    /// Depth chosen by the client; a reduced one makes the CPU convert the frames (the GPU path cannot reduce the colours).
+    depth: ColorDepth,
     /// Index in `recon` of the last reconstruction, valid when `frame_num > 0` or after an IDR.
     last_recon: usize,
     frame_num: u32,
@@ -230,6 +233,7 @@ impl VaapiEncoder {
             rc_dirty: false,
             fps: cfg.fps.round().max(1.0) as u32,
             force_idr: true,
+            depth: ColorDepth::default(),
             last_recon: 1,
             frame_num: 0,
             idr_pic_id: 0,
@@ -261,13 +265,14 @@ impl VaapiEncoder {
         }
         let (aw, ah) = (self.aligned_w as usize, self.aligned_h as usize);
         let bgra = frame.format == PixelFormat::Bgra8;
+        let depth = self.depth;
         let px = |x: usize, y: usize| -> (i32, i32, i32) {
             let o = y.min(h - 1) * stride + x.min(w - 1) * 4;
             let p = &data[o..o + 3];
             if bgra {
-                (p[2] as i32, p[1] as i32, p[0] as i32)
+                depth.quantize(p[2] as i32, p[1] as i32, p[0] as i32)
             } else {
-                (p[0] as i32, p[1] as i32, p[2] as i32)
+                depth.quantize(p[0] as i32, p[1] as i32, p[2] as i32)
             }
         };
         self.nv12.resize(aw * ah * 3 / 2, 0);
@@ -276,7 +281,7 @@ impl VaapiEncoder {
             let row = &mut y_plane[y * aw..(y + 1) * aw];
             for (x, out) in row.iter_mut().enumerate() {
                 let (r, g, b) = px(x, y);
-                *out = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
+                *out = color::luma(r, g, b);
             }
         }
         for cy in 0..ah / 2 {
@@ -288,10 +293,10 @@ impl VaapiEncoder {
                     g += pg;
                     b += pb;
                 }
-                let (r, g, b) = (r / 4, g / 4, b / 4);
+                let (cb, cr) = color::chroma((r + 2) / 4, (g + 2) / 4, (b + 2) / 4);
                 let o = cy * aw + cx * 2;
-                uv_plane[o] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
-                uv_plane[o + 1] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
+                uv_plane[o] = cb;
+                uv_plane[o + 1] = cr;
             }
         }
         Ok(())
@@ -513,11 +518,11 @@ impl VaapiEncoder {
         let mut params = va::VAProcPipelineParameterBuffer::default();
         params.surface = source.id();
         params.surface_region = &rect;
-        params.surface_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT601;
+        params.surface_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT709;
         params.output_region = &rect;
-        params.output_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT601;
+        params.output_color_standard = va::_VAProcColorStandardType_VAProcColorStandardBT709;
         params.input_color_properties.color_range = va::VA_SOURCE_RANGE_FULL as u8;
-        params.output_color_properties.color_range = va::VA_SOURCE_RANGE_REDUCED as u8;
+        params.output_color_properties.color_range = va::VA_SOURCE_RANGE_FULL as u8;
 
         let mut pic = Picture::new(0, Rc::clone(&context), output);
         pic.add_buffer(
@@ -775,6 +780,10 @@ impl FrameEncoder for VaapiEncoder {
         self.force_idr = true;
     }
 
+    fn set_color_depth(&mut self, depth: ColorDepth) {
+        self.depth = depth;
+    }
+
     fn set_bitrate(&mut self, bitrate_bps: u32) {
         if bitrate_bps != self.bitrate_bps {
             self.bitrate_bps = bitrate_bps;
@@ -789,7 +798,7 @@ impl FrameEncoder for VaapiEncoder {
                 None
             }
             FrameData::DmaBuf(dma) => {
-                let gpu = if self.vpp_failed {
+                let gpu = if self.vpp_failed || self.depth.is_reduced() {
                     None
                 } else {
                     self.convert_gpu(frame, dma)
