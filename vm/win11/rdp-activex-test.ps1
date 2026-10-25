@@ -395,6 +395,40 @@ try {
   Check 'connect' ($ok -and $state.connected) ("connected=$($state.connected) disconnectReason=$($state.reason)")
   if (-not $state.connected) { Finish }
 
+  if ($p.remote_files -eq '1') {
+    # Files copied in the remote session by a file manager (the host runs the copy once it reads "remote-copy-ready" on the
+    # serial port): the clipboard must announce them, and Ctrl+V in an Explorer window must paste the file intact.
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $dest = 'C:\oxydesk\paste-remote'
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $dest | Out-Null
+    $seq = [Win32Clip]::GetClipboardSequenceNumber()
+    Emit 'STEP remote-copy-ready'
+    if ($p.remote_keys -eq '1') {
+      # The host opens the file manager in the remote session meanwhile; Ctrl+C then goes through the keyboard of the control.
+      $null = Pump { $false } 25000
+      $form.Activate(); $null = $host_.Focus()
+      [System.Windows.Forms.SendKeys]::SendWait('^c')
+      Emit 'STEP ctrl-c sent'
+    }
+    $announced = Pump { [Win32Clip]::GetClipboardSequenceNumber() -ne $seq } 120000
+    Check 'remote_copy_announced' $announced "clipboard sequence changed=$announced"
+    if ($announced) {
+      Start-Process explorer.exe -ArgumentList $dest
+      $null = Pump { $false } 5000
+      $activated = $true
+      try { [Microsoft.VisualBasic.Interaction]::AppActivate('paste-remote') } catch { $activated = $false }
+      $null = Pump { $false } 1000
+      [System.Windows.Forms.SendKeys]::SendWait('^v')
+      $target = Join-Path $dest $p.remote_name
+      $null = Pump { (Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target).Length -eq [int64]$p.remote_size } 30000
+      $size = if (Test-Path -LiteralPath $target) { (Get-Item -LiteralPath $target).Length } else { -1 }
+      Check 'remote_files_paste' ($size -eq [int64]$p.remote_size) "explorer activated=$activated, $($p.remote_name): $size bytes, expected $($p.remote_size)"
+    }
+    $ocx.Disconnect()
+    $null = Pump { $state.disconnected } 10000
+    Finish
+  }
+
   # Frames: the synthetic desktop draws a heartbeat block at (32,0) that toggles white/dark.
   $seen = @{}
   $null = Pump { $c = PixelAt 48 16; $seen[[string]($c.R -gt 150)] = $true; $seen.Count -ge 2 } 10000
