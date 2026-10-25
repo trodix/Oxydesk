@@ -24,7 +24,9 @@ use oxydesk_core::layout::OutputId;
 use oxydesk_core::ports::{
     AudioParams, AudioProvider, CaptureSource, ClipboardBackend, FrameEncoder, InputSink,
 };
-use oxydesk_core::{ColorDepth, FileExchange, RangeRequest, RangeSender, DEFAULT_BITRATE_BPS};
+use oxydesk_core::{
+    ColorDepth, FileExchange, RangeRequest, RangeSender, Transfer, DEFAULT_BITRATE_BPS,
+};
 use oxydesk_encode::{AutoEncoder, EncoderChoice};
 use settings::{arg, AudioMode, Settings};
 
@@ -48,6 +50,8 @@ struct Desktop {
     height: u32,
     fps: f32,
     encoder: EncoderChoice,
+    /// Transfer function of the captures: KWin encodes them in gamma 2.2 (`OXYDESK_SOURCE_TRANSFER` overrides it).
+    transfer: Transfer,
     /// Wake-up by the capture (`event`) or fixed rate of `poll_ms` (or 1/fps when absent).
     event: bool,
     poll_ms: Option<f32>,
@@ -101,6 +105,10 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
         height,
         fps: cfg.fps,
         encoder: cfg.encoder,
+        transfer: std::env::var("OXYDESK_SOURCE_TRANSFER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(Transfer::Gamma22),
         event: cfg.event,
         poll_ms: cfg.poll_ms,
         min_interval_ms: cfg.min_interval_ms,
@@ -346,11 +354,9 @@ fn video_loop(
         let outputs = d.outputs.load(Ordering::SeqCst) as usize;
         // Encoders follow the number of outputs (a new one starts with a keyframe).
         while encoders.len() < outputs {
-            encoders.push(Box::new(AutoEncoder::new(
-                d.encoder,
-                fps,
-                d.bitrate.load(Ordering::Relaxed),
-            )));
+            let mut enc = AutoEncoder::new(d.encoder, fps, d.bitrate.load(Ordering::Relaxed));
+            enc.set_source_transfer(d.transfer);
+            encoders.push(Box::new(enc));
             keyframes[encoders.len() - 1].store(true, Ordering::Relaxed);
         }
         encoders.truncate(outputs);

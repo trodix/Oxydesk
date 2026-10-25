@@ -10,7 +10,7 @@ use openh264::OpenH264API;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
-use oxydesk_core::ColorDepth;
+use oxydesk_core::{ColorDepth, Transfer};
 
 #[derive(Debug, Clone)]
 pub struct OpenH264Config {
@@ -62,6 +62,7 @@ pub struct OpenH264Encoder {
     inner: Encoder,
     yuv: Vec<u8>,
     depth: ColorDepth,
+    transfer: Transfer,
 }
 
 impl OpenH264Encoder {
@@ -93,6 +94,7 @@ impl OpenH264Encoder {
             inner,
             yuv: Vec::new(),
             depth: ColorDepth::default(),
+            transfer: Transfer::default(),
         })
     }
 
@@ -104,6 +106,10 @@ impl OpenH264Encoder {
 impl FrameEncoder for OpenH264Encoder {
     fn request_keyframe(&mut self) {
         self.force_keyframe();
+    }
+
+    fn set_source_transfer(&mut self, transfer: Transfer) {
+        self.transfer = transfer;
     }
 
     fn set_color_depth(&mut self, depth: ColorDepth) {
@@ -156,6 +162,7 @@ impl FrameEncoder for OpenH264Encoder {
         }
         let bgra = frame.format == PixelFormat::Bgra8;
         let depth = self.depth;
+        let lut = self.transfer.table();
         self.yuv.resize(w * h * 3 / 2, 0);
         color::fill_i420(
             |x, y| {
@@ -165,7 +172,11 @@ impl FrameEncoder for OpenH264Encoder {
                 } else {
                     (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]))
                 };
-                depth.quantize(r, g, b)
+                depth.quantize(
+                    i32::from(lut[r as usize]),
+                    i32::from(lut[g as usize]),
+                    i32::from(lut[b as usize]),
+                )
             },
             w,
             h,

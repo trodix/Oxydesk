@@ -8,7 +8,7 @@ use openh264::OpenH264API;
 use oxydesk_core::frame::{Frame, FrameData, PixelFormat};
 use oxydesk_core::layout::OutputId;
 use oxydesk_core::ports::FrameEncoder;
-use oxydesk_core::ColorDepth;
+use oxydesk_core::{ColorDepth, Transfer};
 use oxydesk_encode::{OpenH264Config, OpenH264Encoder};
 
 const W: usize = 256;
@@ -49,6 +49,10 @@ fn frame(px: impl Fn(usize) -> [u8; 3]) -> Frame {
 
 /// Luma of the first row of the decoded picture.
 fn decode_luma(depth: ColorDepth, frame: &Frame) -> Option<Vec<u8>> {
+    decode_luma_from(depth, Transfer::Srgb, frame)
+}
+
+fn decode_luma_from(depth: ColorDepth, transfer: Transfer, frame: &Frame) -> Option<Vec<u8>> {
     let mut dec = decoder()?;
     let mut enc = OpenH264Encoder::new(&OpenH264Config {
         bitrate_bps: 50_000_000,
@@ -56,6 +60,7 @@ fn decode_luma(depth: ColorDepth, frame: &Frame) -> Option<Vec<u8>> {
     })
     .ok()?;
     enc.set_color_depth(depth);
+    enc.set_source_transfer(transfer);
     let yuv = dec.decode(&enc.encode(frame).ok()?.data).ok()??;
     let (y, _, _) = (yuv.y(), yuv.u(), yuv.v());
     Some(y[..W].to_vec())
@@ -96,4 +101,19 @@ fn a_reduced_depth_flattens_a_gradient() {
     // 256 grey levels at 24 bits (a few merge in the lossy coding), at most 8 red levels at 8 bits.
     assert!(distinct(&full) > 100, "true colour: {}", distinct(&full));
     assert!(distinct(&reduced) <= 16, "8 bits: {}", distinct(&reduced));
+}
+
+#[test]
+fn a_gamma_22_capture_is_brought_back_to_srgb() {
+    // A GitHub dark page (13,17,23 once drawn) is captured by KWin as 21,24,29.
+    let f = frame(|_| [21, 24, 29]);
+    let Some(raw) = decode_luma_from(ColorDepth::TrueColor, Transfer::Srgb, &f) else {
+        eprintln!("libopenh264 missing: test skipped");
+        return;
+    };
+    let fixed =
+        decode_luma_from(ColorDepth::TrueColor, Transfer::Gamma22, &f).expect("same library");
+    // Luma of (13,17,23) is 17, of (21,24,29) is 24.
+    assert!((23..=25).contains(&raw[8]), "untouched: {}", raw[8]);
+    assert!((16..=18).contains(&fixed[8]), "converted: {}", fixed[8]);
 }

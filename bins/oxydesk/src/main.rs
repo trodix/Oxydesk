@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use oxydesk_capture::SyntheticDesktop;
 use oxydesk_core::layout::Layout;
+use oxydesk_core::ports::FrameEncoder as _;
 use oxydesk_core::DEFAULT_BITRATE_BPS;
 use oxydesk_encode::{AutoEncoder, EncoderChoice};
 use oxydesk_rdp::{Ports, ServerConfig};
@@ -76,6 +77,16 @@ fn with_config_file(cli: &[String]) -> anyhow::Result<Vec<String>> {
         cli,
         &oxydesk_core::config::combine(&layers),
     )?)
+}
+
+/// Transfer function of the captured pictures: KWin encodes them in gamma 2.2, the synthetic desktop in sRGB.
+/// `OXYDESK_SOURCE_TRANSFER` (srgb|gamma22) overrides it, e.g. for a compositor configured otherwise.
+fn source_transfer(kwin: bool) -> anyhow::Result<oxydesk_core::Transfer> {
+    match std::env::var("OXYDESK_SOURCE_TRANSFER") {
+        Ok(v) => v.parse().map_err(|e: String| anyhow::anyhow!(e)),
+        Err(_) if kwin => Ok(oxydesk_core::Transfer::Gamma22),
+        Err(_) => Ok(oxydesk_core::Transfer::Srgb),
+    }
 }
 
 fn arg<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
@@ -213,10 +224,12 @@ async fn main() -> anyhow::Result<()> {
         None | Some("auto") => choice.wants_dmabuf(),
         Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
     };
+    let transfer = source_transfer(kwin_mode)?;
     let encoders = (0..outputs)
         .map(|_| {
-            Box::new(AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS))
-                as Box<dyn oxydesk_core::ports::FrameEncoder>
+            let mut enc = AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS);
+            enc.set_source_transfer(transfer);
+            Box::new(enc) as Box<dyn oxydesk_core::ports::FrameEncoder>
         })
         .collect::<Vec<_>>();
     #[cfg(feature = "kwin")]
@@ -325,8 +338,9 @@ async fn main() -> anyhow::Result<()> {
         capture,
         encoders,
         make_encoder: Some(Box::new(move |_| {
-            Box::new(AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS))
-                as Box<dyn oxydesk_core::ports::FrameEncoder>
+            let mut enc = AutoEncoder::new(choice, fps, DEFAULT_BITRATE_BPS);
+            enc.set_source_transfer(transfer);
+            Box::new(enc) as Box<dyn oxydesk_core::ports::FrameEncoder>
         })),
         input,
         clipboard,

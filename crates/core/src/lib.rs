@@ -19,6 +19,7 @@ pub mod printer;
 pub mod rate;
 pub mod scale;
 pub mod throttle;
+pub mod transfer;
 pub mod wake;
 
 pub use color_depth::ColorDepth;
@@ -43,3 +44,4 @@ pub use printer::{
 pub use rate::{NetSample, RateConfig, RateController, RateTarget, DEFAULT_BITRATE_BPS};
 pub use scale::ScaleMap;
 pub use throttle::{LoginThrottle, ThrottleConfig};
+pub use transfer::Transfer;

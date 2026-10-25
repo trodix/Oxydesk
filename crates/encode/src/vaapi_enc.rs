@@ -12,7 +12,7 @@ use cros_libva as va;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::{DmaBuf, Frame, FrameData, PixelFormat};
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
-use oxydesk_core::ColorDepth;
+use oxydesk_core::{ColorDepth, Transfer};
 use va::{
     BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter,
     EncMiscParameterFrameRate, EncMiscParameterHRD, EncMiscParameterRateControl,
@@ -73,6 +73,7 @@ pub struct VaapiEncoder {
     force_idr: bool,
     /// Depth chosen by the client; a reduced one makes the CPU convert the frames (the GPU path cannot reduce the colours).
     depth: ColorDepth,
+    transfer: Transfer,
     /// Index in `recon` of the last reconstruction, valid when `frame_num > 0` or after an IDR.
     last_recon: usize,
     frame_num: u32,
@@ -234,6 +235,7 @@ impl VaapiEncoder {
             fps: cfg.fps.round().max(1.0) as u32,
             force_idr: true,
             depth: ColorDepth::default(),
+            transfer: Transfer::default(),
             last_recon: 1,
             frame_num: 0,
             idr_pic_id: 0,
@@ -266,13 +268,22 @@ impl VaapiEncoder {
         let (aw, ah) = (self.aligned_w as usize, self.aligned_h as usize);
         let bgra = frame.format == PixelFormat::Bgra8;
         let depth = self.depth;
+        let lut = self.transfer.table();
         let px = |x: usize, y: usize| -> (i32, i32, i32) {
             let o = y.min(h - 1) * stride + x.min(w - 1) * 4;
             let p = &data[o..o + 3];
             if bgra {
-                depth.quantize(p[2] as i32, p[1] as i32, p[0] as i32)
+                depth.quantize(
+                    lut[p[2] as usize] as i32,
+                    lut[p[1] as usize] as i32,
+                    lut[p[0] as usize] as i32,
+                )
             } else {
-                depth.quantize(p[0] as i32, p[1] as i32, p[2] as i32)
+                depth.quantize(
+                    lut[p[0] as usize] as i32,
+                    lut[p[1] as usize] as i32,
+                    lut[p[2] as usize] as i32,
+                )
             }
         };
         self.nv12.resize(aw * ah * 3 / 2, 0);
@@ -780,6 +791,10 @@ impl FrameEncoder for VaapiEncoder {
         self.force_idr = true;
     }
 
+    fn set_source_transfer(&mut self, transfer: Transfer) {
+        self.transfer = transfer;
+    }
+
     fn set_color_depth(&mut self, depth: ColorDepth) {
         self.depth = depth;
     }
@@ -798,13 +813,14 @@ impl FrameEncoder for VaapiEncoder {
                 None
             }
             FrameData::DmaBuf(dma) => {
-                let gpu = if self.vpp_failed || self.depth.is_reduced() {
-                    None
-                } else {
-                    self.convert_gpu(frame, dma)
-                        .map_err(|e| self.gpu_path_failed(&e))
-                        .ok()
-                };
+                let gpu =
+                    if self.vpp_failed || self.depth.is_reduced() || self.transfer.is_converted() {
+                        None
+                    } else {
+                        self.convert_gpu(frame, dma)
+                            .map_err(|e| self.gpu_path_failed(&e))
+                            .ok()
+                    };
                 if gpu.is_none() {
                     oxydesk_core::dmabuf::with_pixels(frame, dma, |px| self.convert(frame, px))??;
                 }

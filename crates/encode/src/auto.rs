@@ -8,7 +8,7 @@ use std::str::FromStr;
 use oxydesk_core::error::EncodeError;
 use oxydesk_core::frame::Frame;
 use oxydesk_core::ports::{EncodedFrame, FrameEncoder};
-use oxydesk_core::ColorDepth;
+use oxydesk_core::{ColorDepth, Transfer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EncoderChoice {
@@ -54,6 +54,7 @@ pub struct AutoEncoder {
     keyframe_pending: bool,
     size: (u32, u32),
     depth: ColorDepth,
+    transfer: Transfer,
 }
 
 impl AutoEncoder {
@@ -67,6 +68,7 @@ impl AutoEncoder {
             keyframe_pending: false,
             size: (0, 0),
             depth: ColorDepth::default(),
+            transfer: Transfer::default(),
         }
     }
 
@@ -124,6 +126,7 @@ impl AutoEncoder {
         };
         let mut enc = enc;
         enc.set_color_depth(self.depth);
+        enc.set_source_transfer(self.transfer);
         self.inner = Some(enc);
         self.name = name;
         self.size = (frame.width, frame.height);
@@ -148,6 +151,13 @@ impl FrameEncoder for AutoEncoder {
         match self.inner.as_mut() {
             Some(e) => e.request_keyframe(),
             None => self.keyframe_pending = true,
+        }
+    }
+
+    fn set_source_transfer(&mut self, transfer: Transfer) {
+        self.transfer = transfer;
+        if let Some(e) = self.inner.as_mut() {
+            e.set_source_transfer(transfer);
         }
     }
 

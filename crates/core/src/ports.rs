@@ -98,6 +98,9 @@ pub trait FrameEncoder: Send {
     fn set_bitrate(&mut self, _bitrate_bps: u32) {}
     /// Colour depth chosen by the client: the pictures are reduced to it before encoding. Ignored by default.
     fn set_color_depth(&mut self, _depth: crate::ColorDepth) {}
+
+    /// Transfer function of the pictures about to be encoded (what the capture produces); they are converted to sRGB.
+    fn set_source_transfer(&mut self, _transfer: crate::Transfer) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
