@@ -31,6 +31,10 @@ const URI_LIST_MIME: &str = "text/uri-list";
 /// Marks a selection made by a file manager (KDE: cut flag; GNOME, Thunar, PCManFM: copied files).
 const KDE_CUT_MIME: &str = "application/x-kde-cutselection";
 const GNOME_FILES_MIME: &str = "x-special/gnome-copied-files";
+/// What Klipper (the Plasma clipboard manager) keeps of a file manager's copy: it re-offers the selection
+/// without the two markers above.
+const PORTAL_FILES_MIME: &str = "application/vnd.portal.filetransfer";
+const KDE4_URI_LIST_MIME: &str = "application/x-kde4-urilist";
 /// Read cap for a remote selection.
 const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -42,11 +46,34 @@ struct Shared {
 }
 
 /// What a received selection holds.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Text,
     Image,
     Files,
+}
+
+/// Picks what to receive from the MIME types of a selection: files (a file manager's copy also offers their
+/// paths as text), then text, then an image (a copy from a page offers both).
+fn classify(mimes: &[String]) -> Option<(&'static str, Kind)> {
+    let has = |w: &str| mimes.iter().any(|m| m == w);
+    let has_text = TEXT_MIMES.iter().any(|w| has(w));
+    // A link copied from a page is a `text/uri-list` too: only the markers of a copy of files count.
+    // Klipper keeps the file URIs under their KDE 4 name when the application gave no text.
+    let files = has(URI_LIST_MIME)
+        && (has(KDE_CUT_MIME)
+            || has(GNOME_FILES_MIME)
+            || has(PORTAL_FILES_MIME)
+            || (has(KDE4_URI_LIST_MIME) && !has_text));
+    if files {
+        Some((URI_LIST_MIME, Kind::Files))
+    } else if let Some(m) = TEXT_MIMES.iter().find(|w| has(w)) {
+        Some((*m, Kind::Text))
+    } else if has(IMAGE_MIME) {
+        Some((IMAGE_MIME, Kind::Image))
+    } else {
+        None
+    }
 }
 
 /// MIME types offered by an offer (filled by the `offer` events).
@@ -251,18 +278,7 @@ macro_rules! data_control {
                         offer.destroy(); // our own selection
                         return;
                     }
-                    let has = |w: &str| mimes.iter().any(|m| m == w);
-                    // Files (a file manager's copy also offers their paths as text), then text, then
-                    // an image (a copy from a page offers both).
-                    let (mime, kind) = if has(URI_LIST_MIME)
-                        && (has(KDE_CUT_MIME) || has(GNOME_FILES_MIME))
-                    {
-                        (URI_LIST_MIME, Kind::Files)
-                    } else if let Some(m) = TEXT_MIMES.iter().find(|w| has(w)) {
-                        (*m, Kind::Text)
-                    } else if has(IMAGE_MIME) {
-                        (IMAGE_MIME, Kind::Image)
-                    } else {
+                    let Some((mime, kind)) = classify(&mimes) else {
                         offer.destroy();
                         return;
                     };
@@ -270,7 +286,7 @@ macro_rules! data_control {
                         offer.destroy();
                         return;
                     };
-                    offer.receive((*mime).to_string(), OwnedFd::from(writer).as_fd());
+                    offer.receive(mime.to_string(), OwnedFd::from(writer).as_fd());
                     offer.destroy();
                     // The write descriptor is closed (drop) after sending: the reader sees the end of the stream.
                     let _ = self.conn.flush();
@@ -510,5 +526,62 @@ impl ClipboardBackend for WaylandClipboard {
 
     fn poll_files(&mut self) -> Result<Option<FileList>, ClipboardError> {
         Ok(self.shared.incoming_files.lock().expect("incoming").take())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mimes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|m| (*m).to_string()).collect()
+    }
+
+    #[test]
+    fn a_file_manager_copy_is_files() {
+        let kde = mimes(&[URI_LIST_MIME, KDE_CUT_MIME, "text/plain"]);
+        assert_eq!(classify(&kde), Some((URI_LIST_MIME, Kind::Files)));
+        let gnome = mimes(&[URI_LIST_MIME, GNOME_FILES_MIME, "text/plain;charset=utf-8"]);
+        assert_eq!(classify(&gnome), Some((URI_LIST_MIME, Kind::Files)));
+    }
+
+    #[test]
+    fn a_file_copy_kept_by_klipper_is_files() {
+        // As seen by a data-control client on Plasma: the cut and GNOME markers are gone.
+        let klipper = mimes(&[
+            URI_LIST_MIME,
+            KDE4_URI_LIST_MIME,
+            PORTAL_FILES_MIME,
+            "application/x-kde-source-id",
+        ]);
+        assert_eq!(classify(&klipper), Some((URI_LIST_MIME, Kind::Files)));
+        let without_portal = mimes(&[URI_LIST_MIME, KDE4_URI_LIST_MIME]);
+        assert_eq!(
+            classify(&without_portal),
+            Some((URI_LIST_MIME, Kind::Files))
+        );
+    }
+
+    #[test]
+    fn a_link_copied_from_a_page_is_text() {
+        let link = mimes(&[URI_LIST_MIME, "text/plain", "text/html"]);
+        assert_eq!(classify(&link), Some(("text/plain", Kind::Text)));
+        let klipper_link = mimes(&[URI_LIST_MIME, KDE4_URI_LIST_MIME, "text/plain"]);
+        assert_eq!(classify(&klipper_link), Some(("text/plain", Kind::Text)));
+    }
+
+    #[test]
+    fn text_wins_over_an_image_and_unknown_is_ignored() {
+        let both = mimes(&[IMAGE_MIME, "text/plain;charset=utf-8"]);
+        assert_eq!(
+            classify(&both),
+            Some(("text/plain;charset=utf-8", Kind::Text))
+        );
+        assert_eq!(
+            classify(&mimes(&[IMAGE_MIME])),
+            Some((IMAGE_MIME, Kind::Image))
+        );
+        assert_eq!(classify(&mimes(&["application/x-other"])), None);
+        assert_eq!(classify(&[]), None);
     }
 }
