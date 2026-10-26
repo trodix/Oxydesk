@@ -43,6 +43,9 @@ pub struct Shared {
     pub client_loops: std::sync::atomic::AtomicU64,
     /// Colour depth chosen by the client, in bits per pixel (`0`: none announced yet, true colour).
     pub color_depth: std::sync::atomic::AtomicU8,
+    /// Bitmap updates handed to IronRDP and not taken yet: while it encodes one (RemoteFX is slow), the pump keeps
+    /// the newest picture instead of piling up pictures that would be shown late.
+    pub bitmaps_queued: std::sync::atomic::AtomicUsize,
 }
 
 pub struct PumpPorts {
@@ -64,6 +67,9 @@ pub struct PumpParams {
     pub rfx: bool,
 }
 
+/// Bitmap updates that may wait for IronRDP while it encodes another one.
+const MAX_QUEUED_BITMAPS: usize = 1;
+
 /// How often the regulation looks at what the client acknowledged.
 const RATE_EVERY: Duration = Duration::from_millis(500);
 
@@ -73,6 +79,8 @@ struct OutputState {
     last: Option<oxydesk_core::Frame>,
     /// The pixels the client was last given as bitmap updates: only what differs is sent next.
     shown: Vec<u8>,
+    /// A picture was read but not sent (the client is behind): it goes out as soon as the client is ready.
+    pending: bool,
 }
 
 /// How long a connection may go without a ready EGFX before falling back to bitmap updates.
@@ -113,8 +121,10 @@ fn pointer_update(update: &oxydesk_core::CursorUpdate) -> ironrdp_server::Displa
 
 /// Sends the outputs as uncompressed bitmap updates (clients without EGFX; IronRDP encodes them).
 /// `false`: the capture is lost.
+#[allow(clippy::too_many_arguments)]
 fn send_bitmaps(
     tx: &UnboundedSender<ironrdp_server::DisplayUpdate>,
+    queued: &std::sync::atomic::AtomicUsize,
     capture: &mut dyn CaptureSource,
     outputs: &mut [OutputState],
     layout: &Layout,
@@ -124,10 +134,21 @@ fn send_bitmaps(
 ) -> bool {
     use std::num::{NonZeroU16, NonZeroUsize};
     let origins = bitmap_origins(layout);
+    let mut deferred = false;
+    // IronRDP still has a picture to encode: only the newest one is kept, and it goes out when the client is ready.
+    // Looked at once per round: the outputs of one round go out together.
+    let behind = queued.load(Ordering::SeqCst) >= MAX_QUEUED_BITMAPS;
     for (i, out) in outputs.iter_mut().enumerate() {
         let info = &layout.outputs[i];
         match capture.recv_latest(OutputId(i as u32)) {
-            Ok(Some(f)) if (f.width, f.height) == (info.width, info.height) => out.last = Some(f),
+            Ok(Some(f)) if (f.width, f.height) == (info.width, info.height) => {
+                out.last = Some(f);
+                if behind {
+                    out.pending = true;
+                    deferred = true;
+                    continue;
+                }
+            }
             Ok(Some(f)) => {
                 tracing::debug!(
                     output = i,
@@ -137,7 +158,11 @@ fn send_bitmaps(
                 );
                 continue;
             }
-            Ok(None) if *repeat && out.last.is_some() => {}
+            Ok(None) if behind => {
+                deferred |= *repeat || out.pending;
+                continue;
+            }
+            Ok(None) if (*repeat || out.pending) && out.last.is_some() => {}
             Ok(None) => continue,
             Err(e) => {
                 tracing::error!("capture: {e}");
@@ -191,6 +216,8 @@ fn send_bitmaps(
         ) else {
             continue;
         };
+        out.pending = false;
+        queued.fetch_add(1, Ordering::SeqCst);
         let _ = tx.send(ironrdp_server::DisplayUpdate::Bitmap(
             ironrdp_server::BitmapUpdate {
                 x: (origins[i].0 + rx) as u16,
@@ -203,7 +230,9 @@ fn send_bitmaps(
             },
         ));
     }
-    *repeat = false;
+    if !deferred {
+        *repeat = false;
+    }
     true
 }
 
@@ -385,6 +414,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                 encoder,
                                 last: None,
                                 shown: Vec::new(),
+                                pending: false,
                             })
                             .collect();
                         current = None;
@@ -447,6 +477,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                         encoder,
                                         last: None,
                                         shown: Vec::new(),
+                                pending: false,
                                     });
                                 }
                                 layout = new;
@@ -529,6 +560,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         if let Some(tx) = tx {
                             if !send_bitmaps(
                                 &tx,
+                                &shared.bitmaps_queued,
                                 capture_src.as_mut(),
                                 &mut outputs,
                                 &layout,
@@ -1110,6 +1142,7 @@ mod tests {
                 encoder: Box::new(Encoder),
                 last: None,
                 shown: Vec::new(),
+                pending: false,
             })
             .collect()
     }
@@ -1147,6 +1180,7 @@ mod tests {
         let (mut repeat, mut warned) = (repeat, false);
         let alive = send_bitmaps(
             &tx,
+            &std::sync::atomic::AtomicUsize::new(0),
             &mut Scripted(script.into()),
             state,
             layout,
@@ -1164,6 +1198,49 @@ mod tests {
             repeat,
             warned,
         }
+    }
+
+    #[test]
+    fn a_client_that_is_behind_gets_only_the_newest_picture_when_it_is_ready() {
+        use std::sync::atomic::AtomicUsize;
+        let layout = Layout::side_by_side(1, 4, 2);
+        let mut state = outputs(1);
+        let queued = AtomicUsize::new(MAX_QUEUED_BITMAPS);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut repeat, mut warned) = (false, false);
+        let depth = oxydesk_core::ColorDepth::TrueColor;
+        let mut round = |script: Vec<Result<Option<Frame>, CaptureError>>,
+                         state: &mut [OutputState]| {
+            send_bitmaps(
+                &tx,
+                &queued,
+                &mut Scripted(script.into()),
+                state,
+                &layout,
+                &mut repeat,
+                &mut warned,
+                depth,
+            )
+        };
+        // Two pictures arrive while IronRDP is busy: nothing goes out, the newest is kept.
+        assert!(round(vec![Ok(Some(frame(4, 2, pixels(4, 2))))], &mut state));
+        assert!(round(
+            vec![Ok(Some(frame(4, 2, FrameData::Shm(vec![9; 32]))))],
+            &mut state
+        ));
+        assert!(rx.try_recv().is_err());
+        assert!(state[0].pending);
+        // IronRDP is free again and the desktop is static: the kept picture goes out, once.
+        queued.store(0, Ordering::SeqCst);
+        assert!(round(vec![Ok(None)], &mut state));
+        match rx.try_recv() {
+            Ok(ironrdp_server::DisplayUpdate::Bitmap(b)) => assert_eq!(&b.data[..4], &[9, 9, 9, 9]),
+            other => panic!("the kept picture expected, got {other:?}"),
+        }
+        assert!(!state[0].pending);
+        assert_eq!(queued.load(Ordering::SeqCst), 1);
+        assert!(round(vec![Ok(None)], &mut state));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

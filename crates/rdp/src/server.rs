@@ -757,13 +757,27 @@ struct Display {
     shared: Arc<Shared>,
 }
 /// Everything is drawn through EGFX: the only display updates are the resizes requested by the pump.
-struct Resizes(tokio::sync::mpsc::UnboundedReceiver<DisplayUpdate>);
+struct Resizes(
+    tokio::sync::mpsc::UnboundedReceiver<DisplayUpdate>,
+    Arc<Shared>,
+);
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for Resizes {
     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
         match self.0.recv().await {
-            Some(update) => Ok(Some(update)),
+            Some(update) => {
+                if matches!(update, DisplayUpdate::Bitmap(_)) {
+                    // Saturating: the counter restarts at zero with each connection.
+                    let _ =
+                        self.1
+                            .bitmaps_queued
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                Some(n.saturating_sub(1))
+                            });
+                }
+                Ok(Some(update))
+            }
             None => std::future::pending().await,
         }
     }
@@ -787,8 +801,9 @@ impl RdpServerDisplay for Display {
     async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         *self.shared.display.lock().expect("display mutex") = Some(tx);
+        self.shared.bitmaps_queued.store(0, Ordering::SeqCst);
         self.shared.client_loops.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(Resizes(rx)))
+        Ok(Box::new(Resizes(rx, self.shared.clone())))
     }
     /// The client asks for a new size: handed to the pump, which resizes the capture and announces it through EGFX.
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
