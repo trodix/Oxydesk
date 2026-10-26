@@ -123,12 +123,13 @@ fn send_bitmaps(
     depth: oxydesk_core::ColorDepth,
 ) -> bool {
     use std::num::{NonZeroU16, NonZeroUsize};
+    let origins = bitmap_origins(layout);
     for (i, out) in outputs.iter_mut().enumerate() {
         let info = &layout.outputs[i];
         match capture.recv_latest(OutputId(i as u32)) {
             Ok(Some(f)) if (f.width, f.height) == (info.width, info.height) => out.last = Some(f),
             Ok(Some(f)) => {
-                tracing::warn!(
+                tracing::debug!(
                     output = i,
                     frame = ?(f.width, f.height),
                     expected = ?(info.width, info.height),
@@ -192,8 +193,8 @@ fn send_bitmaps(
         };
         let _ = tx.send(ironrdp_server::DisplayUpdate::Bitmap(
             ironrdp_server::BitmapUpdate {
-                x: (info.x.max(0) as usize + rx) as u16,
-                y: (info.y.max(0) as usize + ry) as u16,
+                x: (origins[i].0 + rx) as u16,
+                y: (origins[i].1 + ry) as u16,
                 width,
                 height,
                 format: ironrdp_server::PixelFormat::BgrA32,
@@ -204,6 +205,19 @@ fn send_bitmaps(
     }
     *repeat = false;
     true
+}
+
+/// Where each output is drawn in the bitmap desktop: the client's monitors arranged as it announced them, the
+/// top-left of the whole at (0, 0). A client puts the bitmaps on its monitors by these coordinates, so an output
+/// that is on its right monitor must be drawn on the right of the desktop, whatever its rank.
+fn bitmap_origins(layout: &Layout) -> Vec<(usize, usize)> {
+    let monitors = monitors(layout);
+    let left = monitors.iter().map(|m| m.left).min().unwrap_or(0);
+    let top = monitors.iter().map(|m| m.top).min().unwrap_or(0);
+    monitors
+        .iter()
+        .map(|m| ((m.left - left) as usize, (m.top - top) as usize))
+        .collect()
 }
 
 /// Monitors as the client expects them (MS-RDPBCGR 2.2.1.3.6.1): its own arrangement, the primary one at (0, 0) and the
@@ -1023,6 +1037,26 @@ mod tests {
         assert_eq!((m[0].left, m[0].top, m[0].right), (0, 0, 1919));
         assert!(m[0].flags.contains(MonitorFlags::PRIMARY));
         assert_eq!((m[1].left, m[1].right), (-1920, -1));
+    }
+
+    #[test]
+    fn bitmaps_follow_the_arrangement_of_the_client_monitors() {
+        let spec = |x, primary| oxydesk_core::layout::MonitorSpec {
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            primary,
+        };
+        // The primary monitor is on the right of the other one: its output is drawn on the right of the desktop.
+        let layout = Layout::from_monitors(&[spec(0, true), spec(-1920, false)]).unwrap();
+        assert_eq!(bitmap_origins(&layout), vec![(1920, 0), (0, 0)]);
+        let layout = Layout::from_monitors(&[spec(0, true), spec(1920, false)]).unwrap();
+        assert_eq!(bitmap_origins(&layout), vec![(0, 0), (1920, 0)]);
+        assert_eq!(
+            bitmap_origins(&Layout::side_by_side(2, 640, 480)),
+            vec![(0, 0), (640, 0)]
+        );
     }
 
     #[test]
