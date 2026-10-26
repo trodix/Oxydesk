@@ -1781,6 +1781,67 @@ mod forwarding_tests {
         assert!(log(&rec).is_empty());
     }
 
+    /// The pointer PDU of a standard client (mstsc): the middle button used to come out as a plain move.
+    #[test]
+    fn the_middle_button_of_a_standard_pointer_pdu_is_decoded() {
+        use ironrdp_pdu::input::mouse::{MousePdu, PointerFlags};
+        let pdu = |flags| MousePdu {
+            flags,
+            number_of_wheel_rotation_units: 0,
+            x_position: 7,
+            y_position: 9,
+        };
+        let decode = |flags| MouseEvent::from(pdu(flags));
+        assert!(matches!(
+            decode(PointerFlags::MIDDLE_BUTTON_OR_WHEEL | PointerFlags::DOWN),
+            MouseEvent::MiddlePressed
+        ));
+        assert!(matches!(
+            decode(PointerFlags::MIDDLE_BUTTON_OR_WHEEL),
+            MouseEvent::MiddleReleased
+        ));
+        assert!(matches!(
+            decode(PointerFlags::VERTICAL_WHEEL),
+            MouseEvent::VerticalScroll { .. }
+        ));
+        let tilt = MouseEvent::from(MousePdu {
+            flags: PointerFlags::HORIZONTAL_WHEEL,
+            number_of_wheel_rotation_units: 120,
+            x_position: 0,
+            y_position: 0,
+        });
+        assert!(matches!(tilt, MouseEvent::Scroll { x: 120, y: 0 }));
+    }
+
+    /// The side buttons come in the extended pointer PDU; they used to be taken for the left and right buttons.
+    #[test]
+    fn the_side_buttons_of_the_extended_pointer_pdu_are_decoded() {
+        use ironrdp_pdu::input::mouse_x::{MouseXPdu, PointerXFlags};
+        let decode = |flags| {
+            MouseEvent::from(MouseXPdu {
+                flags,
+                x_position: 7,
+                y_position: 9,
+            })
+        };
+        assert!(matches!(
+            decode(PointerXFlags::BUTTON1 | PointerXFlags::DOWN),
+            MouseEvent::Button4Pressed
+        ));
+        assert!(matches!(
+            decode(PointerXFlags::BUTTON1),
+            MouseEvent::Button4Released
+        ));
+        assert!(matches!(
+            decode(PointerXFlags::BUTTON2 | PointerXFlags::DOWN),
+            MouseEvent::Button5Pressed
+        ));
+        assert!(matches!(
+            decode(PointerXFlags::BUTTON2),
+            MouseEvent::Button5Released
+        ));
+    }
+
     #[test]
     fn buttons_and_wheels_are_translated() {
         let (mut input, rec) = input(Arc::default());

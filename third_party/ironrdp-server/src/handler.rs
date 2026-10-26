@@ -168,9 +168,20 @@ impl From<MousePdu> for MouseEvent {
             } else {
                 MouseEvent::RightReleased
             }
+        } else if value.flags.contains(PointerFlags::MIDDLE_BUTTON_OR_WHEEL) {
+            if value.flags.contains(PointerFlags::DOWN) {
+                MouseEvent::MiddlePressed
+            } else {
+                MouseEvent::MiddleReleased
+            }
         } else if value.flags.contains(PointerFlags::VERTICAL_WHEEL) {
             MouseEvent::VerticalScroll {
                 value: value.number_of_wheel_rotation_units,
+            }
+        } else if value.flags.contains(PointerFlags::HORIZONTAL_WHEEL) {
+            MouseEvent::Scroll {
+                x: value.number_of_wheel_rotation_units.into(),
+                y: 0,
             }
         } else {
             MouseEvent::Move {
@@ -181,19 +192,20 @@ impl From<MousePdu> for MouseEvent {
     }
 }
 
+// The extended pointer PDU carries the two side buttons (MS-RDPBCGR 2.2.8.1.1.3.1.1.4): back and forward.
 impl From<MouseXPdu> for MouseEvent {
     fn from(value: MouseXPdu) -> Self {
         if value.flags.contains(PointerXFlags::BUTTON1) {
             if value.flags.contains(PointerXFlags::DOWN) {
-                MouseEvent::LeftPressed
+                MouseEvent::Button4Pressed
             } else {
-                MouseEvent::LeftReleased
+                MouseEvent::Button4Released
             }
         } else if value.flags.contains(PointerXFlags::BUTTON2) {
             if value.flags.contains(PointerXFlags::DOWN) {
-                MouseEvent::RightPressed
+                MouseEvent::Button5Pressed
             } else {
-                MouseEvent::RightReleased
+                MouseEvent::Button5Released
             }
         } else {
             MouseEvent::Move {
