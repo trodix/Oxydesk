@@ -261,7 +261,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-capture",
  "oxydesk-core",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "oxydesk-audio",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-agent"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2301,21 +2301,21 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-agent-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "oxydesk-audio"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-core",
 ]
 
 [[package]]
 name = "oxydesk-authd"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-authd-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "nix 0.30.1",
  "serde",
@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-capture"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-core",
  "pipewire",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-clipboard"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fuser",
  "oxydesk-core",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-cups-backend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "oxydesk-spool",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-drivefs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fuser",
  "libc",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-encode"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cros-libva",
  "libc",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-input"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-core",
  "wayland-backend",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-rdp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-remote"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-agent-proto",
  "oxydesk-authd-proto",
@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-scaling"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-core",
  "tracing",
@@ -2453,7 +2453,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-session"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-core",
  "tracing",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-spool"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "oxydesk-core",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "oxydesk-testapp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "oxydesk-audio",
  "oxydesk-capture",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-test-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ironrdp-blocking",
@@ -4722,7 +4722,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
