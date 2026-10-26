@@ -715,11 +715,6 @@ impl RdpServerInputHandler for Input {
             ),
             _ => {}
         }
-        if let MouseEvent::VerticalScroll { value } = event {
-            tracing::debug!(value, "wheel");
-        } else if let MouseEvent::Scroll { x, y } = event {
-            tracing::debug!(x, y, "wheel (both axes)");
-        }
         // The client's point in the layout of the outputs.
         let point = match event {
             MouseEvent::Move { x, y } => self
