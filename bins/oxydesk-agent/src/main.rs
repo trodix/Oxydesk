@@ -191,7 +191,9 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                     "no Wayland socket {socket} in {}: the session to join is not running",
                     runtime_dir().display()
                 );
-                let mut physical = oxydesk_capture::enabled_outputs(Some(&socket))?;
+                // A `Virtual-*` output found at start is a leftover of an earlier agent (it vanishes with its stream): it
+                // is not a monitor of the user, and capturing it would leave dead sources when it goes.
+                let mut physical = real_outputs(oxydesk_capture::enabled_outputs(Some(&socket))?);
                 physical.truncate(oxydesk_core::layout::MAX_OUTPUTS);
                 let sources = if physical.is_empty() {
                     // No monitor (the screens are unplugged, the session may be locked): the client's monitors are
@@ -258,6 +260,8 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                 desktop.idle_exit = headless.then_some(HEADLESS_GRACE);
                 if headless {
                     watch_for_screens(socket.clone());
+                } else {
+                    watch_for_lost_screens(socket.clone(), outputs as usize);
                 }
                 Ok(desktop)
             }
@@ -505,6 +509,38 @@ fn watch_for_screens(socket: String) {
         if has_screen(&names) {
             tracing::info!(?names, "a screen is back: the virtual outputs are removed");
             std::process::exit(0);
+        }
+    });
+}
+
+/// The outputs of `outputs` that are not virtual ones, in the same order.
+#[cfg(any(feature = "kwin", test))]
+fn real_outputs(outputs: Vec<String>) -> Vec<String> {
+    outputs
+        .into_iter()
+        .filter(|n| !n.starts_with("Virtual-"))
+        .collect()
+}
+
+/// Whether the compositor lost some of the `held` monitors the agent captures (unplugged, or switched off): their
+/// streams are dead for good, and only a new start, which finds what is left (maybe nothing: virtual outputs), recovers.
+#[cfg(any(feature = "kwin", test))]
+fn outputs_lost(shown: &[String], held: usize) -> bool {
+    real_outputs(shown.to_vec()).len() < held
+}
+
+/// Ends the agent (failure, so that it is started again) as soon as a monitor it captures is gone.
+#[cfg(feature = "kwin")]
+fn watch_for_lost_screens(socket: String, held: usize) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        // A failed listing says nothing about the monitors.
+        let Ok(shown) = oxydesk_capture::enabled_outputs(Some(&socket)) else {
+            continue;
+        };
+        if outputs_lost(&shown, held) {
+            tracing::error!(?shown, held, "a monitor is gone: the agent restarts");
+            std::process::exit(1);
         }
     });
 }
@@ -993,6 +1029,28 @@ mod tests {
 
     use super::*;
     use oxydesk_agent_proto::{FileInfo, Rect};
+
+    #[test]
+    fn leftover_virtual_outputs_are_not_monitors_of_the_user() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            real_outputs(names(&["DP-1", "Virtual-1", "HDMI-A-1"])),
+            names(&["DP-1", "HDMI-A-1"])
+        );
+        assert!(real_outputs(names(&["Virtual-0", "Virtual-1"])).is_empty());
+        assert!(real_outputs(vec![]).is_empty());
+    }
+
+    #[test]
+    fn vanished_outputs_are_noticed() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(outputs_lost(&[], 2));
+        assert!(outputs_lost(&names(&["DP-1"]), 2));
+        assert!(!outputs_lost(&names(&["DP-1", "DP-2"]), 2));
+        assert!(!outputs_lost(&names(&["DP-1", "DP-2", "Virtual-2"]), 2));
+        // The client's virtual monitors do not stand for a real one that went.
+        assert!(outputs_lost(&names(&["DP-1", "Virtual-1"]), 2));
+    }
 
     /// A synthetic desktop served over a socket pair: the server side is the test.
     struct Conn {
