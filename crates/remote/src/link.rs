@@ -60,6 +60,8 @@ pub struct AgentLink {
     cursor: Mutex<Option<oxydesk_core::CursorUpdate>>,
     /// Colour depth last sent to the agent, in bits per pixel (`32`: true colour, what an agent starts with).
     color_depth: std::sync::atomic::AtomicU8,
+    /// Pixel mode last asked of the agent (it starts every connection in its H.264 stream).
+    raw: std::sync::atomic::AtomicBool,
     audio: Mutex<AudioQueue>,
     audio_cv: Condvar,
     /// Answer of the agent to the last `Resize` (None while pending).
@@ -130,6 +132,7 @@ impl AgentLink {
             printers: Default::default(),
             cursor: Mutex::new(None),
             color_depth: std::sync::atomic::AtomicU8::new(32),
+            raw: std::sync::atomic::AtomicBool::new(false),
             audio: Mutex::new(AudioQueue::default()),
             audio_cv: Condvar::new(),
             resize_reply: Mutex::new(None),
@@ -189,6 +192,11 @@ impl AgentLink {
                 height,
                 data,
             } => {
+                // The agent started the connection with its H.264 stream: until it has switched to the pixels asked
+                // for, those frames would fill the mailbox and leave it waiting for a keyframe that never comes.
+                if self.raw.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
                 let video = self.video.read().expect("video lock");
                 let Some(slot) = video.get(output as usize) else {
                     return;
@@ -238,9 +246,11 @@ impl AgentLink {
                     return;
                 };
                 let mut mb = slot.lock().expect("mailbox mutex");
-                // Every raw frame is self-contained: only the latest one is worth keeping.
-                if !mb.wait_key {
+                // Every raw frame is self-contained: only the latest one is worth keeping, and no keyframe is
+                // awaited. Frames still in flight after the switch back to H.264 are useless.
+                if self.raw.load(std::sync::atomic::Ordering::SeqCst) {
                     mb.queue.clear();
+                    mb.wait_key = false;
                     mb.queue.push_back(Frame {
                         output: OutputId(output),
                         width,
@@ -426,6 +436,11 @@ impl AgentLink {
 
     /// Asks the agent for uncompressed pixels (clients without H.264) or, with `false`, for its H.264 stream again.
     pub fn set_raw_pixels(&self, raw: bool) {
+        // Asked again for the mode already set: the agent would send no new frame and a static desktop would
+        // stay empty once the mailboxes below are cleared.
+        if self.raw.swap(raw, std::sync::atomic::Ordering::SeqCst) == raw {
+            return;
+        }
         self.send(&ToAgent::SetPixels { raw });
         // Frames of the other kind still in the mailboxes are useless: wait for the agent's next ones.
         for slot in self.video.read().expect("video lock").iter() {
@@ -727,6 +742,56 @@ mod tests {
         .unwrap();
         std::thread::sleep(Duration::from_millis(100));
         assert!(link.take_frame(OutputId(0)).is_none());
+    }
+
+    #[test]
+    fn h264_frames_in_flight_when_raw_pixels_are_asked_do_not_block_the_raw_ones() {
+        let (link, mut agent) = pair();
+        link.set_raw_pixels(true);
+        let _: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        // More H.264 frames than a mailbox holds, still on their way when the switch happens.
+        for t in 0..64u8 {
+            write_msg(&mut agent, &video(false, t)).unwrap();
+        }
+        write_msg(
+            &mut agent,
+            &FromAgent::VideoRaw {
+                output: 0,
+                width: 1,
+                height: 1,
+                data: vec![5, 0, 0, 255],
+            },
+        )
+        .unwrap();
+        let frame = wait_for(|| {
+            std::thread::sleep(Duration::from_millis(20));
+            link.take_frame(OutputId(0))
+        });
+        let FrameData::Shm(px) = &frame.data else {
+            panic!("raw frame expected")
+        };
+        assert_eq!(px[0], 5);
+    }
+
+    #[test]
+    fn asking_again_for_the_same_pixel_mode_keeps_the_frames_waiting() {
+        let (link, mut agent) = pair();
+        link.set_raw_pixels(true);
+        let req: ToAgent = read_msg(&mut agent).unwrap().unwrap();
+        assert_eq!(req, ToAgent::SetPixels { raw: true });
+        write_msg(
+            &mut agent,
+            &FromAgent::VideoRaw {
+                output: 0,
+                width: 1,
+                height: 1,
+                data: vec![7, 0, 0, 255],
+            },
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        link.set_raw_pixels(true);
+        assert!(link.take_frame(OutputId(0)).is_some());
     }
 
     #[test]

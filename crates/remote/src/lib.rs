@@ -29,6 +29,9 @@ pub struct RemoteBroker {
     policy: SessionPolicy,
     /// Whether the extra monitors of a client that joined a session stay when it leaves (server configuration).
     keep_virtual_outputs: bool,
+    /// Whether the agent is asked for uncompressed pixels as soon as a link is up, rather than its H.264 stream
+    /// (server configuration: the codec encodes the pictures itself).
+    raw_pixels: bool,
 }
 
 impl RemoteBroker {
@@ -38,7 +41,13 @@ impl RemoteBroker {
             outputs,
             policy: SessionPolicy::default(),
             keep_virtual_outputs: true,
+            raw_pixels: false,
         }
+    }
+
+    pub fn with_raw_pixels(mut self, raw: bool) -> Self {
+        self.raw_pixels = raw;
+        self
     }
 
     pub fn with_virtual_outputs_kept(mut self, keep: bool) -> Self {
@@ -73,6 +82,9 @@ impl RemoteBroker {
                 tracing::info!(uid, "session granted by authd");
                 let link = AgentLink::connect(UnixStream::from(fd), outputs)
                     .map_err(LoginError::Backend)?;
+                if self.raw_pixels {
+                    link.set_raw_pixels(true);
+                }
                 Ok(ports::desktop_ports(link, outputs))
             }
         }
