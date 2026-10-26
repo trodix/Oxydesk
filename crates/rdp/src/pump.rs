@@ -65,6 +65,28 @@ pub struct PumpParams {
     pub adaptive: bool,
     /// `true`: no EGFX, the desktop goes out as bitmap updates (RemoteFX) from the start of the connection.
     pub rfx: bool,
+    /// `true`: RemoteFX Progressive over EGFX instead of H.264 (raw pixels are captured and encoded by the pump).
+    pub progressive: bool,
+}
+
+/// The RemoteFX Progressive stream of output `i`: what changed in `frame` plus a few refinements, `None` when the
+/// client already holds everything. The encoder of an output is created (or re-created after a resize) on demand.
+fn progressive_update(
+    encoders: &mut Vec<crate::progressive::Encoder>,
+    i: usize,
+    size: (usize, usize),
+    frame: &oxydesk_core::Frame,
+) -> anyhow::Result<Option<crate::progressive::Update>> {
+    let Some(pixels) = crate::raw::to_bgra(frame).map_err(anyhow::Error::msg)? else {
+        return Ok(None);
+    };
+    while encoders.len() <= i {
+        encoders.push(crate::progressive::Encoder::new(size.0, size.1));
+    }
+    if encoders[i].size() != size {
+        encoders[i] = crate::progressive::Encoder::new(size.0, size.1);
+    }
+    encoders[i].encode(&pixels)
 }
 
 /// Bitmap updates that may wait for IronRDP while it encodes another one.
@@ -349,6 +371,8 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // has read it (the session would then start with the configured number of outputs).
             let mut fresh_session = false;
             let mut repeat = false;
+            // One RemoteFX Progressive encoder per output (RemoteFX Progressive mode), dropped with the client's surfaces.
+            let mut prog: Vec<crate::progressive::Encoder> = Vec::new();
             let mut report = Instant::now();
             let (mut seen, mut drain) = (0u64, false);
             'pump: while !shared.stop.load(Ordering::Relaxed) {
@@ -581,6 +605,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
                 {
                     current = Some((handle.clone(), Vec::new())); // new connection
+                    prog.clear();
                     rate = p.adaptive.then(|| {
                         RateController::new(RateConfig::new(p.fps, DEFAULT_BITRATE_BPS))
                     });
@@ -595,7 +620,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 let h264;
                 {
                     let mut g = handle.lock().expect("gfx handle mutex");
-                    h264 = g.supports_avc420();
+                    h264 = g.supports_avc420() && !p.progressive;
                     if raw_requested == h264 {
                         tracing::info!(h264, "capture mode: {}", if h264 { "H.264 stream" } else { "uncompressed pixels" });
                         capture_src.set_raw_pixels(!h264);
@@ -633,6 +658,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             created[i] = id;
                         }
                         *surfaces = created;
+                        prog.clear();
                         for o in &mut outputs {
                             o.encoder.request_keyframe();
                         }
@@ -748,7 +774,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     // A frame encoded but not sent leaves the encoder ahead of the client's decoder: the next inter
                     // frames are drawn over a picture the client does not have (smeared blocks, until a keyframe).
                     // Once an output has sent its frame the window can be full for the next one: check before encoding.
-                    if h264 && handle.lock().expect("gfx handle mutex").should_backpressure() {
+                    if (h264 || p.progressive) && handle.lock().expect("gfx handle mutex").should_backpressure() {
                         dropped += 1;
                         per_output.resize(outputs_len.max(per_output.len()), (0, 0));
                         per_output[i].1 += 1;
@@ -760,7 +786,31 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         }
                         continue;
                     }
-                    let payload = if h264 {
+                    let mut refinement = None;
+                    let payload = if p.progressive {
+                        let info = &layout.outputs[i];
+                        let size = (info.width as usize, info.height as usize);
+                        match progressive_update(&mut prog, i, size, frame) {
+                            Ok(Some(update)) => {
+                                tracing::trace!(
+                                    new = update.first,
+                                    refined = update.upgraded,
+                                    bytes = update.data.len(),
+                                    "progressive frame"
+                                );
+                                refinement = Some(update);
+                                Vec::new()
+                            }
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!("progressive encoding: {e}");
+                                if let Some(encoder) = prog.get_mut(i) {
+                                    encoder.reset();
+                                }
+                                continue;
+                            }
+                        }
+                    } else if h264 {
                         match out.encoder.encode(frame) {
                             // An empty payload is a frame the rate control skipped.
                             Ok(e) if e.data.is_empty() => continue,
@@ -796,7 +846,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         let region =
                             Avc420Region::full_frame(info.width as u16, info.height as u16, 22);
                         let ts = started.elapsed().as_millis() as u32;
-                        let queued = if h264 {
+                        let queued = if let Some(update) = refinement.take() {
+                            // The tiles still being refined come back at the next tick, whatever the capture does.
+                            deferred |= update.pending;
+                            g.send_remotefx_progressive_frame(surfaces[i], u32::from(surfaces[i]), update.data, ts)
+                        } else if h264 {
                             g.send_avc420_frame(surfaces[i], &payload, &[region], ts)
                         } else {
                             g.send_uncompressed_frame(
@@ -810,6 +864,11 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         if queued.is_none() {
                             dropped += 1;
                             out.encoder.request_keyframe();
+                            // The client did not get what the encoder sent: it starts again from the first pass.
+                            if let Some(encoder) = prog.get_mut(i) {
+                                encoder.reset();
+                            }
+                            deferred = true;
                             continue;
                         }
                         (g.drain_output(), g.channel_id())
@@ -879,6 +938,43 @@ mod tests {
     use super::*;
     use oxydesk_core::error::{CaptureError, EncodeError};
     use oxydesk_core::ports::EncodedFrame;
+
+    #[test]
+    fn a_progressive_output_is_encoded_once_then_refined_then_left_alone() {
+        let frame = oxydesk_core::Frame {
+            output: OutputId(1),
+            width: 70,
+            height: 40,
+            stride: 70 * 4,
+            format: oxydesk_core::PixelFormat::Bgra8,
+            data: FrameData::Shm((0..70 * 40 * 4).map(|i| (i * 7 % 251) as u8).collect()),
+        };
+        let mut encoders = Vec::new();
+        let first = progressive_update(&mut encoders, 1, (70, 40), &frame)
+            .unwrap()
+            .expect("a first picture");
+        assert_eq!((first.first, first.upgraded, first.pending), (2, 0, true));
+        assert_eq!(
+            encoders.len(),
+            2,
+            "one encoder per output up to the one asked for"
+        );
+        let mut refinements = 0;
+        while let Some(update) = progressive_update(&mut encoders, 1, (70, 40), &frame).unwrap() {
+            assert_eq!(update.first, 0);
+            refinements += 1;
+            assert!(refinements < 20);
+        }
+        assert!(refinements > 0);
+        assert!(progressive_update(&mut encoders, 1, (70, 40), &frame)
+            .unwrap()
+            .is_none());
+        // The client lost its surface: everything starts again.
+        encoders[1].reset();
+        assert!(progressive_update(&mut encoders, 1, (70, 40), &frame)
+            .unwrap()
+            .is_some());
+    }
 
     #[test]
     fn pointer_pdu_carries_the_shape_and_hidden_hides() {
@@ -966,6 +1062,7 @@ mod tests {
                 event: false,
                 adaptive: false,
                 rfx: false,
+                progressive: false,
             },
         );
         // The session is adopted (and any pending request dropped) on the first tick.

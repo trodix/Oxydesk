@@ -191,7 +191,8 @@ async fn main() -> anyhow::Result<()> {
         let broker = std::sync::Arc::new(
             oxydesk_remote::RemoteBroker::new(socket, outputs)
                 .with_policy(session_policy(&args)?)
-                .with_virtual_outputs_kept(keep_virtual_outputs(&args)?),
+                .with_virtual_outputs_kept(keep_virtual_outputs(&args)?)
+                .with_raw_pixels(oxydesk_rdp::Codec::from_env().wants_raw_pixels()),
         );
         let config = ServerConfig {
             addr,
