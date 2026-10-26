@@ -55,6 +55,8 @@ pub struct ServerConfig {
     /// Login mode: a client that connects without a password gets a login screen, whose encoders come from here;
     /// without it such a client is refused.
     pub greeter_encoder: Option<crate::greeter::GreeterEncoder>,
+    /// Look of that login screen.
+    pub greeter_theme: Arc<crate::greeter_theme::Theme>,
 }
 
 /// Outgoing adapters of a desktop, provided by the composition root (fixed mode) or by a `SessionBroker`.
@@ -190,6 +192,7 @@ impl ironrdp_server::ConnectionHandler for GuardHandler {
 struct BrokerValidator {
     core: Arc<LoginCore>,
     greeter: Option<(crate::greeter::GreeterEncoder, Layout)>,
+    greeter_theme: Arc<crate::greeter_theme::Theme>,
     slot: SessionSlot,
     guard: LoginGuard,
     shared: Arc<Shared>,
@@ -379,6 +382,8 @@ impl LoginCore {
 /// How long a client may stay on the login screen: the server serves one client at a time.
 const GREETER_TIMEOUT: Duration = Duration::from_secs(120);
 
+use oxydesk_core::greeter_i18n::Notice;
+
 impl BrokerValidator {
     /// Opens the login screen for the connection being validated, with `user` filled in. `false` when the server
     /// has no encoder for it.
@@ -426,9 +431,9 @@ impl BrokerValidator {
             let client_initial = client_initial.clone();
             let announced = announced.clone();
             std::thread::spawn(move || {
-                let failed = |message: &str| {
+                let failed = |notice: Notice| {
                     guard.set_open(true);
-                    screen.lock().expect("greeter mutex").login_failed(message);
+                    screen.lock().expect("greeter mutex").login_failed(notice);
                     shared.wake.notify();
                 };
                 match core.attempt(ip, &user, &password, outputs) {
@@ -451,12 +456,9 @@ impl BrokerValidator {
                         }
                         shared.wake.notify();
                     }
-                    Attempt::Denied => failed("Wrong user name or password"),
-                    Attempt::Blocked(left) => failed(&format!(
-                        "Too many failures: try again in {} min",
-                        left.as_secs().div_ceil(60)
-                    )),
-                    Attempt::Backend(_) => failed("The session cannot be started"),
+                    Attempt::Denied => failed(Notice::WrongCredentials),
+                    Attempt::Blocked(left) => failed(Notice::Blocked(left.as_secs().div_ceil(60))),
+                    Attempt::Backend(_) => failed(Notice::SessionFailed),
                 }
             });
         });
@@ -466,6 +468,7 @@ impl BrokerValidator {
             first,
             encoder,
             submit,
+            self.greeter_theme.clone(),
         ));
         // A client that never signs in must not keep the server: the screen is alive for as long as the slot holds
         // its input, and a login or another connection replaces that.
@@ -978,6 +981,7 @@ async fn serve(
                     .greeter_encoder
                     .clone()
                     .map(|encoder| (encoder, config.layout.clone())),
+                greeter_theme: config.greeter_theme.clone(),
                 slot: slot.clone(),
                 guard: guard.clone(),
                 shared: shared.clone(),
@@ -1345,6 +1349,7 @@ mod reconnect_tests {
                     guard: guard.clone(),
                 }),
                 greeter: None,
+                greeter_theme: Arc::default(),
                 slot: SessionSlot::new(shared.clone()),
                 guard: guard.clone(),
                 shared,

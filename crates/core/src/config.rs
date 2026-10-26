@@ -44,6 +44,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("max-user-failures", Kind::Value),
     ("login-lockout-secs", Kind::Value),
     ("reconnect-timeout", Kind::Value),
+    ("greeter-theme", Kind::Value),
     ("dead-peer-timeout", Kind::Value),
     ("authd-socket", Kind::Value),
     ("kwin-socket", Kind::Value),

@@ -10,6 +10,8 @@ pub mod error;
 pub mod files;
 pub mod frame;
 pub mod greeter;
+pub mod greeter_i18n;
+pub mod greeter_theme;
 pub mod keyboard;
 pub mod keymap;
 pub mod layout;
