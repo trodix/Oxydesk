@@ -25,6 +25,53 @@ struct State {
     natives: Vec<Option<(u32, u32)>>,
     /// Several outputs scaled individually (the compositor refused the layout).
     multi: Option<Vec<Slot>>,
+    /// Last native frame of each output, kept to draw the desktop again when the scaling changes: a static desktop
+    /// sends no other frame, and the new size would otherwise stay blank.
+    latest: Vec<Option<Frame>>,
+    /// Outputs whose `latest` frame is owed to the consumer (the scaling changed since it was last given).
+    replay: Vec<bool>,
+}
+
+impl State {
+    fn remember(&mut self, index: usize, frame: Frame) {
+        if self.latest.len() <= index {
+            self.latest.resize_with(index + 1, || None);
+        }
+        self.latest[index] = Some(frame);
+    }
+
+    /// The scaling changed: every output with a known picture gives it again.
+    fn replay_all(&mut self) {
+        self.replay = self.latest.iter().map(Option::is_some).collect();
+    }
+
+    fn take_replay(&mut self, index: usize) -> Option<Frame> {
+        if !std::mem::take(self.replay.get_mut(index)?) {
+            return None;
+        }
+        self.latest.get(index)?.as_ref().and_then(copy_frame)
+    }
+}
+
+/// A copy of a frame that holds pixels (a DMA-BUF is shared through a duplicated descriptor).
+fn copy_frame(frame: &Frame) -> Option<Frame> {
+    let data = match &frame.data {
+        FrameData::Shm(d) => FrameData::Shm(d.clone()),
+        FrameData::DmaBuf(dma) => FrameData::DmaBuf(oxydesk_core::DmaBuf {
+            fd: dma.fd.try_clone().ok()?,
+            offset: dma.offset,
+            modifier: dma.modifier,
+        }),
+        FrameData::Encoded { .. } => return None,
+    };
+    Some(Frame {
+        output: frame.output,
+        width: frame.width,
+        height: frame.height,
+        stride: frame.stride,
+        format: frame.format,
+        data,
+    })
 }
 
 /// One output of a scaled multi-output layout.
@@ -93,6 +140,17 @@ impl ScalingCapture {
             s.native = Some(size);
         }
     }
+
+    /// Hands over a frame read before the wrapping: it is the picture to draw again when the scaling changes.
+    pub fn learn_frame(&self, output: OutputId, frame: &Frame) {
+        let index = output.0 as usize;
+        if let Some(copy) = copy_frame(frame) {
+            self.state
+                .lock()
+                .expect("scaling mutex")
+                .remember(index, copy);
+        }
+    }
 }
 
 impl CaptureSource for ScalingCapture {
@@ -112,12 +170,16 @@ impl CaptureSource for ScalingCapture {
         self.state.lock().expect("scaling mutex").multi = None;
         let native = self.state.lock().expect("scaling mutex").native;
         if native == Some((width, height)) {
-            self.state.lock().expect("scaling mutex").map = None;
+            let mut s = self.state.lock().expect("scaling mutex");
+            s.map = None;
+            s.replay_all();
             return Ok(());
         }
         let refused = match self.inner.resize(width, height) {
             Ok(()) => {
-                self.state.lock().expect("scaling mutex").map = None;
+                let mut s = self.state.lock().expect("scaling mutex");
+                s.map = None;
+                s.replay_all();
                 return Ok(());
             }
             Err(e) => e,
@@ -130,7 +192,9 @@ impl CaptureSource for ScalingCapture {
             map.src.0,
             map.src.1
         );
-        self.state.lock().expect("scaling mutex").map = Some(map);
+        let mut s = self.state.lock().expect("scaling mutex");
+        s.map = Some(map);
+        s.replay_all();
         Ok(())
     }
 
@@ -147,6 +211,7 @@ impl CaptureSource for ScalingCapture {
                 let mut s = self.state.lock().expect("scaling mutex");
                 s.map = None;
                 s.multi = None;
+                s.replay_all();
                 return Ok(());
             }
             Err(e) => e,
@@ -184,6 +249,7 @@ impl CaptureSource for ScalingCapture {
         tracing::info!("{refused}: {} outputs scaled individually", slots.len());
         s.map = None;
         s.multi = Some(slots);
+        s.replay_all();
         Ok(())
     }
 
@@ -204,8 +270,25 @@ impl CaptureSource for ScalingCapture {
     }
 
     fn recv_latest(&mut self, output: OutputId) -> Result<Option<Frame>, CaptureError> {
-        let Some(frame) = self.inner.recv_latest(output)? else {
-            return Ok(None);
+        let frame = match self.inner.recv_latest(output)? {
+            Some(frame) => {
+                if let Some(copy) = copy_frame(&frame) {
+                    let mut s = self.state.lock().expect("scaling mutex");
+                    s.remember(output.0 as usize, copy);
+                }
+                frame
+            }
+            None => {
+                let replayed = self
+                    .state
+                    .lock()
+                    .expect("scaling mutex")
+                    .take_replay(output.0 as usize);
+                match replayed {
+                    Some(frame) => Frame { output, ..frame },
+                    None => return Ok(None),
+                }
+            }
         };
         let map = {
             let mut s = self.state.lock().expect("scaling mutex");
@@ -331,6 +414,40 @@ mod tests {
         assert_eq!(cap.recv_latest(OutputId(0)).unwrap().unwrap().width, 8);
         input.pointer_move(3, 1).unwrap();
         assert_eq!(spy.0.lock().unwrap().last(), Some(&(3, 1)));
+    }
+
+    /// A static desktop: one frame, then nothing (it refuses any resize).
+    struct Static(Option<Frame>);
+    impl CaptureSource for Static {
+        fn recv_latest(&mut self, _: OutputId) -> Result<Option<Frame>, CaptureError> {
+            Ok(self.0.take())
+        }
+    }
+
+    #[test]
+    fn a_static_desktop_is_drawn_again_at_the_new_size() {
+        let first = Fixed.recv_latest(OutputId(0)).unwrap().unwrap();
+        let (mut cap, _input) = wrap(Box::new(Static(Some(first))), Box::new(Spy::default()));
+        // The frame is read once, before anything asks for a size.
+        let seen = cap.recv_latest(OutputId(0)).unwrap().unwrap();
+        assert_eq!((seen.width, seen.height), (8, 4));
+        assert!(cap.recv_latest(OutputId(0)).unwrap().is_none());
+        cap.resize(4, 2).unwrap();
+        let again = cap.recv_latest(OutputId(0)).unwrap().unwrap();
+        assert_eq!((again.width, again.height), (4, 2));
+        // Only once per change.
+        assert!(cap.recv_latest(OutputId(0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_frame_read_before_the_wrapping_is_drawn_again() {
+        let (mut cap, _input) = wrap(Box::new(Static(None)), Box::new(Spy::default()));
+        let first = Fixed.recv_latest(OutputId(0)).unwrap().unwrap();
+        cap.learn_native(OutputId(0), (8, 4));
+        cap.learn_frame(OutputId(0), &first);
+        cap.resize(4, 2).unwrap();
+        let f = cap.recv_latest(OutputId(0)).unwrap().unwrap();
+        assert_eq!((f.width, f.height), (4, 2));
     }
 
     /// Two 8x4 outputs side by side, left half red / right half blue, refuse any layout.

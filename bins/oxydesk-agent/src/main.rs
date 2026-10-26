@@ -232,13 +232,18 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                             .is_ok_and(|names| names.len() == count)
                     })
                 });
-                let sizes = first_frame_sizes(&mut source, outputs as usize)?;
+                let (sizes, firsts) = first_frame_sizes(&mut source, outputs as usize)?;
                 let (width, height) = sizes[0];
                 let input = oxydesk_input::KwinFakeInput::connect(Some(&socket))?;
                 let clipboard = oxydesk_clipboard::WaylandClipboard::connect(Some(&socket))?;
                 let (capture, input) = oxydesk_scaling::wrap(Box::new(source), Box::new(input));
                 for (i, size) in sizes.iter().enumerate() {
                     capture.learn_native(OutputId(i as u32), *size);
+                }
+                for (i, frame) in firsts.iter().enumerate() {
+                    if let Some(frame) = frame {
+                        capture.learn_frame(OutputId(i as u32), frame);
+                    }
                 }
                 let mut desktop = make(
                     Box::new(capture),
@@ -263,26 +268,32 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
     }
 }
 
+/// Sizes of the outputs of a joined desktop, and the first frame each of them sent.
+#[cfg(feature = "kwin")]
+type FirstFrames = (Vec<(u32, u32)>, Vec<Option<oxydesk_core::Frame>>);
+
 /// Size of each of the `count` outputs of the desktop being joined, from their first frames (monitors of the
 /// user: they are not ours to choose). The first output must answer; the others are left unknown after the delay.
 #[cfg(feature = "kwin")]
-fn first_frame_sizes(
-    source: &mut dyn CaptureSource,
-    count: usize,
-) -> anyhow::Result<Vec<(u32, u32)>> {
+fn first_frame_sizes(source: &mut dyn CaptureSource, count: usize) -> anyhow::Result<FirstFrames> {
     let mut sizes: Vec<Option<(u32, u32)>> = vec![None; count];
+    let mut frames: Vec<Option<oxydesk_core::Frame>> = (0..count).map(|_| None).collect();
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && sizes.iter().any(Option::is_none) {
         for (i, size) in sizes.iter_mut().enumerate().filter(|(_, s)| s.is_none()) {
             if let Some(frame) = source.recv_latest(OutputId(i as u32))? {
                 *size = Some((frame.width, frame.height));
+                frames[i] = Some(frame);
             }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let first =
         sizes[0].ok_or_else(|| anyhow::anyhow!("the session being joined sent no image"))?;
-    Ok(sizes.into_iter().map(|s| s.unwrap_or(first)).collect())
+    Ok((
+        sizes.into_iter().map(|s| s.unwrap_or(first)).collect(),
+        frames,
+    ))
 }
 
 type Writer = Arc<Mutex<UnixStream>>;
