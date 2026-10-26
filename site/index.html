@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Oxydesk – RDP remote desktop server for KDE Plasma Wayland</title>
-<meta name="description" content="Oxydesk is an open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust. Connect from Windows, Linux or macOS: one real desktop session per user, H.264 video, multi-monitor, clipboard, audio, drives and printers.">
+<meta name="description" content="Oxydesk is an open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust. Connect from Windows, Linux or macOS: one real desktop session per user, RemoteFX or H.264 video, multi-monitor, clipboard, audio, drives and printers.">
 <link rel="canonical" href="https://trodix.github.io/Oxydesk/">
 <meta name="theme-color" content="#d9480f">
 <meta property="og:type" content="website">
@@ -25,7 +25,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "Oxydesk",
-  "description": "An open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust: one real desktop session per user, H.264 video, multi-monitor, clipboard, audio, shared folders and printers.",
+  "description": "An open source RDP remote desktop server for KDE Plasma on Wayland, written in Rust: one real desktop session per user, RemoteFX or H.264 video, multi-monitor, clipboard, audio, shared folders and printers.",
   "url": "https://trodix.github.io/Oxydesk/",
   "applicationCategory": "NetworkApplication",
   "operatingSystem": "Linux (KDE Plasma on Wayland)",
@@ -76,7 +76,7 @@
     <div class="card"><div class="ico">🖥️</div><h3>Your desktop or a new one</h3><p>Sign in to a session of your own, or join the Plasma session already open on the machine's screen (<code>session-policy</code>). The real monitors are never changed.</p></div>
     <div class="card"><div class="ico">🔑</div><h3>Login screen</h3><p>A client that connects without a password, such as <code>mstsc</code> with nothing saved, gets a login form. The user name it sent is already filled in; the password goes through the same PAM check and failure limits.</p></div>
     <div class="card"><div class="ico">🔁</div><h3>Survives network drops</h3><p>After a cut, <code>mstsc</code> and FreeRDP reconnect by themselves, without the password. The session and its applications are kept.</p></div>
-    <div class="card"><div class="ico">⚡</div><h3>Modern video path</h3><p>H.264 over the RDP graphics pipeline (EGFX), software OpenH264 or GPU VA-API, with bitrate adapted to the client's link.</p></div>
+    <div class="card"><div class="ico">⚡</div><h3>Sharp picture, smooth video</h3><p>RemoteFX by default: changed areas only, no chroma subsampling, so thin coloured text stays sharp, and a playing video cannot make the session lag behind. H.264 over EGFX (OpenH264 or GPU VA-API) is available with <code>OXYDESK_CODEC=h264</code>.</p></div>
   </div>
 </div></section>
 
