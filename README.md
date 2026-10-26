@@ -55,6 +55,11 @@ without the `--` (`oxydesk --help`). Precedence, highest first:
 An unknown key stops the server at start-up. `--config FILE` uses another file. The file is kept on upgrades. The
 NLA password is only read from `OXYDESK_PASSWORD`. The default mode is `login`.
 
+The picture codec is chosen with the `OXYDESK_CODEC` environment variable: `rfx` (default) sends bitmap updates
+(RemoteFX when the client supports it, plain bitmaps otherwise) for the changed area only, with no chroma subsampling, so
+thin coloured text stays sharp; `h264` offers the EGFX channel with H.264 4:2:0, lighter on bandwidth and CPU for video
+but blurrier on text. An unknown value logs a warning and uses `rfx`.
+
 ## Build and test
 
 ```

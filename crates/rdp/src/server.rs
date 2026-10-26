@@ -27,6 +27,7 @@ use oxydesk_core::ports::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::clipboard::{announce, Content, LocalContent, RdpClipboard};
+use crate::codec::Codec;
 use crate::drive::DriveFactory;
 use crate::pump::{self, PumpParams, PumpPorts, Shared};
 use crate::reconnect::{Reconnect, Resume, COOKIE_LEN};
@@ -912,6 +913,8 @@ async fn serve(
     let desktop = config.layout.desktop_size();
     let ctx = TlsIdentityCtx::init_from_paths(&config.tls_cert, &config.tls_key)?;
     let tls = ctx.make_acceptor()?;
+    let codec = Codec::from_env();
+    tracing::info!(?codec, "picture codec");
     let builder = RdpServer::builder().with_addr(config.addr);
     let builder = match &config.nla {
         Some(_) => builder.with_hybrid(tls, ctx.pub_key.clone()),
@@ -937,7 +940,11 @@ async fn serve(
             },
             shared: shared.clone(),
         })
-        .with_gfx_factory(Some(Box::new(GfxFactory(shared.clone()))))
+        // No EGFX channel in RemoteFX mode: the client falls back to bitmap updates, which IronRDP encodes.
+        .with_gfx_factory(
+            (codec == Codec::H264)
+                .then(|| Box::new(GfxFactory(shared.clone())) as Box<dyn GfxServerFactory>),
+        )
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
         .with_sound_factory(audio_enabled.then(|| {
             Box::new(SoundFactory {
@@ -999,6 +1006,7 @@ async fn serve(
                 .is_ok_and(|v| v == "tick")
                 .not(),
             adaptive: config.adaptive_bitrate,
+            rfx: codec == Codec::Rfx,
         },
     );
     // Local -> remote text: poll the port, announce the delayed copy.

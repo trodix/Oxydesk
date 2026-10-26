@@ -60,6 +60,8 @@ pub struct PumpParams {
     pub event: bool,
     /// Regulate the bitrate and the window of frames in flight from the client's acknowledgements.
     pub adaptive: bool,
+    /// `true`: no EGFX, the desktop goes out as bitmap updates (RemoteFX) from the start of the connection.
+    pub rfx: bool,
 }
 
 /// How often the regulation looks at what the client acknowledged.
@@ -69,6 +71,8 @@ const RATE_EVERY: Duration = Duration::from_millis(500);
 struct OutputState {
     encoder: Box<dyn FrameEncoder>,
     last: Option<oxydesk_core::Frame>,
+    /// The pixels the client was last given as bitmap updates: only what differs is sent next.
+    shown: Vec<u8>,
 }
 
 /// How long a connection may go without a ready EGFX before falling back to bitmap updates.
@@ -123,7 +127,15 @@ fn send_bitmaps(
         let info = &layout.outputs[i];
         match capture.recv_latest(OutputId(i as u32)) {
             Ok(Some(f)) if (f.width, f.height) == (info.width, info.height) => out.last = Some(f),
-            Ok(Some(_)) => continue,
+            Ok(Some(f)) => {
+                tracing::warn!(
+                    output = i,
+                    frame = ?(f.width, f.height),
+                    expected = ?(info.width, info.height),
+                    "frame of another size than the layout: dropped"
+                );
+                continue;
+            }
             Ok(None) if *repeat && out.last.is_some() => {}
             Ok(None) => continue,
             Err(e) => {
@@ -152,21 +164,40 @@ fn send_bitmaps(
                 continue;
             }
         };
+        // A client that asks again (new connection, resize) is given the whole picture.
+        if *repeat {
+            out.shown.clear();
+        }
+        let (full_w, full_h) = (info.width as usize, info.height as usize);
+        let rect = if out.shown.len() == pixels.len() {
+            crate::changed_area::changed_rect(&out.shown, &pixels, full_w, full_h)
+        } else {
+            Some((0, 0, full_w, full_h))
+        };
+        let Some((rx, ry, rw, rh)) = rect else {
+            continue; // nothing moved
+        };
+        let data = if (rw, rh) == (full_w, full_h) {
+            pixels.clone()
+        } else {
+            crate::changed_area::crop(&pixels, full_w, (rx, ry, rw, rh))
+        };
+        out.shown = pixels;
         let (Some(width), Some(height), Some(stride)) = (
-            NonZeroU16::new(info.width as u16),
-            NonZeroU16::new(info.height as u16),
-            NonZeroUsize::new(info.width as usize * 4),
+            NonZeroU16::new(rw as u16),
+            NonZeroU16::new(rh as u16),
+            NonZeroUsize::new(rw * 4),
         ) else {
             continue;
         };
         let _ = tx.send(ironrdp_server::DisplayUpdate::Bitmap(
             ironrdp_server::BitmapUpdate {
-                x: info.x.max(0) as u16,
-                y: info.y.max(0) as u16,
+                x: (info.x.max(0) as usize + rx) as u16,
+                y: (info.y.max(0) as usize + ry) as u16,
                 width,
                 height,
                 format: ironrdp_server::PixelFormat::BgrA32,
-                data: pixels.into(),
+                data: data.into(),
                 stride,
             },
         ));
@@ -339,6 +370,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             .map(|encoder| OutputState {
                                 encoder,
                                 last: None,
+                                shown: Vec::new(),
                             })
                             .collect();
                         current = None;
@@ -400,6 +432,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                     outputs.push(OutputState {
                                         encoder,
                                         last: None,
+                                        shown: Vec::new(),
                                     });
                                 }
                                 layout = new;
@@ -462,16 +495,22 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                 for o in &mut outputs {
                     o.encoder.set_color_depth(depth);
                 }
-                let Some(handle) = shared.gfx.lock().expect("gfx mutex").clone() else {
+                let handle = shared.gfx.lock().expect("gfx mutex").clone();
+                if handle.is_none() && !p.rfx {
                     continue;
-                };
-                if !handle.lock().expect("gfx handle mutex").is_ready() {
-                    if connected_at.elapsed() >= LEGACY_AFTER && !raw_requested {
-                        tracing::info!("no EGFX after {LEGACY_AFTER:?}: uncompressed pixels requested");
+                }
+                let egfx = handle
+                    .as_ref()
+                    .filter(|h| !p.rfx && h.lock().expect("gfx handle mutex").is_ready());
+                let Some(handle) = egfx.cloned() else {
+                    // RemoteFX mode: bitmap updates from the start; otherwise once the EGFX has been missing for a while.
+                    let legacy_after = if p.rfx { Duration::ZERO } else { LEGACY_AFTER };
+                    if connected_at.elapsed() >= legacy_after && !raw_requested {
+                        tracing::info!("bitmap updates ({}): uncompressed pixels requested", if p.rfx { "RemoteFX mode" } else { "no EGFX" });
                         capture_src.set_raw_pixels(true);
                         raw_requested = true;
                     }
-                    if connected_at.elapsed() >= LEGACY_AFTER && loops > 0 {
+                    if connected_at.elapsed() >= legacy_after && loops > 0 {
                         let tx = shared.display.lock().expect("display mutex").clone();
                         if let Some(tx) = tx {
                             if !send_bitmaps(
@@ -490,7 +529,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         }
                     }
                     continue;
-                }
+                };
                 if !current
                     .as_ref()
                     .is_some_and(|(h, _)| Arc::ptr_eq(h, &handle))
@@ -880,6 +919,7 @@ mod tests {
                 fps: 200.0,
                 event: false,
                 adaptive: false,
+                rfx: false,
             },
         );
         // The session is adopted (and any pending request dropped) on the first tick.
@@ -1035,6 +1075,7 @@ mod tests {
             .map(|_| OutputState {
                 encoder: Box::new(Encoder),
                 last: None,
+                shown: Vec::new(),
             })
             .collect()
     }
