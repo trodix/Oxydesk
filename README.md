@@ -20,6 +20,8 @@ RemoteFX or H.264 video, one KWin session per user.
 - **Login throttling** per client address and per account.
 - **Login screen**: a client that sends no password (`mstsc` without saved credentials) gets a login form, with the user name
   it sent already filled in, as with xrdp (`--login` mode; the typed password goes through the same PAM check and throttling).
+  The screen is translated (English, French, German, Spanish, Italian, Portuguese, Dutch; it follows the client's keyboard).
+  Colours, logo, background picture, texts and fonts can be themed (`greeter-theme`, see `docs/greeter-theme.md`).
 - **Automatic reconnection**: after a network loss, `mstsc` and FreeRDP resume the session by themselves, without the
   password (Auto-Reconnect cookie, `reconnect-timeout`, default 10 s); the desktop and its applications are kept.
 

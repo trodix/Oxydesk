@@ -32,6 +32,8 @@ const USAGE: &str = "usage: oxydesk (--test-mode | --login [--authd-socket PATH]
                           virtual displays of the Plasma session (their windows wait on a virtual desktop), or removed
   --reconnect-timeout SECS  login mode: a client that loses its network resumes its session by itself for this long, without
                           typing the password again (default: 10; 0 turns it off)
+  --greeter-theme FILE    login mode: look of the login screen (colours, logo, background picture, texts, fonts); see the
+                          commented example in the configuration file
   --dead-peer-timeout SECS  a client that stops answering is dropped after this long, which frees the server for its
                           reconnection (default: 8; 0 leaves it to the kernel, minutes)
   --printer-mode SPEC     format of the jobs of the printers: auto (default), raw, raw:ps|pcl|text, xps; per printer with
@@ -207,6 +209,7 @@ async fn main() -> anyhow::Result<()> {
             reconnect_timeout: reconnect_timeout(&args)?,
             dead_peer_timeout: dead_peer_timeout(&args),
             greeter_encoder: Some(greeter_encoder(fps)),
+            greeter_theme: greeter_theme(&args)?,
         };
         return tokio::select! {
             r = oxydesk_rdp::run_with_broker(config, broker) => r,
@@ -362,10 +365,22 @@ async fn main() -> anyhow::Result<()> {
         reconnect_timeout: reconnect_timeout(&args)?,
         dead_peer_timeout: dead_peer_timeout(&args),
         greeter_encoder: None,
+        greeter_theme: Default::default(),
     };
     tokio::select! {
         r = oxydesk_rdp::run(config, ports) => r,
         _ = shutdown_signal() => { tracing::info!("shutdown"); Ok(()) }
+    }
+}
+
+/// `--greeter-theme FILE`: the look of the login screen (default: the built-in one). A mistake in the file stops the
+/// server at start-up, like one in the configuration; a missing logo or font is only reported in the log.
+fn greeter_theme(args: &[String]) -> anyhow::Result<std::sync::Arc<oxydesk_rdp::GreeterTheme>> {
+    match arg::<PathBuf>(args, "--greeter-theme") {
+        Some(path) => Ok(std::sync::Arc::new(oxydesk_rdp::GreeterTheme::from_file(
+            &path,
+        )?)),
+        None => Ok(Default::default()),
     }
 }
 

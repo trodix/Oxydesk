@@ -1,6 +1,7 @@
 //! The login screen shown to a client that connects without a password (as xrdp does): a user name and a password to
 //! type, filled in advance with the name the client sent. Pure state: the keys go in, a submission comes out.
 
+use crate::greeter_i18n::Notice;
 use crate::keyboard::XkbLayout;
 use crate::keymap::char_for;
 
@@ -35,7 +36,7 @@ pub struct Greeter {
     user: String,
     password: String,
     focus: Field,
-    message: Option<String>,
+    message: Option<Notice>,
     busy: bool,
     layout: XkbLayout,
     shift: u8,
@@ -86,8 +87,8 @@ impl Greeter {
         self.focus
     }
 
-    pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
+    pub fn message(&self) -> Option<&Notice> {
+        self.message.as_ref()
     }
 
     pub fn busy(&self) -> bool {
@@ -103,8 +104,12 @@ impl Greeter {
         self.revision
     }
 
+    /// The keyboard of the client: it decides the characters typed, and the language of the screen.
     pub fn set_layout(&mut self, layout: &XkbLayout) {
-        self.layout = layout.clone();
+        if self.layout != *layout {
+            self.layout = layout.clone();
+            self.revision += 1;
+        }
     }
 
     pub fn layout(&self) -> &XkbLayout {
@@ -112,18 +117,18 @@ impl Greeter {
     }
 
     /// The login is being tried: the form is frozen.
-    pub fn start_login(&mut self, message: &str) {
+    pub fn start_login(&mut self) {
         self.busy = true;
-        self.message = Some(message.to_owned());
+        self.message = None;
         self.revision += 1;
     }
 
     /// The login was refused: the password is cleared and typed again.
-    pub fn login_failed(&mut self, message: &str) {
+    pub fn login_failed(&mut self, notice: Notice) {
         self.busy = false;
         self.password.clear();
         self.focus = Field::Password;
-        self.message = Some(message.to_owned());
+        self.message = Some(notice);
         self.revision += 1;
     }
 
@@ -355,7 +360,7 @@ mod tests {
     fn clicks_do_nothing_while_signing_in() {
         let mut g = Greeter::new("alice");
         type_keys(&mut g, &[0x1E]);
-        g.start_login("Signing in...");
+        g.start_login();
         assert_eq!(g.click(Target::Button), Action::None);
         g.click(Target::Field(Field::User));
         assert_eq!(g.focus(), Field::Password);
@@ -446,15 +451,15 @@ mod tests {
     fn a_refused_login_clears_the_password_and_shows_why() {
         let mut g = Greeter::new("alice");
         type_keys(&mut g, &[A]);
-        g.start_login("Signing in...");
+        g.start_login();
         assert!(g.busy());
         // The form is frozen while the login is tried.
         type_keys(&mut g, &[B]);
         assert_eq!(g.password_len(), 1);
-        g.login_failed("Wrong user name or password");
+        g.login_failed(Notice::WrongCredentials);
         assert!(!g.busy());
         assert_eq!(g.password_len(), 0);
-        assert_eq!(g.message(), Some("Wrong user name or password"));
+        assert_eq!(g.message(), Some(&Notice::WrongCredentials));
         assert_eq!(g.focus(), Field::Password);
         // Typing again removes the message.
         type_keys(&mut g, &[A]);
