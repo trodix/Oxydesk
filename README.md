@@ -1,8 +1,8 @@
 # Oxydesk
 
 Headless RDP server for KDE Plasma (Wayland), written in Rust, as a replacement for xrdp. Built on
-[IronRDP](https://github.com/Devolutions/IronRDP) (with a few local patches in `third_party/`). RemoteFX (default) or
-H.264 video, one KWin session per user.
+[IronRDP](https://github.com/Devolutions/IronRDP) (with a few local patches in `third_party/`). RemoteFX Progressive (default),
+RemoteFX or H.264 video, one KWin session per user.
 
 ## Features
 
@@ -11,8 +11,9 @@ H.264 video, one KWin session per user.
   starts a session of its own when there is none; `attach` refuses when there is none and `new` always starts one (more client monitors than the desktop has: extra virtual ones; fewer: the windows of the other
   monitors are brought onto the ones shown, and put back on disconnect). A fixed
   virtual KWin session (`session = kwin`) and a synthetic test desktop (`test-mode`) are also available.
-- **Video**: RemoteFX by default, with at most one update in flight so a playing video does not lag the session; H.264
-  (software openh264 or GPU VA-API, bitrate and frames in flight adapted to the client's link) with `OXYDESK_CODEC=h264`.
+- **Video**: RemoteFX Progressive by default (sharp text, refined while the desktop stays still); plain RemoteFX bitmap updates
+  (`OXYDESK_CODEC=rfx`, at most one update in flight so a playing video does not lag the session) or H.264 (software
+  openh264 or GPU VA-API, bitrate and frames in flight adapted to the client's link) with `OXYDESK_CODEC=h264`.
 - **Display**: dynamic resize (Display Control) and up to 16 monitors.
 - **Input and clipboard**: keyboard, mouse, cursor shape; clipboard with text, images and files (both ways).
 - **Audio** output, **drive** redirection (FUSE) and **printer** redirection (CUPS, raw or XPS jobs).
@@ -56,10 +57,12 @@ without the `--` (`oxydesk --help`). Precedence, highest first:
 An unknown key stops the server at start-up. `--config FILE` uses another file. The file is kept on upgrades. The
 NLA password is only read from `OXYDESK_PASSWORD`. The default mode is `login`.
 
-The picture codec is chosen with the `OXYDESK_CODEC` environment variable: `rfx` (default) sends bitmap updates
+The picture codec is chosen with the `OXYDESK_CODEC` environment variable: `rfx` sends bitmap updates
 (RemoteFX when the client supports it, plain bitmaps otherwise) for the changed area only, with no chroma subsampling, so
 thin coloured text stays sharp; `h264` offers the EGFX channel with H.264 4:2:0, lighter on bandwidth and CPU for video
-but blurrier on text. An unknown value logs a warning and uses `rfx`.
+but blurrier on text; `rfxp` (default) sends RemoteFX Progressive over EGFX: tiles with no chroma subsampling, coarse first then refined
+by upgrade passes while the desktop stays still (whole-pixel precision at the end), so the grain of the first pass goes away
+(tested with mstsc and FreeRDP). An unknown value logs a warning and uses `rfxp`.
 
 ## Build and test
 
