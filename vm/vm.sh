@@ -208,6 +208,7 @@ cmd_deploy() {
   log "deploying $deb"
   # shellcheck disable=SC2046
   scp $(ssh_opts | sed 's/-p /-P /') "$deb" "$VM_USER@127.0.0.1:/tmp/deploy.deb"
+  vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq' || true  # the image's package index goes stale (404 on security pools)
   vm_ssh 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall /tmp/deploy.deb cups cups-filters ghostscript'
   vm_ssh "if systemctl cat $VM_SERVICE >/dev/null 2>&1; then sudo systemctl restart $VM_SERVICE; sudo journalctl -u $VM_SERVICE -n 30 --no-pager; fi"
 }
