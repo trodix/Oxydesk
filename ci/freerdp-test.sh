@@ -24,6 +24,8 @@ else
 fi
 rm -rf "$OUT"; mkdir -p "$OUT/state"
 export SDL_VIDEODRIVER=offscreen
+# The checks below read H.264 traces (the default codec is RemoteFX Progressive): section 1d switches to RemoteFX Progressive.
+export OXYDESK_CODEC=h264
 FILTERS="/log-filters:com.freerdp.channels.rdpgfx.client:DEBUG,com.freerdp.gdi:DEBUG,com.freerdp.core:INFO"
 failed=0
 SERVER_PID=""
@@ -84,6 +86,14 @@ CLIENT_SECONDS=$((SECONDS_RUN + 5)) client "$OUT/nogfx.client.log" /network:mode
 stop_server nogfx
 b=$(grep -c "gdi_surface_bits" "$OUT/nogfx.client.log")
 check no_gfx_bitmaps "$([[ $b -ge 10 && $(frames "$OUT/nogfx.client.log") -eq 0 ]] && echo 0 || echo 1)" "$b bitmap update(s) without EGFX"
+
+# 1d. RemoteFX Progressive over EGFX: tiles decoded by FreeRDP's progressive codec (first pass and upgrades)
+OXYDESK_CODEC=rfxp start_server rfxp || exit 1
+client "$OUT/rfxp.client.log"; rc=$?
+stop_server rfxp
+p=$(grep -c "Got GFX RDPGFX_CODECID_CAPROGRESSIVE" "$OUT/rfxp.client.log")
+check rfxp_frames "$([[ $rc -eq 124 && $p -ge 10 && $(frames "$OUT/rfxp.client.log") -eq 0 ]] && echo 0 || echo 1)" "exit $rc, $p progressive frames"
+check rfxp_no_decode_error "$(grep -q -i -E "progressive.*(fail|error)|\[ERROR\].*(progressive|gdi)" "$OUT/rfxp.client.log"; [[ $? -ne 0 ]]; echo $?)" "$(grep -i -E "progressive.*(fail|error)" "$OUT/rfxp.client.log" | head -1)"
 
 # 2. Two outputs: one surface per output in a desktop twice as wide
 start_server outputs --outputs 2 || exit 1

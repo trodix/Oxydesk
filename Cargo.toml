@@ -54,6 +54,8 @@ oxydesk-rdp = { path = "crates/rdp" }
 
 # IronRDP patched locally (third_party/): the Monitor Layout PDU announces the real monitors (multi-monitor
 # mstsc) and the client's GCC monitors are exposed. See docs/decisions/011-dynamic-monitors.md.
+# ironrdp-graphics: RLGR1 encoder fix (kp grows by UQ_GR after a zero in Golomb-Rice mode; fixed upstream in 0.10.0).
 [patch.crates-io]
 ironrdp-acceptor = { path = "third_party/ironrdp-acceptor" }
 ironrdp-server = { path = "third_party/ironrdp-server" }
+ironrdp-graphics = { path = "third_party/ironrdp-graphics" }

@@ -952,7 +952,7 @@ async fn serve(
         })
         // No EGFX channel in RemoteFX mode: the client falls back to bitmap updates, which IronRDP encodes.
         .with_gfx_factory(
-            (codec == Codec::H264)
+            (codec != Codec::Rfx)
                 .then(|| Box::new(GfxFactory(shared.clone())) as Box<dyn GfxServerFactory>),
         )
         .with_cliprdr_factory(Some(Box::new(clip_factory)))
@@ -1017,6 +1017,7 @@ async fn serve(
                 .not(),
             adaptive: config.adaptive_bitrate,
             rfx: codec == Codec::Rfx,
+            progressive: codec == Codec::Rfxp,
         },
     );
     // Local -> remote text: poll the port, announce the delayed copy.

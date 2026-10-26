@@ -9,6 +9,7 @@ pub mod dib;
 pub mod drive;
 mod greeter;
 pub mod printer;
+mod progressive;
 mod pump;
 mod raw;
 mod reconnect;
