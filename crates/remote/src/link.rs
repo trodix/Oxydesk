@@ -43,6 +43,49 @@ struct AudioQueue {
     open: bool,
 }
 
+/// Raw frames received from the agent, reported every `stats::WINDOW` when `OXYDESK_STATS` is set.
+struct LinkStats {
+    on: bool,
+    window: oxydesk_core::stats::Window,
+    arrived: oxydesk_core::stats::Gaps,
+    /// Frames that replaced one the server had not taken yet.
+    replaced: u64,
+    bytes: u64,
+}
+
+impl LinkStats {
+    fn new() -> Self {
+        Self {
+            on: oxydesk_core::stats::enabled(),
+            window: oxydesk_core::stats::Window::new(std::time::Instant::now()),
+            arrived: Default::default(),
+            replaced: 0,
+            bytes: 0,
+        }
+    }
+
+    /// A raw frame arrives; `unread` is true when the previous one was still in the mailbox.
+    fn raw_frame(&mut self, unread: bool, len: usize) {
+        if !self.on {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.arrived.event(now);
+        self.replaced += u64::from(unread);
+        self.bytes += len as u64;
+        if let Some(window) = self.window.due(now) {
+            let (rate, gaps) = self.arrived.take(window);
+            let mib_s = std::mem::take(&mut self.bytes) as f32
+                / 1048576.0
+                / window.as_secs_f32().max(0.001);
+            tracing::info!(
+                "stats[link] raw frames from the agent {rate:.0}/s gap ms [{gaps}] | {mib_s:.0} MiB/s | replaced before the server took them {}",
+                std::mem::take(&mut self.replaced),
+            );
+        }
+    }
+}
+
 pub struct AgentLink {
     writer: Mutex<UnixStream>,
     /// One mailbox per output; the list follows the layout (`LayoutApplied`).
@@ -71,6 +114,8 @@ pub struct AgentLink {
     layout_reply: Mutex<Option<bool>>,
     layout_cv: Condvar,
     dead: AtomicBool,
+    /// `OXYDESK_STATS`: how the raw frames of the agent arrive, and how many wait for nobody.
+    stats: Mutex<LinkStats>,
     waker: Mutex<Option<Arc<oxydesk_core::wake::Wake>>>,
 }
 
@@ -140,6 +185,7 @@ impl AgentLink {
             layout_reply: Mutex::new(None),
             layout_cv: Condvar::new(),
             dead: AtomicBool::new(false),
+            stats: Mutex::new(LinkStats::new()),
             waker: Mutex::new(None),
         });
         let l = link.clone();
@@ -246,6 +292,10 @@ impl AgentLink {
                     return;
                 };
                 let mut mb = slot.lock().expect("mailbox mutex");
+                self.stats
+                    .lock()
+                    .expect("stats mutex")
+                    .raw_frame(!mb.queue.is_empty(), data.len());
                 // Every raw frame is self-contained: only the latest one is worth keeping, and no keyframe is
                 // awaited. Frames still in flight after the switch back to H.264 are useless.
                 if self.raw.load(std::sync::atomic::Ordering::SeqCst) {

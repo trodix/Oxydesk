@@ -1176,4 +1176,79 @@ mod tests {
         w.put(0xFF, 8);
         assert_eq!(w.finish(), vec![0b1011_1111, 0b1111_0000]);
     }
+
+    /// Speed of the encoder on a video-like desktop: `cargo test -p oxydesk-rdp --release video_encoding_speed -- --ignored --nocapture`.
+    /// A window of `(w, h)` pixels changes at every frame (moving gradients and a little noise) over a still desktop.
+    #[test]
+    #[ignore = "measures, asserts nothing: run with --release --nocapture"]
+    fn video_encoding_speed() {
+        let (width, height) = (1920usize, 1080usize);
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        // Amplitude of the grain added to the picture: a clean decoded video has little, a noisy one a lot.
+        for (grain, (name, (vw, vh))) in [0i32, 2, 16].into_iter().flat_map(|g| {
+            [
+                ("video 640x360", (640usize, 360usize)),
+                ("video 1280x720", (1280, 720)),
+                ("video 1920x1080 (full screen)", (1920, 1080)),
+            ]
+            .map(move |v| (g, v))
+        }) {
+            let mut noise = move || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                if grain == 0 {
+                    0
+                } else {
+                    ((rng >> 33) as i32).rem_euclid(2 * grain + 1) - grain
+                }
+            };
+            let (vx, vy) = ((width - vw) / 2, (height - vh) / 2);
+            let mut frame = vec![0u8; width * height * 4];
+            for y in 0..height {
+                for x in 0..width {
+                    let i = (y * width + x) * 4;
+                    let stripe = if (y / 18) % 2 == 0 && x % 9 < 6 {
+                        40
+                    } else {
+                        235
+                    };
+                    frame[i..i + 4].copy_from_slice(&[stripe, stripe, stripe, 255]);
+                }
+            }
+            let mut encoder = Encoder::new(width, height);
+            // The first frame sends the whole desktop and is not part of the figures.
+            let first = encoder.encode(&frame).unwrap().unwrap();
+            let mut timings = Vec::new();
+            let mut sizes = Vec::new();
+            for t in 0..90usize {
+                for y in 0..vh {
+                    for x in 0..vw {
+                        let i = ((vy + y) * width + vx + x) * 4;
+                        let moving = ((x + 7 * t) / 3 + (y + 3 * t) / 5) as i32;
+                        let mut v = |k: i32| (moving * k / 4 + noise()).rem_euclid(256) as u8;
+                        let (b, g, r) = (v(3), v(5), v(2));
+                        frame[i..i + 4].copy_from_slice(&[b, g, r, 255]);
+                    }
+                }
+                let start = std::time::Instant::now();
+                let update = encoder.encode(&frame).unwrap().unwrap();
+                timings.push(start.elapsed().as_secs_f64() * 1000.0);
+                sizes.push(update.data.len());
+            }
+            timings.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mean = timings.iter().sum::<f64>() / timings.len() as f64;
+            let p95 = timings[timings.len() * 95 / 100];
+            let kib = sizes.iter().sum::<usize>() as f64 / sizes.len() as f64 / 1024.0;
+            println!(
+                "{name}, grain \u{b1}{grain}: first frame {} KiB; per frame: encode mean {mean:.1} ms, p95 {p95:.1} ms, max {:.1} ms \
+                 (ceiling {:.0} fps); {kib:.0} KiB (= {:.0} Mbit/s at 30 fps, {:.0} Mbit/s at 60 fps)",
+                first.data.len() / 1024,
+                timings.last().unwrap(),
+                1000.0 / mean,
+                kib * 8.0 * 30.0 / 1024.0,
+                kib * 8.0 * 60.0 / 1024.0,
+            );
+        }
+    }
 }

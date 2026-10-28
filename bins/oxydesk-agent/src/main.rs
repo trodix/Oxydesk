@@ -334,7 +334,31 @@ fn video_loop(
     let mut applied_depth = ColorDepth::default();
     let mut applied_outputs = 0;
     let mut seen = 0u64;
+    // OXYDESK_STATS: what the capture hands over and what it costs to pass it to the server.
+    let stats_on = oxydesk_core::stats::enabled();
+    let mut window = oxydesk_core::stats::Window::new(Instant::now());
+    let (mut captured, mut passed) = (
+        oxydesk_core::stats::Gaps::default(),
+        oxydesk_core::stats::Gaps::default(),
+    );
+    let (mut convert_ms, mut socket_ms) = (
+        oxydesk_core::stats::Series::default(),
+        oxydesk_core::stats::Series::default(),
+    );
+    let mut held_skips = 0u64;
     while !stop.load(Ordering::Relaxed) {
+        if stats_on {
+            if let Some(len) = window.due(Instant::now()) {
+                let (cap_rate, cap) = captured.take(len);
+                let (pass_rate, pass) = passed.take(len);
+                tracing::info!(
+                    "stats[agent] captured {cap_rate:.0}/s gap ms [{cap}] | passed {pass_rate:.0}/s gap ms [{pass}] | to_bgra ms [{}] | socket send ms [{}] | held skips {}",
+                    convert_ms.take(),
+                    socket_ms.take(),
+                    std::mem::take(&mut held_skips),
+                );
+            }
+        }
         if d.event {
             if !first {
                 wake.wait(seen, period.max(Duration::from_millis(1)));
@@ -399,6 +423,7 @@ fn video_loop(
             if wanted_key {
                 encoders[i].request_keyframe();
             } else if held(&holds[i]) {
+                held_skips += 1;
                 continue; // the server has frames enough waiting: the next ones would only be thrown away
             }
             let fresh = match d
@@ -415,7 +440,12 @@ fn video_loop(
                 }
             };
             match fresh {
-                Some(f) => last[i] = Some(f),
+                Some(f) => {
+                    if stats_on {
+                        captured.event(Instant::now());
+                    }
+                    last[i] = Some(f);
+                }
                 // Static desktop: re-encode the last frame only if a keyframe is requested.
                 None if wanted_key => {}
                 None => continue,
@@ -427,7 +457,10 @@ fn video_loop(
                 continue;
             };
             if d.raw.load(Ordering::Relaxed) {
-                let msg = match oxydesk_core::pixels::to_bgra(frame) {
+                let converting = Instant::now();
+                let converted = oxydesk_core::pixels::to_bgra(frame);
+                convert_ms.record_duration(converting.elapsed());
+                let msg = match converted {
                     Ok(Some(data)) => FromAgent::VideoRaw {
                         output: i as u32,
                         width: frame.width,
@@ -441,9 +474,14 @@ fn video_loop(
                         return;
                     }
                 };
+                let sending = Instant::now();
                 if !send(&w, &msg) {
                     stop.store(true, Ordering::Relaxed);
                     return;
+                }
+                if stats_on {
+                    socket_ms.record_duration(sending.elapsed());
+                    passed.event(Instant::now());
                 }
                 continue;
             }

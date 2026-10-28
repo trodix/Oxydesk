@@ -20,6 +20,7 @@ pub mod ports;
 pub mod printer;
 pub mod rate;
 pub mod scale;
+pub mod stats;
 pub mod throttle;
 pub mod transfer;
 pub mod wake;
