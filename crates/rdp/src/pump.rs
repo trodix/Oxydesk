@@ -76,8 +76,12 @@ fn progressive_update(
     i: usize,
     size: (usize, usize),
     frame: &oxydesk_core::Frame,
+    convert: &mut oxydesk_core::stats::Series,
 ) -> anyhow::Result<Option<crate::progressive::Update>> {
-    let Some(pixels) = crate::raw::to_bgra(frame).map_err(anyhow::Error::msg)? else {
+    let started = Instant::now();
+    let pixels = crate::raw::to_bgra(frame).map_err(anyhow::Error::msg)?;
+    convert.record_duration(started.elapsed());
+    let Some(pixels) = pixels else {
         return Ok(None);
     };
     while encoders.len() <= i {
@@ -87,6 +91,66 @@ fn progressive_update(
         encoders[i] = crate::progressive::Encoder::new(size.0, size.1);
     }
     encoders[i].encode(&pixels)
+}
+
+/// What the pump measures when `OXYDESK_STATS` is set, reported every `stats::WINDOW`: where the time and the frames go
+/// between the capture and the client's acknowledgement.
+#[derive(Default)]
+struct PumpStats {
+    on: bool,
+    window: Option<oxydesk_core::stats::Window>,
+    ticks: oxydesk_core::stats::Gaps,
+    captured: oxydesk_core::stats::Gaps,
+    sent: oxydesk_core::stats::Gaps,
+    convert_ms: oxydesk_core::stats::Series,
+    encode_ms: oxydesk_core::stats::Series,
+    frame_kib: oxydesk_core::stats::Series,
+    in_flight: oxydesk_core::stats::Series,
+    first_tiles: oxydesk_core::stats::Series,
+    refined_tiles: oxydesk_core::stats::Series,
+    backpressure: u64,
+    unchanged: u64,
+}
+
+impl PumpStats {
+    fn new() -> Self {
+        let on = oxydesk_core::stats::enabled();
+        Self {
+            on,
+            window: on.then(|| oxydesk_core::stats::Window::new(Instant::now())),
+            ..Self::default()
+        }
+    }
+
+    fn report(&mut self, rtt_ms: f32) {
+        use oxydesk_core::stats::WINDOW;
+        let Some(len) = self.window.as_mut().and_then(|w| w.due(Instant::now())) else {
+            return;
+        };
+        let (tick_rate, ticks) = self.ticks.take(len);
+        let (cap_rate, cap) = self.captured.take(len);
+        let (send_rate, send) = self.sent.take(len);
+        let kib = self.frame_kib.take();
+        let mbit_s =
+            kib.mean * kib.count as f32 * 8.0 * 1024.0 / 1e6 / len.as_secs_f32().max(0.001);
+        tracing::info!(
+            "stats[pump] {:.0}s: ticks {tick_rate:.0}/s [{ticks}] | captured {cap_rate:.0}/s gap ms [{cap}] | sent {send_rate:.0}/s gap ms [{send}] | {mbit_s:.1} Mbit/s",
+            len.as_secs_f32().max(WINDOW.as_secs_f32()),
+        );
+        tracing::info!(
+            "stats[pump] to_bgra ms [{}] | convert+encode ms [{}] | frame KiB [{kib}] | tiles first [{}] refined [{}]",
+            self.convert_ms.take(),
+            self.encode_ms.take(),
+            self.first_tiles.take(),
+            self.refined_tiles.take(),
+        );
+        tracing::info!(
+            "stats[pump] frames in flight at send [{}] | rtt {rtt_ms:.1} ms | backpressure skips {} | unchanged skips {}",
+            self.in_flight.take(),
+            std::mem::take(&mut self.backpressure),
+            std::mem::take(&mut self.unchanged),
+        );
+    }
 }
 
 /// Bitmap updates that may wait for IronRDP while it encodes another one.
@@ -374,6 +438,15 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             // One RemoteFX Progressive encoder per output (RemoteFX Progressive mode), dropped with the client's surfaces.
             let mut prog: Vec<crate::progressive::Encoder> = Vec::new();
             let mut report = Instant::now();
+            let mut stats = PumpStats::new();
+            // Experiment: a fixed window (frames per output) instead of the one the rate regulation picks.
+            let window_override = std::env::var("OXYDESK_MAX_IN_FLIGHT")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|n| *n > 0);
+            if let Some(n) = window_override {
+                tracing::info!(frames_per_output = n, "OXYDESK_MAX_IN_FLIGHT: fixed EGFX window");
+            }
             let (mut seen, mut drain) = (0u64, false);
             'pump: while !shared.stop.load(Ordering::Relaxed) {
                 if p.event {
@@ -391,6 +464,9 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     }
                 }
                 let sent_before = sent;
+                if stats.on {
+                    stats.ticks.event(Instant::now());
+                }
                 if let Some(src) = capture.as_mut() {
                     if let Some(update) = src.take_cursor() {
                         match &update {
@@ -692,8 +768,12 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                             }
                         }
                     }
+                    if let Some(n) = window_override {
+                        g.set_max_frames_in_flight(n * outputs.len().max(1) as u32);
+                    }
                     if g.should_backpressure() {
                         dropped += 1;
+                        stats.backpressure += 1;
                         if dropped % 200 == 1 {
                             tracing::debug!(
                                 sent,
@@ -757,6 +837,9 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         }
                         Ok(Some(f)) => {
                             mismatch = None;
+                            if stats.on {
+                                stats.captured.event(Instant::now());
+                            }
                             out.last = Some(f);
                         }
                         Ok(None) if repeat && out.last.is_some() => {}
@@ -776,6 +859,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     // Once an output has sent its frame the window can be full for the next one: check before encoding.
                     if (h264 || p.progressive) && handle.lock().expect("gfx handle mutex").should_backpressure() {
                         dropped += 1;
+                        stats.backpressure += 1;
                         per_output.resize(outputs_len.max(per_output.len()), (0, 0));
                         per_output[i].1 += 1;
                         if pre_encoded {
@@ -790,8 +874,16 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     let payload = if p.progressive {
                         let info = &layout.outputs[i];
                         let size = (info.width as usize, info.height as usize);
-                        match progressive_update(&mut prog, i, size, frame) {
+                        let started = Instant::now();
+                        let converted = stats.convert_ms.count();
+                        let updated = progressive_update(&mut prog, i, size, frame, &mut stats.convert_ms);
+                        if stats.on && stats.convert_ms.count() > converted {
+                            stats.encode_ms.record_duration(started.elapsed());
+                        }
+                        match updated {
                             Ok(Some(update)) => {
+                                stats.first_tiles.record(update.first as f32);
+                                stats.refined_tiles.record(update.upgraded as f32);
                                 tracing::trace!(
                                     new = update.first,
                                     refined = update.upgraded,
@@ -801,7 +893,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                 refinement = Some(update);
                                 Vec::new()
                             }
-                            Ok(None) => continue,
+                            Ok(None) => {
+                                stats.unchanged += 1;
+                                continue;
+                            }
                             Err(e) => {
                                 tracing::error!("progressive encoding: {e}");
                                 if let Some(encoder) = prog.get_mut(i) {
@@ -849,6 +944,7 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         let queued = if let Some(update) = refinement.take() {
                             // The tiles still being refined come back at the next tick, whatever the capture does.
                             deferred |= update.pending;
+                            stats.frame_kib.record(update.data.len() as f32 / 1024.0);
                             g.send_remotefx_progressive_frame(surfaces[i], u32::from(surfaces[i]), update.data, ts)
                         } else if h264 {
                             g.send_avc420_frame(surfaces[i], &payload, &[region], ts)
@@ -874,6 +970,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                         (g.drain_output(), g.channel_id())
                     };
                     sent += 1;
+                    if stats.on {
+                        stats.sent.event(Instant::now());
+                        stats.in_flight.record(handle.lock().expect("gfx handle mutex").frames_in_flight() as f32);
+                    }
                     per_output.resize(outputs_len.max(per_output.len()), (0, 0));
                     per_output[i].0 += 1;
                     if let Some(channel) = channel {
@@ -903,6 +1003,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                     continue;
                 }
                 drain = sent > sent_before; // frames may still be waiting: no sleep
+                if stats.on {
+                    let rtt = handle.lock().expect("gfx handle mutex").qoe_snapshot();
+                    stats.report(rtt.map_or(0.0, |q| q.avg_rtt_ms));
+                }
                 repeat = deferred;
                 if report.elapsed() >= Duration::from_secs(10) {
                     let q = handle.lock().expect("gfx handle mutex").qoe_snapshot();
@@ -950,7 +1054,7 @@ mod tests {
             data: FrameData::Shm((0..70 * 40 * 4).map(|i| (i * 7 % 251) as u8).collect()),
         };
         let mut encoders = Vec::new();
-        let first = progressive_update(&mut encoders, 1, (70, 40), &frame)
+        let first = progressive_update(&mut encoders, 1, (70, 40), &frame, &mut Default::default())
             .unwrap()
             .expect("a first picture");
         assert_eq!((first.first, first.upgraded, first.pending), (2, 0, true));
@@ -960,20 +1064,26 @@ mod tests {
             "one encoder per output up to the one asked for"
         );
         let mut refinements = 0;
-        while let Some(update) = progressive_update(&mut encoders, 1, (70, 40), &frame).unwrap() {
+        while let Some(update) =
+            progressive_update(&mut encoders, 1, (70, 40), &frame, &mut Default::default()).unwrap()
+        {
             assert_eq!(update.first, 0);
             refinements += 1;
             assert!(refinements < 20);
         }
         assert!(refinements > 0);
-        assert!(progressive_update(&mut encoders, 1, (70, 40), &frame)
-            .unwrap()
-            .is_none());
+        assert!(
+            progressive_update(&mut encoders, 1, (70, 40), &frame, &mut Default::default())
+                .unwrap()
+                .is_none()
+        );
         // The client lost its surface: everything starts again.
         encoders[1].reset();
-        assert!(progressive_update(&mut encoders, 1, (70, 40), &frame)
-            .unwrap()
-            .is_some());
+        assert!(
+            progressive_update(&mut encoders, 1, (70, 40), &frame, &mut Default::default())
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
