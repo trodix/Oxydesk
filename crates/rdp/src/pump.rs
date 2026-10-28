@@ -439,6 +439,14 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let mut prog: Vec<crate::progressive::Encoder> = Vec::new();
             let mut report = Instant::now();
             let mut stats = PumpStats::new();
+            // Experiment: a fixed window (frames per output) instead of the one the rate regulation picks.
+            let window_override = std::env::var("OXYDESK_MAX_IN_FLIGHT")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|n| *n > 0);
+            if let Some(n) = window_override {
+                tracing::info!(frames_per_output = n, "OXYDESK_MAX_IN_FLIGHT: fixed EGFX window");
+            }
             let (mut seen, mut drain) = (0u64, false);
             'pump: while !shared.stop.load(Ordering::Relaxed) {
                 if p.event {
@@ -759,6 +767,9 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
                                 }
                             }
                         }
+                    }
+                    if let Some(n) = window_override {
+                        g.set_max_frames_in_flight(n * outputs.len().max(1) as u32);
                     }
                     if g.should_backpressure() {
                         dropped += 1;
