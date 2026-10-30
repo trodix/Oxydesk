@@ -153,6 +153,21 @@ impl PumpStats {
     }
 }
 
+/// Frames per output the client may hold unacknowledged in RemoteFX Progressive mode.
+const PROGRESSIVE_WINDOW: u32 = 4;
+
+/// The fixed EGFX window, in frames per output, that replaces the one the rate regulation picks. That regulation is made
+/// for H.264, where a growing round trip means a queue: with Progressive it mostly measures the client's decoding time and
+/// cut the window to one frame per output, leaving gaps in the stream. `OXYDESK_MAX_IN_FLIGHT` sets another size for any
+/// codec, `0` gives the regulation back.
+fn fixed_window(progressive: bool, setting: Option<&str>) -> Option<u32> {
+    match setting.map(str::parse::<u32>) {
+        Some(Ok(0)) => None,
+        Some(Ok(n)) => Some(n),
+        _ => progressive.then_some(PROGRESSIVE_WINDOW),
+    }
+}
+
 /// Bitmap updates that may wait for IronRDP while it encodes another one.
 const MAX_QUEUED_BITMAPS: usize = 1;
 
@@ -439,13 +454,10 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
             let mut prog: Vec<crate::progressive::Encoder> = Vec::new();
             let mut report = Instant::now();
             let mut stats = PumpStats::new();
-            // Experiment: a fixed window (frames per output) instead of the one the rate regulation picks.
-            let window_override = std::env::var("OXYDESK_MAX_IN_FLIGHT")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .filter(|n| *n > 0);
+            let window_override =
+                fixed_window(p.progressive, std::env::var("OXYDESK_MAX_IN_FLIGHT").ok().as_deref());
             if let Some(n) = window_override {
-                tracing::info!(frames_per_output = n, "OXYDESK_MAX_IN_FLIGHT: fixed EGFX window");
+                tracing::info!(frames_per_output = n, "fixed EGFX window instead of the rate regulation");
             }
             let (mut seen, mut drain) = (0u64, false);
             'pump: while !shared.stop.load(Ordering::Relaxed) {
@@ -1028,6 +1040,17 @@ pub fn spawn(shared: Arc<Shared>, p: PumpParams) -> JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn progressive_has_a_fixed_window_unless_told_otherwise() {
+        use super::fixed_window;
+        assert_eq!(fixed_window(true, None), Some(4));
+        assert_eq!(fixed_window(false, None), None);
+        assert_eq!(fixed_window(true, Some("6")), Some(6));
+        assert_eq!(fixed_window(false, Some("2")), Some(2));
+        assert_eq!(fixed_window(true, Some("0")), None);
+        assert_eq!(fixed_window(true, Some("lots")), Some(4));
+    }
+
     #[test]
     fn a_session_with_another_number_of_outputs_gets_outputs_of_the_configured_size() {
         let configured = Layout::side_by_side(1, 1920, 1080);

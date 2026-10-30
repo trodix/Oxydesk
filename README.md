@@ -65,6 +65,8 @@ thin coloured text stays sharp; `h264` offers the EGFX channel with H.264 4:2:0,
 but blurrier on text; `rfxp` (default) sends RemoteFX Progressive over EGFX: tiles with no chroma subsampling, coarse first then refined
 by upgrade passes while the desktop stays still (whole-pixel precision at the end), so the grain of the first pass goes away
 (tested with mstsc and FreeRDP). An unknown value logs a warning and uses `rfxp`.
+With Progressive, the client may hold 4 unacknowledged frames per output; `OXYDESK_MAX_IN_FLIGHT=<n>` changes that (`0`
+restores the H.264 rate regulation) and `OXYDESK_STATS=1` logs the video path every 2 s (see ADR 020).
 
 ## Build and test
 
