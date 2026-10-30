@@ -39,3 +39,16 @@ does not decode Progressive, so `vm-test` with `rfxp` cannot see images.
 Full-HD first pass: about 36 ms on this host in release (noise-like worst case, 3.5 MB), 1-2 ms per upgrade call.
 Refinement state costs about 36 KB per tile until the tile is complete. A client without EGFX falls back to bitmap updates as
 before.
+
+## Frames in flight
+
+EGFX lets the server send frames before the client has acknowledged the previous ones; the number it may leave unacknowledged
+is the window. The rate regulation made for H.264 (`crates/core/src/rate.rs`) also ran with Progressive and cut the window to
+one frame per output as soon as the round trip grew. With Progressive that round trip is mostly the client's decoding time,
+not a queue, so the window starved the stream: gaps of about 300 ms between sent frames.
+
+Progressive therefore uses a fixed window of 4 frames per output (8 for two monitors) and leaves the regulation to H.264.
+`OXYDESK_MAX_IN_FLIGHT=<n>` sets another size (any codec), `0` gives the regulation back. Measured with `OXYDESK_STATS=1`
+on a video over two outputs (medians of 2 s windows): 48 frames/s sent instead of 34, p95 gap between frames 52 ms instead of
+140 ms, at the price of a longer round trip (135 ms instead of 63 ms). The client acknowledges about 47 frames/s whatever the
+window, so a larger one only adds latency.
