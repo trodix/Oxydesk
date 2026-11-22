@@ -2,7 +2,7 @@
 # Drives a real RDP client in a virtual X server against the synthetic desktop of `oxydesk --test-mode` and checks
 # what it displays, like a user would: desktop size, live frames, keyboard (marker block colour), clipboard
 # round trip and dynamic resizing.
-# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives printers
+# usage: run.sh CLIENT [SCENARIO...]    CLIENT: xfreerdp | remmina    SCENARIO: screen keyboard clipboard mouse resize drives printers smartcard
 #   fallback_nohh264 / fallback_nogfx: client without H.264 (uncompressed EGFX) / without EGFX (bitmap updates): pixels
 #   compared with what the synthetic desktop draws (probe.py integrity). clipboard_image / clipboard_files: round trips.
 # env: RDP_HOST (127.0.0.1) RDP_PORT (3389) RDP_USER (test) RDP_PASS (x) OUT (/out) DESKTOP (1920x1080) HOST_UID HOST_GID
@@ -360,6 +360,22 @@ B
   check printers_checked "$([[ -e "$OUT/printers.done" ]]; echo $?)" "host-side check finished"
   stop_all
   pkill -x cupsd
+}
+
+# The client redirects the smart card readers of the host (the container sees the host's pcscd socket in
+# /run/pcscd, only as a client): the host checks, through the PC/SC socket of the desktop, that the same reader
+# and the same card are there (ci/smartcard-test.sh creates $OUT/smartcard.done). Only xfreerdp (/smartcard).
+scenario_smartcard() {
+  rm -f "$OUT/smartcard.done"
+  [[ "$CLIENT" == xfreerdp ]] || { echo "SKIP  $CLIENT/smartcard  only xfreerdp"; return 0; }
+  start_x 2560 1440
+  start_client smartcard /size:"${DW}x${DH}" /smartcard
+  locate "$DW" "$DH" 30 || { check smartcard_desktop 1 "desktop not shown"; stop_all; return; }
+  echo "smartcard: waiting for the host to check the redirected reader"
+  local end=$((SECONDS + 150))
+  while [[ $SECONDS -lt $end && ! -e "$OUT/smartcard.done" ]]; do sleep 0.5; done
+  check smartcard_checked "$([[ -e "$OUT/smartcard.done" ]]; echo $?)" "host-side check finished"
+  stop_all
 }
 
 for s in "${SCENARIOS[@]}"; do
