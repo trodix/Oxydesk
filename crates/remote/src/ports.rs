@@ -34,6 +34,7 @@ pub fn desktop_ports(link: Arc<AgentLink>, outputs: u32) -> DesktopPorts {
         clipboard: Box::new(RemoteClipboard(link.clone())),
         drives: Some(AgentLink::drive_host(&link)),
         printers: Some(AgentLink::printer_host(&link)),
+        smartcards: Some(AgentLink::smartcard_host(&link)),
         audio: Some(Arc::new(RemoteAudio(link))),
     }
 }
@@ -273,6 +274,7 @@ mod tests {
         assert_eq!(ports.encoders.len(), 2);
         assert!(ports.make_encoder.is_some());
         assert!(ports.audio.is_some() && ports.drives.is_some() && ports.printers.is_some());
+        assert!(ports.smartcards.is_some());
     }
 
     #[test]

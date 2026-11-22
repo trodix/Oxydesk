@@ -791,6 +791,7 @@ pub fn ports(
         audio: None,
         drives: None,
         printers: None,
+        smartcards: None,
     }
 }
 

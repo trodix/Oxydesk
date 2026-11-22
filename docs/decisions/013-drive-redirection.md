@@ -19,7 +19,7 @@ An RDP client can share folders (mstsc: "Local resources > Drives", xfreerdp: `/
 - End to end: `drives` scenario of the test client (`--drive-share DIR --drive-mount DIR`): files both ways (`--drive-mib`, 64 MiB ≈ 180 MiB/s read and 110 MiB/s write on the synthetic desktop), rename, `mkdir`/`rmdir`, delete, clean error on a missing file. `bash ci/drives-test.sh` runs it against `oxydesk --test-mode` and checks that nothing stays mounted. `ci/clients-test.sh` checks the files from the host while xfreerdp and Remmina (container) stay connected.
 
 ## Limits
-- Only file drives are accepted here (printers are ADR 014; no serial ports or smart cards). Case follows Linux: two files differing only by case coexist on the desktop side, not on the Windows side.
+- Only file drives are accepted here (printers are ADR 014, smart cards ADR 021; no serial ports). Case follows Linux: two files differing only by case coexist on the desktop side, not on the Windows side.
 - No locks, links or extended attributes; Unix permissions are synthetic (0755/0644, 0555/0444 for a read-only drive).
 - A client disconnecting during a write leaves a truncated file; in-flight operations fail with `EIO`.
 

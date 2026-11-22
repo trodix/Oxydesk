@@ -1,0 +1,15 @@
+[package]
+name = "oxydesk-pcsc"
+description = "PC/SC (libpcsclite) server for the smart card readers redirected by the RDP client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxydesk-core.workspace = true
+libc = "0.2"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

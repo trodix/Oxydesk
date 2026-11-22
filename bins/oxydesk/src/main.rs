@@ -26,6 +26,8 @@ const USAGE: &str = "usage: oxydesk (--test-mode | --login [--authd-socket PATH]
   --printers DIR     printer redirection: one socket per printer of the client in DIR (default with --session kwin: $XDG_RUNTIME_DIR/oxydesk-printers; `off` disables)
   --adaptive-bitrate on|off  bitrate and frames in flight follow what the client's link carries (default: on)
   --printers-cups on|off  also make a CUPS queue per printer (default: on if CUPS answers)
+  --smartcard PATH   smart card redirection: the client's readers are served as PC/SC readers on the Unix socket PATH, which the session
+                          finds through PCSCLITE_CSOCK_NAME (default with --session kwin: $XDG_RUNTIME_DIR/oxydesk-pcsc/pcsc.sock; `off` disables)
   --session-policy new|attach|auto  login mode: a login joins the Plasma session the user already has if there is one, else starts
                           one (default), always joins it (refused when there is none) or always starts a session of its own
   --virtual-outputs remove|keep  login mode, joined session: when the client leaves, the monitors it added are kept (default) as
@@ -228,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
         None | Some("auto") => choice.wants_dmabuf(),
         Some(other) => anyhow::bail!("unknown --dmabuf: {other} (auto|on|off)"),
     };
+    let smartcard_socket = smartcard_socket(&args, kwin_mode);
     let transfer = source_transfer(kwin_mode)?;
     let encoders = (0..outputs)
         .map(|_| {
@@ -276,6 +279,16 @@ async fn main() -> anyhow::Result<()> {
                     height: u32::from(height),
                     outputs,
                     programs,
+                    // The applications of the session find the PC/SC service of the client's readers there.
+                    env: smartcard_socket
+                        .iter()
+                        .map(|p| {
+                            (
+                                "PCSCLITE_CSOCK_NAME".to_owned(),
+                                p.to_string_lossy().into_owned(),
+                            )
+                        })
+                        .collect(),
                 });
             session
                 .start()
@@ -338,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
     let printers = printers_host(&args, kwin_mode);
+    let smartcards = smartcard_host(smartcard_socket.as_deref());
     let ports = Ports {
         capture,
         encoders,
@@ -351,6 +365,7 @@ async fn main() -> anyhow::Result<()> {
         audio,
         drives,
         printers,
+        smartcards,
     };
     let config = ServerConfig {
         addr,
@@ -439,6 +454,31 @@ fn printer_modes(args: &[String]) -> anyhow::Result<oxydesk_core::PrinterModes> 
         Some(spec) => oxydesk_core::PrinterModes::parse(&spec)
             .map_err(|e| anyhow::anyhow!("--printer-mode: {e}")),
         None => Ok(oxydesk_core::PrinterModes::default()),
+    }
+}
+
+/// The socket of the PC/SC service, per `--smartcard`: a path, `off`, or by default the fixed place of the
+/// session's runtime directory in a KWin session (nothing outside one).
+fn smartcard_socket(args: &[String], kwin_mode: bool) -> Option<PathBuf> {
+    match arg::<String>(args, "--smartcard").as_deref() {
+        Some("off") => None,
+        Some(path) => Some(path.into()),
+        None if kwin_mode => std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| oxydesk_pcsc::default_socket_path(std::path::Path::new(&d))),
+        None => None,
+    }
+}
+
+/// The host of the client's smart card readers: the PC/SC service listening on `socket`.
+fn smartcard_host(
+    socket: Option<&std::path::Path>,
+) -> Option<std::sync::Arc<dyn oxydesk_core::SmartcardHost>> {
+    match oxydesk_pcsc::PcscServer::start(socket?) {
+        Ok(server) => Some(server),
+        Err(e) => {
+            tracing::warn!("smart card redirection disabled: {e}");
+            None
+        }
     }
 }
 
@@ -559,6 +599,23 @@ mod tests {
         assert!(printers_host(&args(&["--printers", "off"]), true).is_none());
         // Outside a KWin session nothing is redirected unless a directory is given.
         assert!(printers_host(&[], false).is_none());
+    }
+
+    #[test]
+    fn the_smartcard_socket_follows_the_option_and_the_session_kind() {
+        assert_eq!(smartcard_socket(&args(&["--smartcard", "off"]), true), None);
+        assert_eq!(smartcard_socket(&[], false), None);
+        assert_eq!(
+            smartcard_socket(&args(&["--smartcard", "/tmp/x/pcsc.sock"]), false),
+            Some(PathBuf::from("/tmp/x/pcsc.sock"))
+        );
+        // Without a runtime directory there is no default place.
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            assert_eq!(smartcard_socket(&[], true), None);
+        } else {
+            let p = smartcard_socket(&[], true).unwrap();
+            assert!(p.ends_with("oxydesk-pcsc/pcsc.sock"), "{p:?}");
+        }
     }
 
     #[test]

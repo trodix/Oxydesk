@@ -7,6 +7,7 @@ mod convert;
 mod drives;
 mod printers;
 mod settings;
+mod smartcard;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -147,6 +148,14 @@ fn build_desktop(args: &[String]) -> anyhow::Result<Desktop> {
                         height,
                         outputs,
                         programs,
+                        // The PC/SC service of the agent serves this socket (see `serve`): the programs and the
+                        // services activated through D-Bus find the client's readers there.
+                        env: vec![(
+                            "PCSCLITE_CSOCK_NAME".into(),
+                            oxydesk_pcsc::default_socket_path(&runtime_dir())
+                                .to_string_lossy()
+                                .into_owned(),
+                        )],
                     });
                 kwin.start()
                     .map_err(|e| anyhow::anyhow!("KWin session: {e}"))?;
@@ -732,6 +741,24 @@ fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
             None
         }
     };
+    // Smart card readers of the client: a PC/SC service in the session for the duration of the connection.
+    let pcsc =
+        match oxydesk_pcsc::PcscServer::start(&oxydesk_pcsc::default_socket_path(&runtime_dir())) {
+            Ok(server) => {
+                let w = writer.clone();
+                Some((
+                    server.clone(),
+                    smartcard::Smartcards::new(
+                        server,
+                        Arc::new(move |msg: &FromAgent| send(&w, msg)),
+                    ),
+                ))
+            }
+            Err(e) => {
+                tracing::warn!("smart card redirection unavailable: {e}");
+                None
+            }
+        };
     // Audio: one stream at a time, stopped by a flag specific to each open.
     let mut audio_stop: Option<Arc<AtomicBool>> = None;
     let mut reader = stream;
@@ -955,6 +982,23 @@ fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
                     printers.pending.complete(req_id, result);
                 }
             }
+            ToAgent::SmartcardAttached => {
+                tracing::info!("smart card device attached");
+                if let Some((_, smartcards)) = &pcsc {
+                    smartcards.attached();
+                }
+            }
+            ToAgent::SmartcardDetached => {
+                tracing::info!("smart card device detached");
+                if let Some((_, smartcards)) = &pcsc {
+                    smartcards.detached();
+                }
+            }
+            ToAgent::SmartcardReply { req_id, result } => {
+                if let Some((_, smartcards)) = &pcsc {
+                    smartcards.pending().complete(req_id, result);
+                }
+            }
             ToAgent::AudioClose => {
                 if let Some(s) = audio_stop.take() {
                     s.store(true, Ordering::Relaxed);
@@ -969,6 +1013,10 @@ fn serve_connection(d: &Arc<Desktop>, stream: UnixStream) {
     }
     if let Some(printers) = &printers {
         printers.close();
+    }
+    if let Some((server, smartcards)) = &pcsc {
+        smartcards.close();
+        server.shutdown();
     }
     if let Some(s) = audio_stop {
         s.store(true, Ordering::Relaxed);

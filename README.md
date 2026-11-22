@@ -17,6 +17,9 @@ RemoteFX or H.264 video, one KWin session per user.
 - **Display**: dynamic resize (Display Control) and up to 16 monitors.
 - **Input and clipboard**: keyboard, mouse, cursor shape; clipboard with text, images and files (both ways).
 - **Audio** output, **drive** redirection (FUSE) and **printer** redirection (CUPS, raw or XPS jobs).
+- **Smart card** redirection (MS-RDPESC): the reader of the client appears in the session as a PC/SC reader (ADR 021).
+  `PCSCLITE_CSOCK_NAME` points the session's programs to it (`opensc-tool`, `pkcs11-tool`, Firefox through p11-kit...);
+  a shell opened outside the session has to export `PCSCLITE_CSOCK_NAME=$XDG_RUNTIME_DIR/oxydesk-pcsc/pcsc.sock`.
 - **Login throttling** per client address and per account.
 - **Login screen**: a client that sends no password (`mstsc` without saved credentials) gets a login form, with the user name
   it sent already filled in, as with xrdp (`--login` mode; the typed password goes through the same PAM check and throttling).
@@ -101,7 +104,10 @@ and containers for FreeRDP/Remmina. Packages: `ci/package-container.sh deb|rpm|t
 - Clipboard: no primary selection; not tested with Klipper.
 - Printers: no full Easy Print (MS-RDPEXPS): tray, duplex and colour are not transferred.
 - SELinux enforcing (Fedora/Rocky) is untested and no policy is shipped.
-- Not covered: smart cards, microphone, USB, several simultaneous clients per user, HiDPI.
+- Smart cards: only the readers are redirected (a PIN pad works as far as `SCardControl` carries it); one device per
+  connection; `SCardSetAttrib`, `LocateCards` and the cache calls are not supported. Tested with xfreerdp and a physical
+  reader; mstsc is not tested yet.
+- Not covered: microphone, USB, several simultaneous clients per user, HiDPI.
 
 ## License
 

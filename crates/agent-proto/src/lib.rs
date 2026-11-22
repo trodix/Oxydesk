@@ -166,6 +166,104 @@ pub enum PrintResult {
     Job(u64),
 }
 
+/// Longest APDU, control or attribute buffer, and number of readers of one smart card call.
+pub const MAX_SC_BLOB: usize = 1024 * 1024;
+pub const MAX_SC_READERS: usize = 256;
+
+/// One reader in a `ScOp::GetStatusChange`: its name and the state the application knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScReaderQuery {
+    pub name: String,
+    pub current_state: u32,
+}
+
+/// The answer about one reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScReaderState {
+    pub name: String,
+    pub event_state: u32,
+    pub atr: Vec<u8>,
+}
+
+/// An operation on the smart card subsystem of the client, asked by the agent to the server (which holds the
+/// client's device). Contexts and cards are the opaque numbers of the server, the agent only hands them back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScOp {
+    EstablishContext,
+    ReleaseContext(u64),
+    ListReaders(u64),
+    GetStatusChange {
+        context: u64,
+        timeout_ms: u32,
+        readers: Vec<ScReaderQuery>,
+    },
+    Cancel(u64),
+    Connect {
+        context: u64,
+        reader: String,
+        share_mode: u32,
+        protocols: u32,
+    },
+    Reconnect {
+        card: u64,
+        share_mode: u32,
+        protocols: u32,
+        initialization: u32,
+    },
+    Disconnect {
+        card: u64,
+        disposition: u32,
+    },
+    BeginTransaction(u64),
+    EndTransaction {
+        card: u64,
+        disposition: u32,
+    },
+    Transmit {
+        card: u64,
+        protocol: u32,
+        apdu: Vec<u8>,
+        max_response: u32,
+    },
+    Status(u64),
+    Control {
+        card: u64,
+        code: u32,
+        input: Vec<u8>,
+        max_response: u32,
+    },
+    GetAttrib {
+        card: u64,
+        attribute: u32,
+        max_response: u32,
+    },
+}
+
+/// Answer to a `ScOp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScResult {
+    Ok,
+    Context(u64),
+    Readers(Vec<String>),
+    States(Vec<ScReaderState>),
+    Connected {
+        card: u64,
+        protocol: u32,
+    },
+    Protocol(u32),
+    Data(Vec<u8>),
+    Card {
+        reader: String,
+        state: u32,
+        protocol: u32,
+        atr: Vec<u8>,
+    },
+    /// The client answered with this `SCARD_*` code.
+    Code(u32),
+    /// The link to the client failed.
+    Link(String),
+}
+
 /// Messages from the server to the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToAgent {
@@ -263,6 +361,16 @@ pub enum ToAgent {
         req_id: u32,
         result: PrintResult,
     },
+    /// The client redirected its smart card readers; the agent serves them to the session as PC/SC readers and
+    /// sends the calls with `FromAgent::SmartcardCall`.
+    SmartcardAttached,
+    /// The readers are gone: the calls in progress fail.
+    SmartcardDetached,
+    /// Answer to `FromAgent::SmartcardCall` with the same `req_id`.
+    SmartcardReply {
+        req_id: u32,
+        result: ScResult,
+    },
     /// Target bitrate of each output's H.264 stream (the link of the client carries less or more than before).
     SetBitrate {
         bitrate_bps: u32,
@@ -344,6 +452,11 @@ pub enum FromAgent {
         req_id: u32,
         printer_id: u32,
         op: PrintOp,
+    },
+    /// An operation on the redirected smart card readers; answered by `ToAgent::SmartcardReply`.
+    SmartcardCall {
+        req_id: u32,
+        op: ScOp,
     },
 }
 
@@ -446,6 +559,175 @@ impl Out {
             PrintResult::Job(job) => {
                 self.u8(3);
                 self.u64(*job);
+            }
+        }
+    }
+    fn blob(&mut self, v: &[u8]) {
+        self.u32(v.len() as u32);
+        self.bytes(v);
+    }
+    fn sc_op(&mut self, op: &ScOp) {
+        match op {
+            ScOp::EstablishContext => self.u8(0),
+            ScOp::ReleaseContext(c) => {
+                self.u8(1);
+                self.u64(*c);
+            }
+            ScOp::ListReaders(c) => {
+                self.u8(2);
+                self.u64(*c);
+            }
+            ScOp::GetStatusChange {
+                context,
+                timeout_ms,
+                readers,
+            } => {
+                self.u8(3);
+                self.u64(*context);
+                self.u32(*timeout_ms);
+                self.u32(readers.len() as u32);
+                for r in readers {
+                    self.str(&r.name);
+                    self.u32(r.current_state);
+                }
+            }
+            ScOp::Cancel(c) => {
+                self.u8(4);
+                self.u64(*c);
+            }
+            ScOp::Connect {
+                context,
+                reader,
+                share_mode,
+                protocols,
+            } => {
+                self.u8(5);
+                self.u64(*context);
+                self.u32(*share_mode);
+                self.u32(*protocols);
+                self.str(reader);
+            }
+            ScOp::Reconnect {
+                card,
+                share_mode,
+                protocols,
+                initialization,
+            } => {
+                self.u8(6);
+                self.u64(*card);
+                self.u32(*share_mode);
+                self.u32(*protocols);
+                self.u32(*initialization);
+            }
+            ScOp::Disconnect { card, disposition } => {
+                self.u8(7);
+                self.u64(*card);
+                self.u32(*disposition);
+            }
+            ScOp::BeginTransaction(c) => {
+                self.u8(8);
+                self.u64(*c);
+            }
+            ScOp::EndTransaction { card, disposition } => {
+                self.u8(9);
+                self.u64(*card);
+                self.u32(*disposition);
+            }
+            ScOp::Transmit {
+                card,
+                protocol,
+                apdu,
+                max_response,
+            } => {
+                self.u8(10);
+                self.u64(*card);
+                self.u32(*protocol);
+                self.u32(*max_response);
+                self.bytes(apdu);
+            }
+            ScOp::Status(c) => {
+                self.u8(11);
+                self.u64(*c);
+            }
+            ScOp::Control {
+                card,
+                code,
+                input,
+                max_response,
+            } => {
+                self.u8(12);
+                self.u64(*card);
+                self.u32(*code);
+                self.u32(*max_response);
+                self.bytes(input);
+            }
+            ScOp::GetAttrib {
+                card,
+                attribute,
+                max_response,
+            } => {
+                self.u8(13);
+                self.u64(*card);
+                self.u32(*attribute);
+                self.u32(*max_response);
+            }
+        }
+    }
+    fn sc_result(&mut self, r: &ScResult) {
+        match r {
+            ScResult::Ok => self.u8(0),
+            ScResult::Context(c) => {
+                self.u8(1);
+                self.u64(*c);
+            }
+            ScResult::Readers(names) => {
+                self.u8(2);
+                self.u32(names.len() as u32);
+                for n in names {
+                    self.str(n);
+                }
+            }
+            ScResult::States(states) => {
+                self.u8(3);
+                self.u32(states.len() as u32);
+                for s in states {
+                    self.str(&s.name);
+                    self.u32(s.event_state);
+                    self.blob(&s.atr);
+                }
+            }
+            ScResult::Connected { card, protocol } => {
+                self.u8(4);
+                self.u64(*card);
+                self.u32(*protocol);
+            }
+            ScResult::Protocol(p) => {
+                self.u8(5);
+                self.u32(*p);
+            }
+            ScResult::Data(d) => {
+                self.u8(6);
+                self.bytes(d);
+            }
+            ScResult::Card {
+                reader,
+                state,
+                protocol,
+                atr,
+            } => {
+                self.u8(7);
+                self.u32(*state);
+                self.u32(*protocol);
+                self.str(reader);
+                self.blob(atr);
+            }
+            ScResult::Code(c) => {
+                self.u8(8);
+                self.u32(*c);
+            }
+            ScResult::Link(m) => {
+                self.u8(9);
+                self.str(m);
             }
         }
     }
@@ -686,6 +968,154 @@ impl<'a> In<'a> {
             _ => return Err(ProtoError::Invalid("unknown print result")),
         })
     }
+    fn blob(&mut self) -> Result<Vec<u8>, ProtoError> {
+        let n = self.u32()? as usize;
+        if n > MAX_SC_BLOB {
+            return Err(ProtoError::Invalid("smart card buffer too large"));
+        }
+        Ok(self.take(n)?.to_vec())
+    }
+    fn sc_op(&mut self) -> Result<ScOp, ProtoError> {
+        Ok(match self.u8()? {
+            0 => ScOp::EstablishContext,
+            1 => ScOp::ReleaseContext(self.u64()?),
+            2 => ScOp::ListReaders(self.u64()?),
+            3 => {
+                let context = self.u64()?;
+                let timeout_ms = self.u32()?;
+                let n = self.u32()? as usize;
+                if n > MAX_SC_READERS {
+                    return Err(ProtoError::Invalid("too many readers"));
+                }
+                // Each entry takes at least 6 bytes: a lying count cannot trigger a big allocation.
+                let mut readers = Vec::with_capacity(n.min(self.0.len() / 6));
+                for _ in 0..n {
+                    readers.push(ScReaderQuery {
+                        name: self.str()?,
+                        current_state: self.u32()?,
+                    });
+                }
+                ScOp::GetStatusChange {
+                    context,
+                    timeout_ms,
+                    readers,
+                }
+            }
+            4 => ScOp::Cancel(self.u64()?),
+            5 => ScOp::Connect {
+                context: self.u64()?,
+                share_mode: self.u32()?,
+                protocols: self.u32()?,
+                reader: self.str()?,
+            },
+            6 => ScOp::Reconnect {
+                card: self.u64()?,
+                share_mode: self.u32()?,
+                protocols: self.u32()?,
+                initialization: self.u32()?,
+            },
+            7 => ScOp::Disconnect {
+                card: self.u64()?,
+                disposition: self.u32()?,
+            },
+            8 => ScOp::BeginTransaction(self.u64()?),
+            9 => ScOp::EndTransaction {
+                card: self.u64()?,
+                disposition: self.u32()?,
+            },
+            10 => {
+                let card = self.u64()?;
+                let protocol = self.u32()?;
+                let max_response = self.u32()?;
+                let apdu = self.rest();
+                if apdu.len() > MAX_SC_BLOB {
+                    return Err(ProtoError::Invalid("smart card buffer too large"));
+                }
+                ScOp::Transmit {
+                    card,
+                    protocol,
+                    apdu,
+                    max_response,
+                }
+            }
+            11 => ScOp::Status(self.u64()?),
+            12 => {
+                let card = self.u64()?;
+                let code = self.u32()?;
+                let max_response = self.u32()?;
+                let input = self.rest();
+                if input.len() > MAX_SC_BLOB {
+                    return Err(ProtoError::Invalid("smart card buffer too large"));
+                }
+                ScOp::Control {
+                    card,
+                    code,
+                    input,
+                    max_response,
+                }
+            }
+            13 => ScOp::GetAttrib {
+                card: self.u64()?,
+                attribute: self.u32()?,
+                max_response: self.u32()?,
+            },
+            _ => return Err(ProtoError::Invalid("unknown smart card operation")),
+        })
+    }
+    fn sc_result(&mut self) -> Result<ScResult, ProtoError> {
+        Ok(match self.u8()? {
+            0 => ScResult::Ok,
+            1 => ScResult::Context(self.u64()?),
+            2 => {
+                let n = self.u32()? as usize;
+                if n > MAX_SC_READERS {
+                    return Err(ProtoError::Invalid("too many readers"));
+                }
+                let mut names = Vec::with_capacity(n.min(self.0.len() / 2));
+                for _ in 0..n {
+                    names.push(self.str()?);
+                }
+                ScResult::Readers(names)
+            }
+            3 => {
+                let n = self.u32()? as usize;
+                if n > MAX_SC_READERS {
+                    return Err(ProtoError::Invalid("too many readers"));
+                }
+                // Each entry takes at least 10 bytes.
+                let mut states = Vec::with_capacity(n.min(self.0.len() / 10));
+                for _ in 0..n {
+                    states.push(ScReaderState {
+                        name: self.str()?,
+                        event_state: self.u32()?,
+                        atr: self.blob()?,
+                    });
+                }
+                ScResult::States(states)
+            }
+            4 => ScResult::Connected {
+                card: self.u64()?,
+                protocol: self.u32()?,
+            },
+            5 => ScResult::Protocol(self.u32()?),
+            6 => {
+                let data = self.rest();
+                if data.len() > MAX_SC_BLOB {
+                    return Err(ProtoError::Invalid("smart card buffer too large"));
+                }
+                ScResult::Data(data)
+            }
+            7 => ScResult::Card {
+                state: self.u32()?,
+                protocol: self.u32()?,
+                reader: self.str()?,
+                atr: self.blob()?,
+            },
+            8 => ScResult::Code(self.u32()?),
+            9 => ScResult::Link(self.str()?),
+            _ => return Err(ProtoError::Invalid("unknown smart card result")),
+        })
+    }
     fn drive_op(&mut self) -> Result<DriveOp, ProtoError> {
         Ok(match self.u8()? {
             0 => DriveOp::Stat(self.str()?),
@@ -911,6 +1341,13 @@ impl Message for ToAgent {
                 o.print_result(result);
                 22
             }
+            Self::SmartcardAttached => 26,
+            Self::SmartcardDetached => 27,
+            Self::SmartcardReply { req_id, result } => {
+                o.u32(*req_id);
+                o.sc_result(result);
+                28
+            }
             Self::SetBitrate { bitrate_bps } => {
                 o.u32(*bitrate_bps);
                 23
@@ -1018,6 +1455,12 @@ impl Message for ToAgent {
             22 => Self::PrintReply {
                 req_id: i.u32()?,
                 result: i.print_result()?,
+            },
+            26 => Self::SmartcardAttached,
+            27 => Self::SmartcardDetached,
+            28 => Self::SmartcardReply {
+                req_id: i.u32()?,
+                result: i.sc_result()?,
             },
             23 => Self::SetBitrate {
                 bitrate_bps: i.u32()?,
@@ -1146,6 +1589,11 @@ impl Message for FromAgent {
                 o.print_op(op);
                 15
             }
+            Self::SmartcardCall { req_id, op } => {
+                o.u32(*req_id);
+                o.sc_op(op);
+                16
+            }
         };
         (tag, o.0)
     }
@@ -1226,6 +1674,10 @@ impl Message for FromAgent {
                 req_id: i.u32()?,
                 printer_id: i.u32()?,
                 op: i.print_op()?,
+            },
+            16 => Self::SmartcardCall {
+                req_id: i.u32()?,
+                op: i.sc_op()?,
             },
             _ => return Err(ProtoError::Invalid("unknown tag")),
         };
@@ -1569,6 +2021,142 @@ mod tests {
                 op,
             });
         }
+    }
+
+    #[test]
+    fn smartcard_messages_roundtrip() {
+        roundtrip(ToAgent::SmartcardAttached);
+        roundtrip(ToAgent::SmartcardDetached);
+        let atr = vec![0x3B, 0x75, 0x13, 0x00, 0x00, 0x45, 0x09, 0xEA, 0x90, 0x00];
+        for result in [
+            ScResult::Ok,
+            ScResult::Context(u64::MAX),
+            ScResult::Readers(vec![]),
+            ScResult::Readers(vec!["Lecteur é 00 00".into(), "B".into()]),
+            ScResult::States(vec![
+                ScReaderState {
+                    name: "A".into(),
+                    event_state: 0x0001_0022,
+                    atr: atr.clone(),
+                },
+                ScReaderState {
+                    name: "B".into(),
+                    event_state: 0x12,
+                    atr: vec![],
+                },
+            ]),
+            ScResult::Connected {
+                card: 7,
+                protocol: 2,
+            },
+            ScResult::Protocol(1),
+            ScResult::Data(vec![]),
+            ScResult::Data(vec![9; 4000]),
+            ScResult::Card {
+                reader: "R".into(),
+                state: 6,
+                protocol: 2,
+                atr: atr.clone(),
+            },
+            ScResult::Code(0x8010_000C),
+            ScResult::Link("lien".into()),
+        ] {
+            roundtrip(ToAgent::SmartcardReply { req_id: 3, result });
+        }
+        for op in [
+            ScOp::EstablishContext,
+            ScOp::ReleaseContext(1),
+            ScOp::ListReaders(2),
+            ScOp::GetStatusChange {
+                context: 3,
+                timeout_ms: u32::MAX,
+                readers: vec![
+                    ScReaderQuery {
+                        name: "A".into(),
+                        current_state: 0,
+                    },
+                    ScReaderQuery {
+                        name: "\\?PnP?\\Notification".into(),
+                        current_state: 0x0002_0010,
+                    },
+                ],
+            },
+            ScOp::Cancel(4),
+            ScOp::Connect {
+                context: 5,
+                reader: "Lecteur é".into(),
+                share_mode: 2,
+                protocols: 3,
+            },
+            ScOp::Reconnect {
+                card: 6,
+                share_mode: 2,
+                protocols: 3,
+                initialization: 1,
+            },
+            ScOp::Disconnect {
+                card: 6,
+                disposition: 0,
+            },
+            ScOp::BeginTransaction(6),
+            ScOp::EndTransaction {
+                card: 6,
+                disposition: 0,
+            },
+            ScOp::Transmit {
+                card: 6,
+                protocol: 2,
+                apdu: vec![0, 0xA4, 4, 0],
+                max_response: 258,
+            },
+            ScOp::Transmit {
+                card: 6,
+                protocol: 1,
+                apdu: vec![],
+                max_response: 0,
+            },
+            ScOp::Status(6),
+            ScOp::Control {
+                card: 6,
+                code: 0x0031_3520,
+                input: vec![1, 2, 3],
+                max_response: 64,
+            },
+            ScOp::GetAttrib {
+                card: 6,
+                attribute: 0x0001_0100,
+                max_response: 256,
+            },
+        ] {
+            roundtrip(FromAgent::SmartcardCall { req_id: 1, op });
+        }
+    }
+
+    #[test]
+    fn smartcard_buffers_and_counts_are_bounded() {
+        // A lying reader count: refused, without allocating for it.
+        let mut payload = 1u32.to_be_bytes().to_vec();
+        payload.push(3);
+        payload.extend_from_slice(&9u64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(FromAgent::decode(16, &payload).is_err());
+        // A state whose ATR claims more than what is there.
+        let mut payload = 1u32.to_be_bytes().to_vec();
+        payload.push(3);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.push(b'A');
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(ToAgent::decode(28, &payload).is_err());
+        // Unknown operation and result.
+        let mut payload = 1u32.to_be_bytes().to_vec();
+        payload.push(99);
+        assert!(FromAgent::decode(16, &payload).is_err());
+        assert!(ToAgent::decode(28, &payload).is_err());
+        // Truncated call.
+        assert!(FromAgent::decode(16, &[0, 0, 0, 1, 1, 0, 0]).is_err());
     }
 
     #[test]

@@ -99,6 +99,8 @@ pub struct AgentLink {
     pub(crate) drives: crate::drives::Drives,
     /// Printers of the client, served by the agent.
     pub(crate) printers: crate::printers::Printers,
+    /// The client's smart card readers, served by the agent.
+    pub(crate) smartcards: crate::smartcard::Smartcards,
     /// Latest pointer change not yet taken (only the last one matters).
     cursor: Mutex<Option<oxydesk_core::CursorUpdate>>,
     /// Colour depth last sent to the agent, in bits per pixel (`32`: true colour, what an agent starts with).
@@ -175,6 +177,7 @@ impl AgentLink {
             files: Arc::new(FileExchange::default()),
             drives: Default::default(),
             printers: Default::default(),
+            smartcards: Default::default(),
             cursor: Mutex::new(None),
             color_depth: std::sync::atomic::AtomicU8::new(32),
             raw: std::sync::atomic::AtomicBool::new(false),
@@ -392,6 +395,14 @@ impl AgentLink {
                     this.send(&ToAgent::PrintReply { req_id, result });
                 });
             }
+            FromAgent::SmartcardCall { req_id, op } => {
+                // The client's answer can take a long time (a card to wait for): not in the reader thread.
+                let this = this.clone();
+                std::thread::spawn(move || {
+                    let result = crate::smartcard::execute(&this, op);
+                    this.send(&ToAgent::SmartcardReply { req_id, result });
+                });
+            }
             FromAgent::Audio(bytes) => {
                 let mut q = self.audio.lock().expect("audio mutex");
                 if q.open {
@@ -429,6 +440,11 @@ impl AgentLink {
     /// Where the printers redirected by the client are announced (the agent makes their sockets and queues).
     pub fn printer_host(this: &Arc<Self>) -> Arc<crate::printers::AgentPrinters> {
         Arc::new(crate::printers::AgentPrinters(Arc::downgrade(this)))
+    }
+
+    /// Where the client's smart card readers are announced (the agent serves them as PC/SC readers).
+    pub fn smartcard_host(this: &Arc<Self>) -> Arc<crate::smartcard::AgentSmartcards> {
+        Arc::new(crate::smartcard::AgentSmartcards(Arc::downgrade(this)))
     }
 
     /// Where the drives redirected by the client are announced (the agent mounts them).
@@ -1167,6 +1183,219 @@ mod tests {
         );
         let (link, _agent) = pair();
         assert!(!link.set_layout(vec![rect(0)], Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn smartcard_readers_are_announced_to_the_agent_and_served_on_its_calls() {
+        use oxydesk_agent_proto::{read_msg, ScOp, ScReaderQuery, ScResult};
+        use oxydesk_core::error::SmartcardError;
+        use oxydesk_core::smartcard::{
+            CardStatus, Connected, ReaderQuery, ReaderStatus, ScCard, ScContext,
+        };
+        use oxydesk_core::{RemoteSmartcard, SmartcardHost};
+
+        struct Fake;
+        impl RemoteSmartcard for Fake {
+            fn establish_context(&self) -> Result<ScContext, SmartcardError> {
+                Ok(ScContext(11))
+            }
+            fn release_context(&self, c: ScContext) -> Result<(), SmartcardError> {
+                if c.0 == 11 {
+                    Ok(())
+                } else {
+                    Err(SmartcardError::Code(0x8010_0003))
+                }
+            }
+            fn list_readers(&self, _: ScContext) -> Result<Vec<String>, SmartcardError> {
+                Ok(vec!["R 00 00".into()])
+            }
+            fn get_status_change(
+                &self,
+                _: ScContext,
+                timeout_ms: u32,
+                readers: &[ReaderQuery],
+            ) -> Result<Vec<ReaderStatus>, SmartcardError> {
+                if timeout_ms == 0 {
+                    return Err(SmartcardError::Link("coupe".into()));
+                }
+                Ok(readers
+                    .iter()
+                    .map(|r| ReaderStatus {
+                        name: r.name.clone(),
+                        event_state: 0x0001_0022,
+                        atr: vec![0x3B, 0x00],
+                    })
+                    .collect())
+            }
+            fn cancel(&self, _: ScContext) -> Result<(), SmartcardError> {
+                Ok(())
+            }
+            fn connect(
+                &self,
+                _: ScContext,
+                reader: &str,
+                share: u32,
+                protocols: u32,
+            ) -> Result<Connected, SmartcardError> {
+                assert_eq!((reader, share, protocols), ("R 00 00", 2, 3));
+                Ok(Connected {
+                    card: ScCard(21),
+                    protocol: 2,
+                })
+            }
+            fn reconnect(&self, _: ScCard, _: u32, _: u32, _: u32) -> Result<u32, SmartcardError> {
+                Ok(1)
+            }
+            fn disconnect(&self, _: ScCard, _: u32) -> Result<(), SmartcardError> {
+                Ok(())
+            }
+            fn begin_transaction(&self, _: ScCard) -> Result<(), SmartcardError> {
+                Ok(())
+            }
+            fn end_transaction(&self, _: ScCard, _: u32) -> Result<(), SmartcardError> {
+                Ok(())
+            }
+            fn transmit(
+                &self,
+                card: ScCard,
+                _: u32,
+                apdu: &[u8],
+                _: u32,
+            ) -> Result<Vec<u8>, SmartcardError> {
+                assert_eq!(card, ScCard(21));
+                let mut out = apdu.to_vec();
+                out.extend_from_slice(&[0x90, 0x00]);
+                Ok(out)
+            }
+            fn status(&self, _: ScCard) -> Result<CardStatus, SmartcardError> {
+                Ok(CardStatus {
+                    reader: "R 00 00".into(),
+                    state: 6,
+                    protocol: 2,
+                    atr: vec![0x3B],
+                })
+            }
+            fn control(
+                &self,
+                _: ScCard,
+                _: u32,
+                input: &[u8],
+                _: u32,
+            ) -> Result<Vec<u8>, SmartcardError> {
+                Ok(input.to_vec())
+            }
+            fn get_attrib(&self, _: ScCard, _: u32, _: u32) -> Result<Vec<u8>, SmartcardError> {
+                Ok(vec![1])
+            }
+        }
+
+        fn call(agent: &mut UnixStream, req_id: u32, op: ScOp) -> ScResult {
+            write_msg(agent, &FromAgent::SmartcardCall { req_id, op }).unwrap();
+            let Some(ToAgent::SmartcardReply { req_id: id, result }) =
+                read_msg::<_, ToAgent>(agent).unwrap()
+            else {
+                panic!("SmartcardReply expected")
+            };
+            assert_eq!(id, req_id);
+            result
+        }
+
+        let (link, mut agent) = pair();
+        // A call before the client announced anything is answered, not fatal.
+        assert!(matches!(
+            call(&mut agent, 1, ScOp::EstablishContext),
+            ScResult::Link(_)
+        ));
+        let host = AgentLink::smartcard_host(&link);
+        host.attached(Arc::new(Fake));
+        assert_eq!(
+            read_msg::<_, ToAgent>(&mut agent).unwrap(),
+            Some(ToAgent::SmartcardAttached)
+        );
+        assert_eq!(
+            call(&mut agent, 2, ScOp::EstablishContext),
+            ScResult::Context(11)
+        );
+        assert_eq!(
+            call(&mut agent, 3, ScOp::ListReaders(11)),
+            ScResult::Readers(vec!["R 00 00".into()])
+        );
+        let ScResult::States(states) = call(
+            &mut agent,
+            4,
+            ScOp::GetStatusChange {
+                context: 11,
+                timeout_ms: 500,
+                readers: vec![ScReaderQuery {
+                    name: "R 00 00".into(),
+                    current_state: 0,
+                }],
+            },
+        ) else {
+            panic!("states expected")
+        };
+        assert_eq!(states[0].event_state, 0x0001_0022);
+        assert_eq!(states[0].atr, [0x3B, 0x00]);
+        // The errors keep their kind: a code of the client, or the loss of the link.
+        assert_eq!(
+            call(&mut agent, 5, ScOp::ReleaseContext(12)),
+            ScResult::Code(0x8010_0003)
+        );
+        assert_eq!(
+            call(
+                &mut agent,
+                6,
+                ScOp::GetStatusChange {
+                    context: 11,
+                    timeout_ms: 0,
+                    readers: vec![],
+                }
+            ),
+            ScResult::Link("coupe".into())
+        );
+        assert_eq!(
+            call(
+                &mut agent,
+                7,
+                ScOp::Connect {
+                    context: 11,
+                    reader: "R 00 00".into(),
+                    share_mode: 2,
+                    protocols: 3,
+                }
+            ),
+            ScResult::Connected {
+                card: 21,
+                protocol: 2
+            }
+        );
+        assert_eq!(
+            call(
+                &mut agent,
+                8,
+                ScOp::Transmit {
+                    card: 21,
+                    protocol: 2,
+                    apdu: vec![0, 0xB0],
+                    max_response: 258,
+                }
+            ),
+            ScResult::Data(vec![0, 0xB0, 0x90, 0])
+        );
+        assert!(matches!(
+            call(&mut agent, 9, ScOp::Status(21)),
+            ScResult::Card { state: 6, .. }
+        ));
+        // After the device is gone, the calls fail instead of reaching a dead device.
+        host.detached();
+        assert_eq!(
+            read_msg::<_, ToAgent>(&mut agent).unwrap(),
+            Some(ToAgent::SmartcardDetached)
+        );
+        assert!(matches!(
+            call(&mut agent, 10, ScOp::ListReaders(11)),
+            ScResult::Link(_)
+        ));
     }
 
     #[test]

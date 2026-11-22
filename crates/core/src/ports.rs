@@ -199,6 +199,8 @@ pub struct DesktopPorts {
     pub drives: Option<std::sync::Arc<dyn crate::drive::DriveHost>>,
     /// Where the printers redirected by the client are made available; without it they are refused.
     pub printers: Option<std::sync::Arc<dyn crate::printer::PrinterHost>>,
+    /// Where the smart card readers redirected by the client are made available; without it they are refused.
+    pub smartcards: Option<std::sync::Arc<dyn crate::smartcard::SmartcardHost>>,
 }
 
 /// Authenticates a user and opens (or joins) their desktop session.

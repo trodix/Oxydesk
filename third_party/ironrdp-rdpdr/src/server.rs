@@ -701,6 +701,8 @@ impl RdpdrServer {
                 CapabilityMessage::new_drive(),
                 // oxydesk patch: printers are announced only if the server supports them.
                 CapabilityMessage::new_printer(),
+                // oxydesk patch: the client announces its smart card device only if the server supports it.
+                CapabilityMessage::new_smartcard(),
             ],
             kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
         });
