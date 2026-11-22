@@ -36,6 +36,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::printer::{announced_printer, RdpPrinter};
 use crate::pump::Shared;
+use crate::smartcard::{RdpSmartcard, SmartcardRegistry};
 
 /// Sends a request event to the connection; `false` if it is gone.
 pub type EventSender = Arc<dyn Fn(ServerEvent) -> bool + Send + Sync>;
@@ -94,6 +95,8 @@ pub(crate) enum Body {
     Write(u32),
     Info(Option<FileInformationClass>),
     Volume(Option<FileSystemInformationClass>),
+    /// The output buffer of a device control (what a smart card IOCTL answers).
+    Control(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -130,6 +133,15 @@ pub(crate) struct Link {
 
 impl Link {
     pub(crate) fn call(&self, message: RdpdrServerMessage) -> Result<Completed, DriveError> {
+        self.call_with(message, Some(REQUEST_TIMEOUT))
+    }
+
+    /// Like `call`, with another limit (`None`: as long as the connection lives).
+    pub(crate) fn call_with(
+        &self,
+        message: RdpdrServerMessage,
+        limit: Option<Duration>,
+    ) -> Result<Completed, DriveError> {
         let tag = self.next_tag.fetch_add(1, Ordering::Relaxed);
         let request = tracing::enabled!(tracing::Level::DEBUG).then(|| {
             let mut text = format!("{message:?}");
@@ -148,7 +160,11 @@ impl Link {
             self.forget(tag);
             return Err(DriveError::Io("connection closed".into()));
         }
-        match rx.recv_timeout(REQUEST_TIMEOUT) {
+        let received = match limit {
+            Some(limit) => rx.recv_timeout(limit),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(done) => {
                 if done.status != NtStatus::SUCCESS {
                     tracing::debug!(status = ?done.status, request, "drive request refused by the client");
@@ -625,6 +641,8 @@ enum Command {
         Arc<dyn RemotePrinter>,
     ),
     PrinterRemoved(Arc<dyn PrinterHost>, String),
+    SmartcardAnnounced(Arc<SmartcardRegistry>, Arc<RdpSmartcard>),
+    SmartcardRemoved(Arc<SmartcardRegistry>),
 }
 
 /// Where the host of the session is found when the client announces a device: in broker mode the session (and its
@@ -641,6 +659,9 @@ pub struct DriveBackend {
     /// Printer names (and the host that has them), by device id.
     printers: HashMap<u32, (String, Arc<dyn PrinterHost>)>,
     modes: PrinterModes,
+    /// Where the smart card device of the client waits for the host of the session, and the id it was announced with.
+    smartcards: Arc<SmartcardRegistry>,
+    smartcard_device: Option<u32>,
     commands: Sender<Command>,
 }
 
@@ -693,6 +714,10 @@ impl DriveBackend {
                             host.added(&name, &info, printer)
                         }
                         Command::PrinterRemoved(host, name) => host.removed(&name),
+                        Command::SmartcardAnnounced(registry, device) => {
+                            registry.device_announced(device)
+                        }
+                        Command::SmartcardRemoved(registry) => registry.device_removed(),
                     }
                 }
             })
@@ -708,8 +733,38 @@ impl DriveBackend {
             drives: HashMap::new(),
             printers: HashMap::new(),
             modes: PrinterModes::default(),
+            smartcards: SmartcardRegistry::new(),
+            smartcard_device: None,
             commands,
         }
+    }
+
+    /// Where the smart card device is attached (shared with the session, which provides the host).
+    #[must_use]
+    pub fn with_smartcards(mut self, smartcards: Arc<SmartcardRegistry>) -> Self {
+        self.smartcards = smartcards;
+        self
+    }
+
+    /// The client announced its smart card device: it is kept until the host of the session can take it.
+    fn announce_smartcard(&mut self, id: u32) -> bool {
+        match self.smartcard_device {
+            // FreeRDP announces its one device several times under the same id; declining the repeats would make
+            // it forget the device (a refusal removes it from its table).
+            Some(known) if known == id => return true,
+            Some(_) => {
+                tracing::warn!(device = id, "a second smart card device is declined");
+                return false;
+            }
+            None => {}
+        }
+        tracing::info!(device = id, "smart card device redirected by the client");
+        self.smartcard_device = Some(id);
+        let device = RdpSmartcard::new(self.link.clone(), id);
+        let _ = self
+            .commands
+            .send(Command::SmartcardAnnounced(self.smartcards.clone(), device));
+        true
     }
 
     /// The mode of each printer (`auto` for all by default).
@@ -825,6 +880,11 @@ impl Drop for DriveBackend {
                 .commands
                 .send(Command::PrinterRemoved(host.clone(), name.clone()));
         }
+        if self.smartcard_device.is_some() {
+            let _ = self
+                .commands
+                .send(Command::SmartcardRemoved(self.smartcards.clone()));
+        }
     }
 }
 
@@ -836,6 +896,9 @@ impl RdpdrServerBackend for DriveBackend {
                 let id = device.device_id();
                 if device.device_type() == DeviceType::Print {
                     return (id, self.announce_printer(id, device));
+                }
+                if device.device_type() == DeviceType::Smartcard {
+                    return (id, self.announce_smartcard(id));
                 }
                 if device.device_type() != DeviceType::Filesystem {
                     return (id, false);
@@ -865,6 +928,12 @@ impl RdpdrServerBackend for DriveBackend {
             }
             if let Some((name, host)) = self.printers.remove(id) {
                 let _ = self.commands.send(Command::PrinterRemoved(host, name));
+            }
+            if self.smartcard_device == Some(*id) {
+                self.smartcard_device = None;
+                let _ = self
+                    .commands
+                    .send(Command::SmartcardRemoved(self.smartcards.clone()));
             }
         }
     }
@@ -907,7 +976,13 @@ impl RdpdrServerBackend for DriveBackend {
     }
 
     fn on_device_control_complete(&mut self, r: &DeviceControlResponse) -> PduResult<()> {
-        self.link.finish(&r.device_io_reply, Body::None);
+        // The output buffer is opaque to the channel: smart card IOCTLs carry NDR that the caller decodes.
+        let output = r
+            .output_buffer
+            .as_ref()
+            .and_then(|buffer| ironrdp_core::encode_vec(buffer.as_ref()).ok())
+            .unwrap_or_default();
+        self.link.finish(&r.device_io_reply, Body::Control(output));
         Ok(())
     }
 
@@ -981,6 +1056,7 @@ pub struct DriveFactory {
     pub shared: Arc<Shared>,
     pub host: HostSlot,
     pub printers: PrinterSlot,
+    pub smartcards: Arc<SmartcardRegistry>,
     pub modes: PrinterModes,
 }
 
@@ -1008,7 +1084,8 @@ impl RdpdrServerFactory for DriveFactory {
                 Arc::new(move || host.lock().expect("host mutex").clone()),
                 Arc::new(move || printers.lock().expect("printers mutex").clone()),
             )
-            .with_modes(self.modes.clone()),
+            .with_modes(self.modes.clone())
+            .with_smartcards(self.smartcards.clone()),
         )
     }
 }
@@ -1870,15 +1947,31 @@ mod tests {
     }
 
     #[test]
-    fn devices_that_are_not_drives_or_printers_are_declined() {
+    fn devices_that_are_not_drives_printers_or_smart_cards_are_declined() {
         let send: EventSender = Arc::new(|_| true);
         let mut backend = DriveBackend::new(send, None, None);
-        let answers = backend.on_device_announce(&[DeviceAnnounceHeader::new_smartcard(3)]);
-        assert_eq!(answers, vec![(3, false)]);
-        // No printer host: the printer is declined too.
+        // No printer host: the printer is declined.
         let answers =
             backend.on_device_announce(&[DeviceAnnounceHeader::new_printer(4, "p".into())]);
         assert_eq!(answers, vec![(4, false)]);
+        // A serial port (any other type) is declined.
         backend.on_device_remove(&[3, 4, 99]);
+    }
+
+    #[test]
+    fn the_smart_card_device_is_kept_for_the_host_of_the_session() {
+        let send: EventSender = Arc::new(|_| true);
+        let mut backend = DriveBackend::new(send, None, None);
+        // Announced before any host exists (broker mode): accepted, one only.
+        let answers = backend.on_device_announce(&[
+            DeviceAnnounceHeader::new_smartcard(3),
+            DeviceAnnounceHeader::new_smartcard(5),
+            // FreeRDP repeats the announcement of its device: accepted again, without a second attachment.
+            DeviceAnnounceHeader::new_smartcard(3),
+        ]);
+        assert_eq!(answers, vec![(3, true), (5, false), (3, true)]);
+        assert_eq!(backend.smartcard_device, Some(3));
+        backend.on_device_remove(&[3]);
+        assert_eq!(backend.smartcard_device, None);
     }
 }

@@ -11,6 +11,7 @@ members = [
     "crates/clipboard",
     "crates/drivefs",
     "crates/spool",
+    "crates/pcsc",
     "crates/audio",
     "crates/agent-proto",
     "crates/authd-proto",
@@ -42,6 +43,7 @@ oxydesk-capture = { path = "crates/capture" }
 oxydesk-clipboard = { path = "crates/clipboard" }
 oxydesk-drivefs = { path = "crates/drivefs" }
 oxydesk-spool = { path = "crates/spool" }
+oxydesk-pcsc = { path = "crates/pcsc" }
 oxydesk-audio = { path = "crates/audio" }
 oxydesk-agent-proto = { path = "crates/agent-proto" }
 oxydesk-authd-proto = { path = "crates/authd-proto" }

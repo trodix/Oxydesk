@@ -15,6 +15,7 @@ mod pump;
 mod raw;
 mod reconnect;
 mod server;
+pub mod smartcard;
 mod sound;
 
 pub use clipboard::{Content, RdpClipboard};

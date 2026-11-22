@@ -13,4 +13,6 @@ pub mod printers;
 pub mod report;
 pub mod scenarios;
 pub mod session;
+#[cfg(feature = "ironrdp")]
+pub mod smartcard_client;
 pub mod stats;

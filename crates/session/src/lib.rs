@@ -21,6 +21,9 @@ pub struct KwinSessionConfig {
     pub outputs: u32,
     /// Programs launched in the session once KWin is ready (full argv).
     pub programs: Vec<Vec<String>>,
+    /// Extra environment of KWin and of the session programs, also given to the services activated through
+    /// D-Bus (`PCSCLITE_CSOCK_NAME`, ...).
+    pub env: Vec<(String, String)>,
 }
 
 pub struct KwinSession {
@@ -77,13 +80,19 @@ impl KwinSession {
     }
 
     /// Environment common to KWin and the session programs.
-    fn session_env(cmd: &mut Command, runtime: &std::path::Path, socket: &str) {
+    fn session_env(
+        cmd: &mut Command,
+        runtime: &std::path::Path,
+        socket: &str,
+        extra: &[(String, String)],
+    ) {
         cmd.env("XDG_SESSION_TYPE", "wayland")
             .env("XDG_CURRENT_DESKTOP", "KDE")
             // Required so that KWin finds the .desktop that authorizes capture and input (ADR 004).
             .env("XDG_MENU_PREFIX", "plasma-")
             .env("QT_QPA_PLATFORM", "wayland")
             .env("WAYLAND_DISPLAY", socket);
+        cmd.envs(extra.iter().map(|(k, v)| (k, v)));
         // Transparent cursor theme: KWin's virtual backend always draws its software cursor
         // into the captured image (even in `hidden`/`metadata` mode), which would double it
         // with the RDP client's. Environment variables only: the user's config
@@ -188,14 +197,14 @@ impl SessionProvider for KwinSession {
 
         // The service cache must know our .desktop before KWin starts.
         let mut sycoca = Command::new("kbuildsycoca6");
-        Self::session_env(&mut sycoca, &runtime, &self.cfg.socket);
+        Self::session_env(&mut sycoca, &runtime, &self.cfg.socket, &self.cfg.env);
         let _ = sycoca.stdout(Stdio::null()).stderr(Stdio::null()).status();
 
         let socket_path = runtime.join(&self.cfg.socket);
         clear_stale_compositors(&runtime, &self.cfg.socket);
         let _ = std::fs::remove_file(&socket_path);
         let mut kwin = Command::new("kwin_wayland");
-        Self::session_env(&mut kwin, &runtime, &self.cfg.socket);
+        Self::session_env(&mut kwin, &runtime, &self.cfg.socket, &self.cfg.env);
         kwin.args(["--virtual", "--socket", &self.cfg.socket])
             .args([
                 "--width",
@@ -227,7 +236,7 @@ impl SessionProvider for KwinSession {
         // environment, not ours: without WAYLAND_DISPLAY they start in xcb and plasmashell gives up.
         for extra in [&["--systemd"][..], &[][..]] {
             let mut cmd = Command::new("dbus-update-activation-environment");
-            Self::session_env(&mut cmd, &runtime, &self.cfg.socket);
+            Self::session_env(&mut cmd, &runtime, &self.cfg.socket, &self.cfg.env);
             cmd.args(extra).args([
                 "WAYLAND_DISPLAY",
                 "XDG_SESSION_TYPE",
@@ -235,6 +244,8 @@ impl SessionProvider for KwinSession {
                 "XDG_MENU_PREFIX",
                 "QT_QPA_PLATFORM",
             ]);
+            // Already in the environment of the command (`session_env`): only the names are given.
+            cmd.args(self.cfg.env.iter().map(|(k, _)| k));
             if cmd.status().map(|s| s.success()).unwrap_or(false) {
                 break;
             }
@@ -245,7 +256,7 @@ impl SessionProvider for KwinSession {
                 continue;
             };
             let mut cmd = Command::new(prog);
-            Self::session_env(&mut cmd, &runtime, &self.cfg.socket);
+            Self::session_env(&mut cmd, &runtime, &self.cfg.socket, &self.cfg.env);
             let child = cmd
                 .args(args)
                 .stdin(Stdio::null())

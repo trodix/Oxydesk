@@ -2266,6 +2266,7 @@ dependencies = [
  "oxydesk-drivefs",
  "oxydesk-encode",
  "oxydesk-input",
+ "oxydesk-pcsc",
  "oxydesk-rdp",
  "oxydesk-remote",
  "oxydesk-scaling",
@@ -2291,6 +2292,7 @@ dependencies = [
  "oxydesk-drivefs",
  "oxydesk-encode",
  "oxydesk-input",
+ "oxydesk-pcsc",
  "oxydesk-remote",
  "oxydesk-scaling",
  "oxydesk-session",
@@ -2403,6 +2405,16 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+]
+
+[[package]]
+name = "oxydesk-pcsc"
+version = "0.4.0"
+dependencies = [
+ "libc",
+ "oxydesk-core",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

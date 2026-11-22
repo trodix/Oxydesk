@@ -20,6 +20,7 @@ pub mod ports;
 pub mod printer;
 pub mod rate;
 pub mod scale;
+pub mod smartcard;
 pub mod stats;
 pub mod throttle;
 pub mod transfer;
@@ -30,7 +31,7 @@ pub use cursor::{CursorResolver, CursorShape, CursorUpdate};
 pub use drive::{DriveEntry, DriveHandle, DriveHost, DriveSpace, DriveStat, OpenMode, RemoteDrive};
 pub use error::{
     AudioError, CaptureError, ClipboardError, DriveError, EncodeError, InputError, LoginError,
-    PrintError,
+    PrintError, SmartcardError,
 };
 pub use files::{FileEntry, FileExchange, FileList, FileSource, RangeRequest, RangeSender};
 pub use frame::{DmaBuf, Frame, FrameData, PixelFormat};
@@ -46,5 +47,9 @@ pub use printer::{
 };
 pub use rate::{NetSample, RateConfig, RateController, RateTarget, DEFAULT_BITRATE_BPS};
 pub use scale::ScaleMap;
+pub use smartcard::{
+    CardStatus, Connected, ReaderQuery, ReaderStatus, RemoteSmartcard, ScCard, ScContext,
+    SmartcardHost,
+};
 pub use throttle::{LoginThrottle, ThrottleConfig};
 pub use transfer::Transfer;

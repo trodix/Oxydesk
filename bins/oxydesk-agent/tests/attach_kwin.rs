@@ -279,6 +279,7 @@ fn a_client_with_other_monitors_than_the_desktop_joins_it_and_leaves_it_as_it_wa
         height: 600,
         outputs: 2,
         programs: vec![],
+        env: vec![],
     });
     kwin.start().expect("private KWin");
     let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));

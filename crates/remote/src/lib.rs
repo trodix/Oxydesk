@@ -7,6 +7,7 @@ mod drives;
 mod link;
 mod ports;
 mod printers;
+mod smartcard;
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ pub use drives::AgentDrives;
 pub use link::AgentLink;
 pub use oxydesk_authd_proto::SessionPolicy as Policy;
 pub use printers::AgentPrinters;
+pub use smartcard::AgentSmartcards;
 
 pub struct RemoteBroker {
     authd_socket: PathBuf,

@@ -81,3 +81,24 @@ pub enum PrintError {
     #[error("printer unavailable: {0}")]
     Io(String),
 }
+
+/// Failure of a call to the smart card subsystem of the client.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SmartcardError {
+    /// The client's smart card subsystem answered with this `SCARD_*` code (see `smartcard::code`).
+    #[error("smart card error {0:#010x}")]
+    Code(u32),
+    /// The client is gone or the link failed: no answer will come.
+    #[error("smart card link down: {0}")]
+    Link(String),
+}
+
+impl SmartcardError {
+    /// The `SCARD_*` code to give an application: the one the client sent, else `SCARD_E_NO_SERVICE`.
+    pub fn scard_code(&self) -> u32 {
+        match self {
+            Self::Code(c) => *c,
+            Self::Link(_) => crate::smartcard::code::E_NO_SERVICE,
+        }
+    }
+}

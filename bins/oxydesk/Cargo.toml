@@ -19,6 +19,7 @@ oxydesk-clipboard = { workspace = true, optional = true }
 oxydesk-audio.workspace = true
 oxydesk-drivefs.workspace = true
 oxydesk-spool.workspace = true
+oxydesk-pcsc.workspace = true
 oxydesk-remote.workspace = true
 oxydesk-session = { workspace = true, optional = true }
 oxydesk-core.workspace = true

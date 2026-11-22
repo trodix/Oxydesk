@@ -19,6 +19,7 @@ oxydesk-capture.workspace = true
 oxydesk-audio.workspace = true
 oxydesk-drivefs.workspace = true
 oxydesk-spool.workspace = true
+oxydesk-pcsc.workspace = true
 oxydesk-encode = { workspace = true, features = ["openh264"] }
 oxydesk-scaling = { workspace = true, optional = true }
 oxydesk-input = { workspace = true, optional = true }

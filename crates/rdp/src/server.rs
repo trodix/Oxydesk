@@ -74,6 +74,8 @@ struct SessionSlot {
     audio: Slot<Arc<dyn AudioProvider>>,
     drives: Slot<Arc<dyn oxydesk_core::drive::DriveHost>>,
     printers: Slot<Arc<dyn oxydesk_core::printer::PrinterHost>>,
+    /// Holds the smart card device of the client until the host of the session can take it.
+    smartcards: Arc<crate::smartcard::SmartcardRegistry>,
 }
 
 impl SessionSlot {
@@ -85,6 +87,7 @@ impl SessionSlot {
             audio: Default::default(),
             drives: Default::default(),
             printers: Default::default(),
+            smartcards: crate::smartcard::SmartcardRegistry::new(),
         }
     }
 
@@ -96,6 +99,7 @@ impl SessionSlot {
         *self.audio.lock().expect("audio mutex") = ports.audio;
         *self.drives.lock().expect("drives mutex") = ports.drives;
         *self.printers.lock().expect("printers mutex") = ports.printers;
+        self.smartcards.set_host(ports.smartcards);
         *self.shared.ports.lock().expect("ports mutex") = Some(PumpPorts {
             capture: ports.capture,
             encoders: ports.encoders,
@@ -969,6 +973,7 @@ async fn serve(
             shared: shared.clone(),
             host: slot.drives.clone(),
             printers: slot.printers.clone(),
+            smartcards: slot.smartcards.clone(),
             modes: config.printer_modes.clone(),
         })))
         .with_credential_validator(broker.map(|broker| {
@@ -1292,6 +1297,7 @@ mod reconnect_tests {
             audio: None,
             drives: None,
             printers: None,
+            smartcards: None,
         }
     }
 

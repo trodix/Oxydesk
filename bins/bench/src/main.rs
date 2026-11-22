@@ -49,6 +49,7 @@ impl Source {
                         programs: vec![["konsole", "-e", "sh", "-c", "while :; do date +%N; done"]
                             .map(String::from)
                             .to_vec()],
+                        env: vec![],
                     });
                 session
                     .start()
